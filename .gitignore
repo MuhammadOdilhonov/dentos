@@ -1,0 +1,47 @@
+# ───────── Maxfiy / runtime fayllar (HECH QACHON commit qilinmaydi) ─────────
+.env
+.env.*
+!.env.example
+
+# Telegram sessiyalari (jonli akkaunt kirishi!) + runtime holat
+backend/telegram_sessions.json
+backend/telegram_pending.json
+backend/telegram_sessions
+backend/sms_sent.json
+backend/reminders_sent.json
+backend/ai_conversations.json
+
+# Ma'lumotlar bazasi
+backend/db.sqlite3
+*.sqlite3
+
+# Yuklangan media
+backend/media/
+backend/telegram_media/
+
+# ───────── Python ─────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ───────── Node / Next.js ─────────
+node_modules/
+.next/
+out/
+build/
+*.tsbuildinfo
+next-env.d.ts
+
+# ───────── Tizim / IDE ─────────
+.DS_Store
+*.pem
+.vscode/
+.idea/
+
+# Loglar / vaqtincha
+*.log
+npm-debug.log*
+C:WindowsTempdism_sfc_log.txt

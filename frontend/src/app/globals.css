@@ -1,0 +1,76 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Full-screen fixed overlays (modals) are often rendered as later siblings
+ * inside a `space-y-*` container. Tailwind's space utility applies a
+ * `margin-top` to every non-first child, which visually pushes a
+ * `fixed inset-0` overlay down from the top. Overlays position themselves via
+ * `inset`, never via margin, so force their margins to zero. This is the
+ * root-cause fix for every current and future modal — no inline styles needed.
+ */
+.fixed.inset-0 {
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}
+
+/* Live voice-recording waveform — undulating dynamic bars */
+@keyframes voiceBounce1 {
+  0%, 100% { height: 20%; transform: scaleY(0.3); }
+  50% { height: 95%; transform: scaleY(1); }
+}
+@keyframes voiceBounce2 {
+  0%, 100% { height: 35%; transform: scaleY(0.45); }
+  50% { height: 80%; transform: scaleY(0.9); }
+}
+@keyframes voiceBounce3 {
+  0%, 100% { height: 15%; transform: scaleY(0.2); }
+  50% { height: 100%; transform: scaleY(1); }
+}
+.voice-bar {
+  height: 100%;
+  transform-origin: bottom;
+  animation: voiceBounce1 0.8s ease-in-out infinite alternate;
+}
+.voice-bar-2 {
+  height: 100%;
+  transform-origin: bottom;
+  animation: voiceBounce2 0.65s ease-in-out infinite alternate;
+}
+.voice-bar-3 {
+  height: 100%;
+  transform-origin: bottom;
+  animation: voiceBounce3 0.95s ease-in-out infinite alternate;
+}
+
+:root {
+  --background: #f8fafc;
+  --foreground: #0f172a;
+}
+
+body {
+  color: #0f172a;
+  background-color: #f8fafc;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  overflow-x: hidden;
+}
+
+/* Custom scrollbars for calendar grid */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f5f9;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
