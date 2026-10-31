@@ -4,10 +4,10 @@ from datetime import datetime, time, timedelta
 from clinic.models import Employee, Patient, Appointment, FinancialTransaction, ClinicTask, WarehouseItem, DentalLabOrder
 
 class Command(BaseCommand):
-    help = 'Seeds initial clinic data for 32Desk'
+    help = 'Seeds initial clinic data for Dentos'
 
     def handle(self, *args, **kwargs):
-        self.stdout.write("Очистка и создание демонстрационных данных 32Desk...")
+        self.stdout.write("Очистка и создание демонстрационных данных Dentos...")
         
         # 1. Doctors / Employees
         doctors_data = [
@@ -470,4 +470,4 @@ class Command(BaseCommand):
                     wp.branch = branches[i % len(branches)]
                     wp.save(update_fields=['branch'])
 
-        self.stdout.write(self.style.SUCCESS("[OK] Demo data for 32Desk created successfully!"))
+        self.stdout.write(self.style.SUCCESS("[OK] Demo data for Dentos created successfully!"))

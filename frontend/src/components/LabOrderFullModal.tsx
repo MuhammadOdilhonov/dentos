@@ -55,8 +55,10 @@ import {
   HardDrive,
   MapPin
 } from 'lucide-react';
-import Dental3DScanViewerModal from './Dental3DScanViewerModal';
-import DentalRentgenViewerModal from './DentalRentgenViewerModal';
+import dynamic from 'next/dynamic';
+// Three.js/DICOM og'ir — faqat tegishli ko'ruvchi modal ochilganda yuklanadi (#5).
+const Dental3DScanViewerModal = dynamic(() => import('./Dental3DScanViewerModal'), { ssr: false });
+const DentalRentgenViewerModal = dynamic(() => import('./DentalRentgenViewerModal'), { ssr: false });
 import { dentalMediaStore } from '../lib/dentalMediaStore';
 
 interface LabOrderFullModalProps {

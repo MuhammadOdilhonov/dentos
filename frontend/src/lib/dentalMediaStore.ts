@@ -1,5 +1,37 @@
 // IndexedDB-based binary media store for Dental 3D Scans (.zip / .stl) and Rentgen / CT Suites (.zip / images)
 // Allows storing real patient files without localStorage 5MB quota limitations.
+import { isDemoClinic, clinicApi } from './api';
+import { apiFetch } from './http';
+
+// Fayl identifikatori bemor ID (raqam) bo'lsa — BAZAGA ham yuklaymiz (admin/hisob uchun).
+// 'order_123' kabi laboratoriya identifikatorlari bemor media emas — o'tkazib yuboriladi.
+async function patientIdentifier(identifier: string | number): Promise<number> {
+  const id = Number(identifier);
+  if (Number.isInteger(id) && id > 0) return id;
+  const match = /^order_(\d+)$/.exec(String(identifier));
+  if (match) {
+    const order = (await clinicApi.getLabOrders()).find(order => Number(order.id) === Number(match[1]));
+    if (order?.patient) return Number(order.patient);
+  }
+  throw new Error('Media uchun haqiqiy bemor yoki laboratoriya buyurtmasi kerak.');
+}
+async function remoteLoad(identifier: string | number, kind: 'rentgen' | 'skan'): Promise<StoredMediaItem | null> {
+  const patientId = await patientIdentifier(identifier);
+  const rows = await clinicApi.listPatientMedia(patientId, kind);
+  const row = rows[0];
+  if (!row?.file_url) return null;
+  const response = await apiFetch(row.file_url);
+  if (!response.ok) throw new Error('Faylni serverdan olib bo‘lmadi.');
+  const file = await response.blob();
+  return { key: String(identifier), file, fileName: row.file_name, fileSize: row.file_size,
+    fileType: row.file_type, isZip: row.file_name.toLowerCase().endsWith('.zip'),
+    uploadedAt: row.uploaded_at, extractedList: row.meta?.extractedList, filesCount: row.meta?.extractedList?.length };
+}
+async function remoteDelete(identifier: string | number, kind: 'rentgen' | 'skan') {
+  const patientId = await patientIdentifier(identifier);
+  const rows = await clinicApi.listPatientMedia(patientId, kind);
+  for (const row of rows) await clinicApi.deletePatientMedia(row.id);
+}
 
 const DB_NAME = '32desk_dental_media_db';
 const DB_VERSION = 1;
@@ -50,7 +82,6 @@ export const dentalMediaStore = {
     fileName?: string,
     extractedList?: string[]
   ): Promise<StoredMediaItem> {
-    const db = await openDB();
     const actualName = fileName || (file as File).name || '3d_scan.zip';
     const isZip = actualName.toLowerCase().endsWith('.zip');
 
@@ -66,16 +97,19 @@ export const dentalMediaStore = {
       extractedList
     };
 
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_SCANS, 'readwrite');
-      const store = tx.objectStore(STORE_SCANS);
-      const req = store.put(item);
-      req.onsuccess = () => resolve(item);
-      req.onerror = () => reject(req.error);
-    });
+    // Demo klinika: fayl IndexedDB'ga SAQLANMAYDI (sessiyada ko'rinadi, keyin yo'q).
+    if (isDemoClinic()) return item;
+
+    const patientId = await patientIdentifier(identifier);
+    const saved = await clinicApi.uploadPatientMedia(patientId, 'skan', file, actualName, { extractedList });
+    if (!saved) throw new Error('Fayl serverga saqlanmadi.');
+    return item;
+
+
   },
 
   async getScan(identifier: string | number): Promise<StoredMediaItem | null> {
+    if (identifier && !isDemoClinic()) return remoteLoad(identifier, 'skan');
     if (!identifier) return null;
     try {
       const db = await openDB();
@@ -93,6 +127,7 @@ export const dentalMediaStore = {
   },
 
   async deleteScan(identifier: string | number): Promise<void> {
+    if (identifier && !isDemoClinic()) return remoteDelete(identifier, 'skan');
     if (!identifier) return;
     try {
       const db = await openDB();
@@ -115,7 +150,6 @@ export const dentalMediaStore = {
     fileName?: string,
     extractedList?: string[]
   ): Promise<StoredMediaItem> {
-    const db = await openDB();
     const actualName = fileName || (file as File).name || 'rentgen.zip';
     const isZip = actualName.toLowerCase().endsWith('.zip');
 
@@ -131,16 +165,19 @@ export const dentalMediaStore = {
       extractedList
     };
 
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_RENTGENS, 'readwrite');
-      const store = tx.objectStore(STORE_RENTGENS);
-      const req = store.put(item);
-      req.onsuccess = () => resolve(item);
-      req.onerror = () => reject(req.error);
-    });
+    // Demo klinika: fayl IndexedDB'ga SAQLANMAYDI (sessiyada ko'rinadi, keyin yo'q).
+    if (isDemoClinic()) return item;
+
+    const patientId = await patientIdentifier(identifier);
+    const saved = await clinicApi.uploadPatientMedia(patientId, 'rentgen', file, actualName, { extractedList });
+    if (!saved) throw new Error('Fayl serverga saqlanmadi.');
+    return item;
+
+
   },
 
   async getRentgen(identifier: string | number): Promise<StoredMediaItem | null> {
+    if (identifier && !isDemoClinic()) return remoteLoad(identifier, 'rentgen');
     if (!identifier) return null;
     try {
       const db = await openDB();
@@ -158,6 +195,7 @@ export const dentalMediaStore = {
   },
 
   async deleteRentgen(identifier: string | number): Promise<void> {
+    if (identifier && !isDemoClinic()) return remoteDelete(identifier, 'rentgen');
     if (!identifier) return;
     try {
       const db = await openDB();

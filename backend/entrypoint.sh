@@ -1,18 +1,15 @@
 #!/bin/sh
-set -e
-
-# PostgreSQL tayyor bo'lguncha kutish
-if [ -n "$POSTGRES_HOST" ]; then
-  echo "PostgreSQL ($POSTGRES_HOST:$POSTGRES_PORT) kutilyapti..."
-  while ! nc -z "$POSTGRES_HOST" "${POSTGRES_PORT:-5432}"; do
-    sleep 0.5
-  done
-  echo "PostgreSQL tayyor."
+set -eu
+umask 077
+if [ "${RUN_MIGRATIONS:-true}" = "true" ]; then
+  START_BACKGROUND_SERVICES=false python manage.py migrate --noinput
+  START_BACKGROUND_SERVICES=false python manage.py collectstatic --noinput
 fi
-
-# Migratsiyalar + statik fayllar
-python manage.py migrate --noinput
-python manage.py collectstatic --noinput || true
-
-# Gunicorn bilan ishga tushirish
-exec gunicorn core.wsgi:application --bind 0.0.0.0:8000 --workers 3 --timeout 120
+if [ "$#" -gt 0 ]; then exec "$@"; fi
+# Telethon sessiyalari FAQAT 'telegram' xizmatida (START_BACKGROUND_SERVICES=true, 1 nusxa)
+# ochiladi. 'api' xizmatida START_BACKGROUND_SERVICES=false — shuning uchun u Telegram'ni
+# ochmaydi va GUNICORN_WORKERS'ni xavfsiz ko'paytirsa bo'ladi. Default 1 (orqaga moslik +
+# Telegram egasi uchun bitta jarayon kafolati).
+WORKERS="${GUNICORN_WORKERS:-1}"
+THREADS="${GUNICORN_THREADS:-8}"
+exec gunicorn core.wsgi:application --bind 0.0.0.0:8000 --workers "$WORKERS" --worker-class gthread --threads "$THREADS" --timeout 330 --graceful-timeout 30 --access-logfile - --error-logfile -

@@ -9,8 +9,8 @@ import urllib.request
 import urllib.parse
 from django.conf import settings
 
-_SMS_CFG_FILE = os.path.join(settings.BASE_DIR, 'sms_config.json')
-_SMS_LOG_FILE = os.path.join(settings.BASE_DIR, 'sms_sent.json')
+_SMS_CFG_FILE = os.path.join(settings.RUNTIME_DIR, 'sms_config.json')
+_SMS_LOG_FILE = os.path.join(settings.RUNTIME_DIR, 'sms_sent.json')
 
 _DEFAULT_CFG = {
     'enabled': True,

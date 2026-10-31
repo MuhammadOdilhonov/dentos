@@ -3,6 +3,7 @@
 import React, { useState } from 'react';
 import { Patient } from '../lib/types';
 import { X, UserPlus } from 'lucide-react';
+import PhoneInput from './PhoneInput';
 
 interface NewPatientModalProps {
   isOpen: boolean;
@@ -81,12 +82,11 @@ export default function NewPatientModal({ isOpen, onClose, onSave }: NewPatientM
               <label className="text-xs font-bold text-slate-700 uppercase tracking-wider block mb-1">
                 Номер телефона:
               </label>
-              <input
-                type="tel"
+              <PhoneInput
                 required
                 value={phone}
-                onChange={(e) => setPhone(e.target.value)}
-                className="w-full text-xs font-semibold p-2.5 bg-slate-50 border border-slate-200 rounded-xl outline-none focus:border-blue-500 focus:bg-white transition"
+                onChange={setPhone}
+                className="w-full text-xs font-semibold bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl"
               />
             </div>
             <div>

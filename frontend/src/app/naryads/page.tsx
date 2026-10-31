@@ -3,6 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import Link from 'next/link';
 import { clinicApi } from '../../lib/api';
+import { ApiError } from '../../lib/http';
 import { NaryadCatalogItem, DoctorNaryadAssignment, Employee } from '../../lib/types';
 import { useI18n } from '../../lib/i18n';
 import { useAuth } from '../../lib/auth';
@@ -68,11 +69,39 @@ export default function NaryadsPage() {
     setTimeout(() => setToastMessage(null), 3000);
   };
 
+  const [importing, setImporting] = useState(false);
+
   const loadData = async () => {
-    setCatalog(clinicApi.getNaryadCatalog(clinicId));
-    setAssignments(clinicApi.getDoctorNaryads());
+    try {
+      setCatalog(await clinicApi.getNaryadCatalog());
+    } catch {
+      setCatalog([]);
+    }
+    try {
+      setAssignments(await clinicApi.getDoctorNaryads());
+    } catch {
+      setAssignments([]);
+    }
     const emps = await clinicApi.getEmployees();
     setEmployees(emps);
+  };
+
+  // Nazoratli import: bo'sh katalogda direktor eski lokal narxlarni yoki standart
+  // ro'yxatni (narx 0) BIR MARTA bazaga yozadi. Avtomatik emas — faqat shu tugma.
+  const handleImport = async (source: 'local' | 'default') => {
+    if (importing) return;
+    setImporting(true);
+    try {
+      const { created, skipped } = await clinicApi.importNaryadCatalog(source);
+      await loadData();
+      const extra = skipped ? (lng === 'uz' ? `, ${skipped} ta mavjud` : lng === 'en' ? `, ${skipped} existing` : `, ${skipped} уже были`) : '';
+      showToast(lng === 'uz' ? `${created} ta xizmat import qilindi${extra}` : lng === 'en' ? `${created} services imported${extra}` : `Импортировано услуг: ${created}${extra}`);
+    } catch (e) {
+      const msg = e instanceof ApiError ? e.message : (lng === 'uz' ? 'Import amalga oshmadi (server xatosi)' : lng === 'en' ? 'Import failed (server error)' : 'Импорт не удался (ошибка сервера)');
+      showToast(msg);
+    } finally {
+      setImporting(false);
+    }
   };
 
   useEffect(() => {
@@ -136,64 +165,73 @@ export default function NaryadsPage() {
     setQuickPriceValue(item.base_price);
   };
 
-  const handleSaveQuickPrice = (id: string) => {
+  const handleSaveQuickPrice = async (id: string) => {
     if (quickPriceValue < 0) return;
-    const updated = clinicApi.updateNaryadCatalogItem(
-      id,
-      { base_price: Number(quickPriceValue) },
-      clinicId
-    );
-    if (updated) {
-      setCatalog((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
-      showToast(lng === 'uz' ? 'Narx yangilandi!' : lng === 'en' ? 'Price updated!' : 'Цена обновлена!');
+    try {
+      const updated = await clinicApi.updateNaryadCatalogItem(
+        id,
+        { base_price: Number(quickPriceValue) }
+      );
+      if (updated) {
+        setCatalog((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+        showToast(lng === 'uz' ? 'Narx yangilandi!' : lng === 'en' ? 'Price updated!' : 'Цена обновлена!');
+      }
+    } catch {
+      showToast(lng === 'uz' ? 'Saqlanmadi (server xatosi)' : lng === 'en' ? 'Not saved (server error)' : 'Не сохранено (ошибка сервера)');
     }
     setQuickEditingId(null);
   };
 
   // Save Naryad item
-  const handleSave = (e: React.FormEvent) => {
+  const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.name.trim()) return;
 
-    if (editingItem) {
-      const updated = clinicApi.updateNaryadCatalogItem(
-        editingItem.id,
-        {
-          name: form.name.trim(),
-          category: form.category,
-          base_price: Number(form.base_price),
-          default_percent: Number(form.default_percent),
-          description: form.description.trim()
-        },
-        clinicId
-      );
-      if (updated) {
-        setCatalog((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
-        showToast(lng === 'uz' ? 'Naryad narxi saqlandi!' : lng === 'en' ? 'Naryad price saved!' : 'Наряд успешно сохранён!');
+    try {
+      if (editingItem) {
+        const updated = await clinicApi.updateNaryadCatalogItem(
+          editingItem.id,
+          {
+            name: form.name.trim(),
+            category: form.category,
+            base_price: Number(form.base_price),
+            default_percent: Number(form.default_percent),
+            description: form.description.trim()
+          }
+        );
+        if (updated) {
+          setCatalog((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
+          showToast(lng === 'uz' ? 'Naryad narxi saqlandi!' : lng === 'en' ? 'Naryad price saved!' : 'Наряд успешно сохранён!');
+        }
+      } else {
+        const created = await clinicApi.createNaryadCatalogItem(
+          {
+            name: form.name.trim(),
+            category: form.category,
+            base_price: Number(form.base_price),
+            default_percent: Number(form.default_percent),
+            description: form.description.trim()
+          }
+        );
+        setCatalog((prev) => [created, ...prev]);
+        showToast(lng === 'uz' ? 'Yangi naryad kiritildi!' : lng === 'en' ? 'New naryad added!' : 'Новый наряд добавлен в прейскурант!');
       }
-    } else {
-      const created = clinicApi.createNaryadCatalogItem(
-        {
-          name: form.name.trim(),
-          category: form.category,
-          base_price: Number(form.base_price),
-          default_percent: Number(form.default_percent),
-          description: form.description.trim()
-        },
-        clinicId
-      );
-      setCatalog((prev) => [created, ...prev]);
-      showToast(lng === 'uz' ? 'Yangi naryad kiritildi!' : lng === 'en' ? 'New naryad added!' : 'Новый наряд добавлен в прейскурант!');
+      setIsModalOpen(false);
+    } catch {
+      showToast(lng === 'uz' ? 'Saqlanmadi (server xatosi)' : lng === 'en' ? 'Not saved (server error)' : 'Не сохранено (ошибка сервера)');
     }
-    setIsModalOpen(false);
   };
 
   // Delete Naryad item
-  const handleDelete = (id: string) => {
+  const handleDelete = async (id: string) => {
     if (confirm(tr('naryadcat.confirmDelete'))) {
-      clinicApi.deleteNaryadCatalogItem(id, clinicId);
-      setCatalog((prev) => prev.filter((c) => c.id !== id));
-      showToast(lng === 'uz' ? 'Naryad o‘chirildi' : lng === 'en' ? 'Naryad deleted' : 'Наряд удален из прейскуранта');
+      try {
+        await clinicApi.deleteNaryadCatalogItem(id);
+        setCatalog((prev) => prev.filter((c) => c.id !== id));
+        showToast(lng === 'uz' ? 'Naryad o‘chirildi' : lng === 'en' ? 'Naryad deleted' : 'Наряд удален из прейскуранта');
+      } catch {
+        showToast(lng === 'uz' ? 'O‘chirilmadi (server xatosi)' : lng === 'en' ? 'Not deleted (server error)' : 'Не удалено (ошибка сервера)');
+      }
     }
   };
 
@@ -352,13 +390,35 @@ export default function NaryadsPage() {
                 <tr>
                   <td colSpan={8} className="py-16 text-center text-slate-400 font-semibold">
                     <p className="text-sm font-bold">{tr('naryadcat.noItemsFound')}</p>
-                    <button
-                      onClick={() => handleOpenModal()}
-                      className="mt-3 inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-2xl text-xs font-black shadow-md shadow-blue-500/20"
-                    >
-                      <Plus className="w-4 h-4 stroke-[3]" />
-                      <span>{tr('naryadcat.addNaryad')}</span>
-                    </button>
+                    <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+                      <button
+                        onClick={() => handleOpenModal()}
+                        className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-2xl text-xs font-black shadow-md shadow-blue-500/20"
+                      >
+                        <Plus className="w-4 h-4 stroke-[3]" />
+                        <span>{tr('naryadcat.addNaryad')}</span>
+                      </button>
+                      {searchQuery.trim() === '' && categoryFilter === 'all' && (
+                        <>
+                          <button
+                            onClick={() => handleImport('local')}
+                            disabled={importing}
+                            className="inline-flex items-center gap-2 px-5 py-2.5 bg-emerald-600 text-white rounded-2xl text-xs font-black shadow-md shadow-emerald-500/20 disabled:opacity-50"
+                            title={lng === 'uz' ? 'Shu brauzerdagi eski narxlarni bazaga ko‘chirish' : lng === 'en' ? 'Import old prices from this browser into the database' : 'Импортировать старые цены из этого браузера в базу'}
+                          >
+                            <span>{lng === 'uz' ? 'Eski narxlarni import qilish' : lng === 'en' ? 'Import old prices' : 'Импорт старых цен'}</span>
+                          </button>
+                          <button
+                            onClick={() => handleImport('default')}
+                            disabled={importing}
+                            className="inline-flex items-center gap-2 px-5 py-2.5 bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-2xl text-xs font-black disabled:opacity-50"
+                            title={lng === 'uz' ? 'Standart xizmatlar ro‘yxatini narxsiz (0) yuklash' : lng === 'en' ? 'Load the standard service list with zero prices' : 'Загрузить стандартный список услуг с нулевыми ценами'}
+                          >
+                            <span>{lng === 'uz' ? 'Standart ro‘yxat (narx 0)' : lng === 'en' ? 'Standard list (price 0)' : 'Стандартный список (цена 0)'}</span>
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ) : (

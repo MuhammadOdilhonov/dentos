@@ -2,7 +2,8 @@ FROM python:3.12-slim
 
 # Python optimallashtirish
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    IN_DOCKER=1
 
 WORKDIR /app
 
@@ -19,6 +20,11 @@ RUN pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir -r re
 COPY . .
 
 RUN chmod +x /app/entrypoint.sh
+
+RUN useradd --uid 10001 --create-home dentos \
+    && mkdir -p /app/media /app/telegram_media /app/runtime /app/staticfiles \
+    && chown -R dentos:dentos /app
+USER dentos
 
 EXPOSE 8000
 ENTRYPOINT ["/app/entrypoint.sh"]

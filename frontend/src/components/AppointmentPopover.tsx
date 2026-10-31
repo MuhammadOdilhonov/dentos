@@ -40,9 +40,7 @@ interface AppointmentPopoverProps {
 export const STATUS_CONFIG: Record<
   AppointmentStatus,
   {
-    labelRu: string;
-    labelUz: string;
-    labelEn: string;
+    labelKey: string;
     color: string;
     dotColor: string;
     icon: React.ElementType;
@@ -51,9 +49,7 @@ export const STATUS_CONFIG: Record<
   }
 > = {
   new: {
-    labelRu: 'Новый',
-    labelUz: 'Yangi',
-    labelEn: 'New',
+    labelKey: 'aptst_new',
     color: '#3B82F6',
     dotColor: 'bg-blue-500',
     icon: Circle,
@@ -61,9 +57,7 @@ export const STATUS_CONFIG: Record<
     bgBadge: 'bg-blue-50 dark:bg-blue-950/60 border-blue-200 dark:border-blue-800'
   },
   confirmed: {
-    labelRu: 'Подтвержден',
-    labelUz: 'Tasdiqlangan',
-    labelEn: 'Confirmed',
+    labelKey: 'aptst_confirmed',
     color: '#06B6D4',
     dotColor: 'bg-cyan-500',
     icon: Check,
@@ -71,9 +65,7 @@ export const STATUS_CONFIG: Record<
     bgBadge: 'bg-cyan-50 dark:bg-cyan-950/60 border-cyan-200 dark:border-cyan-800'
   },
   unconfirmed: {
-    labelRu: 'Не подтвержден',
-    labelUz: 'Tasdiqlanmagan',
-    labelEn: 'Unconfirmed',
+    labelKey: 'aptst_unconfirmed',
     color: '#F59E0B',
     dotColor: 'bg-amber-500',
     icon: AlertCircle,
@@ -81,9 +73,7 @@ export const STATUS_CONFIG: Record<
     bgBadge: 'bg-amber-50 dark:bg-amber-950/60 border-amber-200 dark:border-amber-800'
   },
   late: {
-    labelRu: 'Опоздал',
-    labelUz: 'Kechikdi',
-    labelEn: 'Late',
+    labelKey: 'aptst_late',
     color: '#F97316',
     dotColor: 'bg-orange-500',
     icon: Clock,
@@ -91,9 +81,7 @@ export const STATUS_CONFIG: Record<
     bgBadge: 'bg-orange-50 dark:bg-orange-950/60 border-orange-200 dark:border-orange-800'
   },
   arrived: {
-    labelRu: 'Прибыл',
-    labelUz: 'Keldi',
-    labelEn: 'Arrived',
+    labelKey: 'aptst_arrived',
     color: '#EAB308',
     dotColor: 'bg-yellow-500',
     icon: ArrowDownCircle,
@@ -101,9 +89,7 @@ export const STATUS_CONFIG: Record<
     bgBadge: 'bg-yellow-50 dark:bg-yellow-950/60 border-yellow-200 dark:border-yellow-800'
   },
   in_progress: {
-    labelRu: 'На приёме',
-    labelUz: 'Qabulda',
-    labelEn: 'In Treatment',
+    labelKey: 'aptst_in_progress',
     color: '#10B981',
     dotColor: 'bg-emerald-500',
     icon: PlayCircle,
@@ -111,9 +97,7 @@ export const STATUS_CONFIG: Record<
     bgBadge: 'bg-emerald-50 dark:bg-emerald-950/60 border-emerald-200 dark:border-emerald-800'
   },
   waiting_bill: {
-    labelRu: 'Ждёт счёт',
-    labelUz: 'Hisob kutmoqda',
-    labelEn: 'Waiting for Bill',
+    labelKey: 'aptst_waiting_bill',
     color: '#F59E0B',
     dotColor: 'bg-amber-500',
     icon: FileText,
@@ -121,9 +105,7 @@ export const STATUS_CONFIG: Record<
     bgBadge: 'bg-amber-50 dark:bg-amber-950/60 border-amber-200 dark:border-amber-800'
   },
   cancelled: {
-    labelRu: 'Отменен',
-    labelUz: 'Bekor qilingan',
-    labelEn: 'Cancelled',
+    labelKey: 'aptst_cancelled',
     color: '#EF4444',
     dotColor: 'bg-rose-500',
     icon: XCircle,
@@ -131,9 +113,7 @@ export const STATUS_CONFIG: Record<
     bgBadge: 'bg-rose-50 dark:bg-rose-950/60 border-rose-200 dark:border-rose-800'
   },
   no_show: {
-    labelRu: 'Не явился',
-    labelUz: 'Kelmadi',
-    labelEn: 'No Show',
+    labelKey: 'aptst_no_show',
     color: '#DC2626',
     dotColor: 'bg-red-600',
     icon: EyeOff,
@@ -141,9 +121,7 @@ export const STATUS_CONFIG: Record<
     bgBadge: 'bg-red-50 dark:bg-red-950/60 border-red-200 dark:border-red-800'
   },
   completed: {
-    labelRu: 'Завершен',
-    labelUz: 'Yakunlangan',
-    labelEn: 'Completed',
+    labelKey: 'aptst_completed',
     color: '#64748B',
     dotColor: 'bg-slate-500',
     icon: CheckCircle2,
@@ -151,9 +129,7 @@ export const STATUS_CONFIG: Record<
     bgBadge: 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700'
   },
   debt: {
-    labelRu: 'Задолженность',
-    labelUz: 'Qarzdorlik',
-    labelEn: 'Debt',
+    labelKey: 'aptst_debt',
     color: '#EA580C',
     dotColor: 'bg-orange-600',
     icon: AlertCircle,
@@ -161,9 +137,7 @@ export const STATUS_CONFIG: Record<
     bgBadge: 'bg-orange-50 dark:bg-orange-950/60 border-orange-200 dark:border-orange-800'
   },
   reserved: {
-    labelRu: 'Забронировано',
-    labelUz: 'Band qilingan',
-    labelEn: 'Reserved',
+    labelKey: 'aptst_reserved',
     color: '#3B82F6',
     dotColor: 'bg-blue-500',
     icon: Circle,
@@ -267,11 +241,7 @@ export default function AppointmentPopover({
   const currentStatus = (appointment.status in STATUS_CONFIG ? appointment.status : 'unconfirmed') as AppointmentStatus;
   const currentCfg = STATUS_CONFIG[currentStatus];
 
-  const getStatusLabel = (cfg: typeof currentCfg) => {
-    if (language === 'uz') return cfg.labelUz;
-    if (language === 'en') return cfg.labelEn;
-    return cfg.labelRu;
-  };
+  const getStatusLabel = (cfg: typeof currentCfg) => tk(cfg.labelKey);
 
   const balanceNumber = patient?.balance ?? (appointment.status === 'debt' ? -Math.abs(appointment.price - appointment.paid_amount) : 0);
 

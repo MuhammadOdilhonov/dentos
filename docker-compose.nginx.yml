@@ -1,0 +1,40 @@
+# Caddy → Nginx o'tish OVERLAY'i (rollback bilan).
+#   Nginx bilan ishga tushirish:
+#     docker compose -f docker-compose.yml -f docker-compose.nginx.yml --profile nginx up -d
+#   Rollback (Caddy'ga qaytish):
+#     docker compose -f docker-compose.yml -f docker-compose.nginx.yml --profile nginx down
+#     docker compose up -d        # Caddy qayta 80/443 ni oladi
+# IKKALASI bir paytda 80/443ga chiqmaydi: bu overlay 'proxy'(caddy)ni 'caddy' profiliga
+# o'tkazadi (default ishga tushmaydi), nginx esa 'nginx' profilida ishlaydi.
+services:
+  proxy:
+    profiles: [caddy]      # overlay bilan Caddy DEFAULT ishga tushmaydi (parked)
+
+  nginx:
+    image: nginx:1.27-alpine
+    profiles: [nginx]
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./deploy/nginx/dentos.conf:/etc/nginx/conf.d/dentos.conf:ro
+      - letsencrypt:/etc/letsencrypt:ro
+      - certbot_www:/var/www/certbot:ro
+    depends_on: [frontend, api]
+    logging:
+      driver: json-file
+      options: {max-size: "10m", max-file: "3"}
+
+  # Sertifikat yangilash (har 12 soatda tekshiradi). Birinchi ISSUE qo'lda — RUNBOOK'ga qarang.
+  certbot:
+    image: certbot/certbot:latest
+    profiles: [nginx]
+    restart: unless-stopped
+    volumes:
+      - letsencrypt:/etc/letsencrypt
+      - certbot_www:/var/www/certbot
+    entrypoint: /bin/sh
+    command: -c "trap exit TERM; while :; do certbot renew --webroot -w /var/www/certbot --quiet; sleep 12h & wait $${!}; done"
+
+volumes:
+  letsencrypt:
+  certbot_www:

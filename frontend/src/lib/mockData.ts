@@ -1,961 +1,203 @@
 import { Employee, Patient, Appointment, FinancialTransaction, ClinicTask, WarehouseItem, DentalLabOrder, DashboardStats, ClinicTenant, DentalTechnician, Branch } from './types';
 
-export const mockBranches: Branch[] = [
-  {
-    id: 1,
-    clinic: 1,
-    name: 'Toshkent Markaziy filiali',
-    address: 'Amir Temur ko‘chasi 104',
-    phone: '+998 71 200-00-32',
-    location_url: 'https://maps.google.com/?q=41.311081,69.240562',
-    use_global_telegram: true,
-    include_location_in_sms: true,
-    is_active: true,
-    doctors_count: 5,
-    chairs_count: 3
-  },
-  {
-    id: 2,
-    clinic: 1,
-    name: 'Chilonzor filiali',
-    address: 'Chilonzor tumani, Bunyodkor ko‘chasi 24-uy',
-    phone: '+998 71 277-32-32',
-    location_url: 'https://maps.google.com/?q=41.2825,69.2044',
-    use_global_telegram: true,
-    include_location_in_sms: true,
-    is_active: true,
-    doctors_count: 3,
-    chairs_count: 2
-  },
-  {
-    id: 3,
-    clinic: 1,
-    name: 'Yunusobod filiali',
-    address: 'Yunusobod tumani, Ahmad Donish ko‘chasi 12-uy',
-    phone: '+998 71 222-32-32',
-    location_url: 'https://maps.google.com/?q=41.3650,69.2880',
-    use_global_telegram: true,
-    include_location_in_sms: true,
-    is_active: true,
-    doctors_count: 2,
-    chairs_count: 2
-  }
-];
+// ──────────────────────────────────────────────────────────────────────────
+// NAMUNA (DEMO) MA'LUMOT — FAQAT demo klinika (id = 1) uchun.
+// Tezkor kirish (director → texnik) shu klinikani ochadi. Yangi yaratilgan
+// real klinikalar BO'SH boshlanadi (api.ts da (cid === 1) sharti shuni ta'minlaydi).
+// Hajm: kichik — 1 filial, har roldan 1 xodim, 5 bemor. Telegram/SMS ULANMAGAN.
+// Demo ma'lumot haftada 1 marta avtomatik tozalanadi (api.ts: maybeResetDemoData).
+// ──────────────────────────────────────────────────────────────────────────
 
-export const mockEmployees: Employee[] = [
-  {
-    id: 1,
-    full_name: 'Сардор Алимов',
-    username: 'doctor',
-    role: 'doctor',
-    specialty: 'Хирург / Имплантолог',
-    chair: 'Кресло 1 (Хирургия)',
-    color: '#0EA5E9',
-    phone: '+998 90 111 22 33',
-    avatar: 'https://images.unsplash.com/photo-1622253692010-333f2da6031d?w=150&auto=format&fit=crop&q=80',
-    branch: 1,
-    branch_name: 'Toshkent Markaziy filiali',
-    is_active: true
-  },
-  {
-    id: 2,
-    full_name: 'Сервер Усманов',
-    username: 'server_usmanov',
-    role: 'doctor',
-    specialty: 'Ортопед / Протезист',
-    chair: 'Кресло 2 (Ортопедия)',
-    color: '#8B5CF6',
-    phone: '+998 90 222 33 44',
-    avatar: 'https://images.unsplash.com/photo-1537368910025-700350fe46c7?w=150&auto=format&fit=crop&q=80',
-    branch: 2,
-    branch_name: 'Chilonzor filiali',
-    is_active: true
-  },
-  {
-    id: 3,
-    full_name: 'Озод Расулов',
-    username: 'ozod_rasulov',
-    role: 'doctor',
-    specialty: 'Ортодонт',
-    chair: 'Кресло 3 (Ортодонтия)',
-    color: '#10B981',
-    phone: '+998 90 333 44 55',
-    avatar: 'https://images.unsplash.com/photo-1612349317150-e413f6a5b16d?w=150&auto=format&fit=crop&q=80',
-    branch: 3,
-    branch_name: 'Yunusobod filiali',
-    is_active: true
-  },
-  {
-    id: 4,
-    full_name: 'Мальвина Абдуллаева',
-    username: 'malvina_abdullaeva',
-    role: 'doctor',
-    specialty: 'Терапевт / Детский врач',
-    chair: 'Кресло 4 (Терапия)',
-    color: '#F59E0B',
-    phone: '+998 90 444 55 66',
-    avatar: 'https://images.unsplash.com/photo-1594824813589-32219d525f69?w=150&auto=format&fit=crop&q=80',
-    branch: 1,
-    branch_name: 'Toshkent Markaziy filiali',
-    is_active: true
-  }
-];
-
-export const mockPatients: Patient[] = [
-  {
-    id: 1,
-    full_name: 'Лиля Гафарова',
-    phone: '+998 90 123 45 67',
-    category_status: 'VIP',
-    gender: 'Ж',
-    birth_date: '1992-05-14',
-    balance: 0,
-    medical_history: 'Аллергия на пенициллин. Завершен 1 этап протезирования.',
-    notes: 'Предпочитает утреннее время.',
-    created_at: '2026-08-01'
-  },
-  {
-    id: 2,
-    full_name: 'Рустам Ахмедов',
-    phone: '+998 93 987 65 43',
-    category_status: 'Постоянный',
-    gender: 'М',
-    birth_date: '1985-11-20',
-    balance: -400000,
-    medical_history: 'Удаление зуба мудрости 38. Назначен контрольный осмотр.',
-    notes: 'Остаток задолженности 400,000 UZS.',
-    created_at: '2026-08-10'
-  },
-  {
-    id: 3,
-    full_name: 'Дильноза Каримова',
-    phone: '+998 97 555 12 34',
-    category_status: 'Первичный',
-    gender: 'Ж',
-    birth_date: '2001-08-09',
-    balance: 0,
-    medical_history: 'Установка брекет-системы Damon Q.',
-    notes: 'Плановый визит раз в месяц.',
-    created_at: '2026-08-15'
-  },
-  {
-    id: 4,
-    full_name: 'Бахром Юсупов',
-    phone: '+998 99 444 88 99',
-    category_status: 'Обычный',
-    gender: 'М',
-    birth_date: '1979-03-25',
-    balance: -320000,
-    medical_history: 'Лечение глубокого кариеса 26 зуба.',
-    notes: 'Остаток долга 320,000 UZS.',
-    created_at: '2026-08-18'
-  },
-  {
-    id: 5,
-    full_name: 'Елена Смирнова',
-    phone: '+998 91 222 33 44',
-    category_status: 'VIP',
-    gender: 'Ж',
-    birth_date: '1988-12-03',
-    balance: 500000,
-    medical_history: 'Дентальная имплантация Straumann BLX 46.',
-    notes: 'Депозит 500,000 UZS.',
-    created_at: '2026-08-20'
-  },
-  {
-    id: 6,
-    full_name: 'Азиз Рахимов',
-    phone: '+998 90 777 66 55',
-    category_status: 'Постоянный',
-    gender: 'М',
-    birth_date: '1995-07-19',
-    balance: 0,
-    medical_history: 'Циркониевые коронки на фронтальные зубы.',
-    notes: 'Примерка каркаса.',
-    created_at: '2026-08-22'
-  },
-  {
-    id: 7,
-    full_name: 'Зухра Исмаилова',
-    phone: '+998 94 333 22 11',
-    category_status: 'Обычный',
-    gender: 'Ж',
-    birth_date: '2003-01-30',
-    balance: 0,
-    medical_history: 'Консультация по элайнерам.',
-    notes: 'Ожидается 3D-план.',
-    created_at: '2026-08-25'
-  },
-  {
-    id: 8,
-    full_name: 'Жасур Умаров',
-    phone: '+998 90 888 11 22',
-    category_status: 'Постоянный',
-    gender: 'М',
-    birth_date: '1990-09-12',
-    balance: 0,
-    medical_history: 'Гигиеническая чистка AirFlow.',
-    notes: 'Всегда пунктуален.',
-    created_at: '2026-08-28'
-  }
-];
-
-// Helper to generate appointment dates relative to today
 const getTodayTime = (hours: number, minutes: number) => {
   const d = new Date();
   d.setHours(hours, minutes, 0, 0);
   return d.toISOString();
 };
 
-export const mockAppointments: Appointment[] = [
+// 1 filial
+export const mockBranches: Branch[] = [
   {
     id: 1,
-    patient: 1,
-    patient_name: 'Лиля Гафарова',
-    patient_phone: '+998 90 123 45 67',
-    doctor: 1,
-    doctor_name: 'Сардор Алимов',
-    doctor_color: '#0EA5E9',
-    start_time: getTodayTime(9, 30),
-    end_time: getTodayTime(10, 30),
-    treatment_notes: 'снятие коронок, 17 ресто',
-    sms_sent: true,
-    status: 'confirmed', // Green
-    color_code: '#10B981',
-    price: 450000,
-    paid_amount: 450000,
-    chair_name: 'Кресло 1',
+    clinic: 1,
+    name: 'Markaziy filial',
+    address: 'Toshkent sh., Amir Temur ko‘chasi 104',
+    phone: '+998 71 200 00 32',
+    use_global_telegram: false,
+    include_location_in_sms: false,
+    is_active: true,
+    doctors_count: 1,
+    chairs_count: 1
+  }
+];
+
+// Har roldan 1 ta xodim (director / admin / kassa / doctor) — demo login akkauntlariga mos
+export const mockEmployees: Employee[] = [
+  {
+    id: 1,
+    full_name: 'Jasur Usmonov',
+    username: 'director',
+    role: 'director',
+    specialty: 'Direktor / Bosh shifokor',
+    chair: '—',
+    color: '#0F766E',
+    phone: '+998 90 100 32 32',
     branch: 1,
-    branch_name: 'Toshkent Markaziy filiali'
+    branch_name: 'Markaziy filial',
+    is_active: true
   },
   {
     id: 2,
-    patient: 2,
-    patient_name: 'Рустам Ахмедов',
-    patient_phone: '+998 93 987 65 43',
-    doctor: 2,
-    doctor_name: 'Сервер Усманов',
-    doctor_color: '#8B5CF6',
-    start_time: getTodayTime(10, 0),
-    end_time: getTodayTime(11, 30),
-    treatment_notes: '38 уд, сложная экстракция',
-    sms_sent: true,
-    status: 'in_progress', // Purple
-    color_code: '#8B5CF6',
-    price: 600000,
-    paid_amount: 200000,
-    chair_name: 'Кресло 2',
-    branch: 2,
-    branch_name: 'Chilonzor filiali'
+    full_name: 'Aziza Karimova',
+    username: 'admin',
+    role: 'admin',
+    specialty: 'Administrator',
+    chair: '—',
+    color: '#2563EB',
+    phone: '+998 90 200 00 02',
+    branch: 1,
+    branch_name: 'Markaziy filial',
+    is_active: true
   },
   {
     id: 3,
-    patient: 3,
-    patient_name: 'Дильноза Каримова',
-    patient_phone: '+998 97 555 12 34',
-    doctor: 3,
-    doctor_name: 'Озод Расулов',
-    doctor_color: '#10B981',
-    start_time: getTodayTime(11, 0),
-    end_time: getTodayTime(12, 0),
-    treatment_notes: 'активация брекет-системы',
-    sms_sent: false,
-    status: 'reserved', // Blue
-    color_code: '#3B82F6',
-    price: 350000,
-    paid_amount: 0,
-    chair_name: 'Кресло 3',
-    branch: 3,
-    branch_name: 'Yunusobod filiali'
+    full_name: 'Dilorom Saidova',
+    username: 'kassa',
+    role: 'kassa',
+    specialty: 'Kassir',
+    chair: '—',
+    color: '#9333EA',
+    phone: '+998 90 300 00 03',
+    branch: 1,
+    branch_name: 'Markaziy filial',
+    is_active: true
   },
   {
     id: 4,
-    patient: 4,
-    patient_name: 'Бахром Юсупов',
-    patient_phone: '+998 99 444 88 99',
-    doctor: 4,
-    doctor_name: 'Мальвина Абдуллаева',
-    doctor_color: '#F59E0B',
-    start_time: getTodayTime(12, 30),
-    end_time: getTodayTime(14, 0),
-    treatment_notes: 'лечение пульпита 26, пломба',
-    sms_sent: true,
-    status: 'debt', // Orange
-    color_code: '#F59E0B',
-    price: 520000,
-    paid_amount: 200000,
-    chair_name: 'Кресло 4',
+    full_name: 'Sardor Alimov',
+    username: 'doctor',
+    role: 'doctor',
+    specialty: 'Stomatolog-terapevt',
+    chair: 'Kreslo 1',
+    color: '#0EA5E9',
+    phone: '+998 90 400 00 04',
     branch: 1,
-    branch_name: 'Toshkent Markaziy filiali'
+    branch_name: 'Markaziy filial',
+    is_active: true
+  }
+];
+
+// 5 bemor
+export const mockPatients: Patient[] = [
+  { id: 1, full_name: 'Dilnoza Yusupova', phone: '+998 90 111 11 11', category_status: 'VIP', gender: 'Ayol', birth_date: '1992-05-14', balance: 0, medical_history: '', notes: '', created_at: '2026-09-01' },
+  { id: 2, full_name: 'Rustam Ahmedov', phone: '+998 90 222 22 22', category_status: 'Oddiy', gender: 'Erkak', birth_date: '1988-11-03', balance: -200000, medical_history: '', notes: '', created_at: '2026-09-03' },
+  { id: 3, full_name: 'Kamola Tosheva', phone: '+998 90 333 33 33', category_status: 'Oddiy', gender: 'Ayol', birth_date: '1996-02-20', balance: 0, medical_history: '', notes: '', created_at: '2026-09-07' },
+  { id: 4, full_name: 'Jahongir Qodirov', phone: '+998 90 444 44 44', category_status: 'Oddiy', gender: 'Erkak', birth_date: '1979-07-12', balance: 150000, medical_history: '', notes: '', created_at: '2026-09-10' },
+  { id: 5, full_name: 'Nigora Islomova', phone: '+998 90 555 55 55', category_status: 'VIP', gender: 'Ayol', birth_date: '2001-01-30', balance: 0, medical_history: '', notes: '', created_at: '2026-09-15' }
+];
+
+// Bugungi 4 ta qabul (hammasi doctor Sardor Alimov, Kreslo 1)
+export const mockAppointments: Appointment[] = [
+  {
+    id: 1, patient: 1, patient_name: 'Dilnoza Yusupova', patient_phone: '+998 90 111 11 11',
+    doctor: 4, doctor_name: 'Sardor Alimov', doctor_color: '#0EA5E9',
+    start_time: getTodayTime(9, 30), end_time: getTodayTime(10, 0),
+    treatment_notes: 'Birlamchi ko‘rik', sms_sent: false, status: 'confirmed', color_code: '#10B981',
+    price: 150000, paid_amount: 150000, chair_name: 'Kreslo 1', branch: 1, branch_name: 'Markaziy filial'
   },
   {
-    id: 5,
-    patient: 5,
-    patient_name: 'Елена Смирнова',
-    patient_phone: '+998 91 222 33 44',
-    doctor: 1,
-    doctor_name: 'Сардор Алимов',
-    doctor_color: '#0EA5E9',
-    start_time: getTodayTime(14, 30),
-    end_time: getTodayTime(16, 0),
-    treatment_notes: 'установка имплантата Straumann BLX 46',
-    sms_sent: true,
-    status: 'confirmed',
-    color_code: '#10B981',
-    price: 3500000,
-    paid_amount: 3500000,
-    chair_name: 'Кресло 1',
-    branch: 1,
-    branch_name: 'Toshkent Markaziy filiali'
+    id: 2, patient: 2, patient_name: 'Rustam Ahmedov', patient_phone: '+998 90 222 22 22',
+    doctor: 4, doctor_name: 'Sardor Alimov', doctor_color: '#0EA5E9',
+    start_time: getTodayTime(10, 30), end_time: getTodayTime(11, 30),
+    treatment_notes: 'Karies davolash 16', sms_sent: false, status: 'in_progress', color_code: '#10B981',
+    price: 450000, paid_amount: 250000, chair_name: 'Kreslo 1', branch: 1, branch_name: 'Markaziy filial'
   },
   {
-    id: 6,
-    patient: 6,
-    patient_name: 'Азиз Рахимов',
-    patient_phone: '+998 90 777 66 55',
-    doctor: 2,
-    doctor_name: 'Сервер Усманов',
-    doctor_color: '#8B5CF6',
-    start_time: getTodayTime(15, 0),
-    end_time: getTodayTime(16, 30),
-    treatment_notes: 'примерка циркониевого моста 14-16',
-    sms_sent: true,
-    status: 'completed',
-    color_code: '#64748B',
-    price: 1800000,
-    paid_amount: 1800000,
-    chair_name: 'Кресло 2',
-    branch: 2,
-    branch_name: 'Chilonzor filiali'
+    id: 3, patient: 3, patient_name: 'Kamola Tosheva', patient_phone: '+998 90 333 33 33',
+    doctor: 4, doctor_name: 'Sardor Alimov', doctor_color: '#0EA5E9',
+    start_time: getTodayTime(12, 0), end_time: getTodayTime(12, 30),
+    treatment_notes: 'Professional gigiyena', sms_sent: false, status: 'new', color_code: '#3B82F6',
+    price: 300000, paid_amount: 0, chair_name: 'Kreslo 1', branch: 1, branch_name: 'Markaziy filial'
   },
   {
-    id: 7,
-    patient: 7,
-    patient_name: 'Зухра Исмаилова',
-    patient_phone: '+998 94 333 22 11',
-    doctor: 3,
-    doctor_name: 'Озод Расулов',
-    doctor_color: '#10B981',
-    start_time: getTodayTime(16, 30),
-    end_time: getTodayTime(17, 30),
-    treatment_notes: 'слепки элайнеров, фотопротокол',
-    sms_sent: false,
-    status: 'reserved',
-    color_code: '#3B82F6',
-    price: 200000,
-    paid_amount: 0,
-    chair_name: 'Кресло 3',
-    branch: 3,
-    branch_name: 'Yunusobod filiali'
-  },
-  {
-    id: 8,
-    patient: 8,
-    patient_name: 'Жасур Умаров',
-    patient_phone: '+998 90 888 11 22',
-    doctor: 4,
-    doctor_name: 'Мальвина Абдуллаева',
-    doctor_color: '#F59E0B',
-    start_time: getTodayTime(17, 30),
-    end_time: getTodayTime(18, 30),
-    treatment_notes: 'профгигиена AirFlow + фторирование',
-    sms_sent: true,
-    status: 'confirmed',
-    color_code: '#10B981',
-    price: 300000,
-    paid_amount: 300000,
-    chair_name: 'Кресло 4',
-    branch: 1,
-    branch_name: 'Toshkent Markaziy filiali'
-  },
-  {
-    id: 9,
-    patient: 1,
-    patient_name: 'Лиля Гафарова',
-    patient_phone: '+998 90 123 45 67',
-    doctor: 1,
-    doctor_name: 'Сардор Алимов',
-    doctor_color: '#0EA5E9',
-    start_time: getTodayTime(19, 0),
-    end_time: getTodayTime(20, 30),
-    treatment_notes: 'фиксация временных коронок PMMA',
-    sms_sent: true,
-    status: 'reserved',
-    color_code: '#3B82F6',
-    price: 400000,
-    paid_amount: 0,
-    chair_name: 'Кресло 1',
-    branch: 1,
-    branch_name: 'Toshkent Markaziy filiali'
+    id: 4, patient: 4, patient_name: 'Jahongir Qodirov', patient_phone: '+998 90 444 44 44',
+    doctor: 4, doctor_name: 'Sardor Alimov', doctor_color: '#0EA5E9',
+    start_time: getTodayTime(14, 0), end_time: getTodayTime(15, 0),
+    treatment_notes: 'Plomba Estelite', sms_sent: false, status: 'completed', color_code: '#0D9488',
+    price: 500000, paid_amount: 500000, chair_name: 'Kreslo 1', branch: 1, branch_name: 'Markaziy filial'
   }
 ];
 
 export const mockTransactions: FinancialTransaction[] = [
-  {
-    id: 101,
-    amount: 3500000,
-    type: 'income',
-    category: 'Оплата приема',
-    appointment: 5,
-    patient: 5,
-    patient_name: 'Елена Смирнова',
-    doctor: 1,
-    doctor_name: 'Сардор Алимов',
-    payment_method: 'Перечисление (Расчетный счет)',
-    cash_register: 'bank_transfer',
-    operator_name: 'Мухаммад (Касса)',
-    branch: 1,
-    branch_name: 'Toshkent Markaziy filiali',
-    date: '2026-09-18 15:45',
-    notes: 'Имплантация Straumann BLX 46'
-  },
-  {
-    id: 102,
-    amount: 1800000,
-    type: 'income',
-    category: 'Оплата приема',
-    appointment: 6,
-    patient: 6,
-    patient_name: 'Азиз Рахимов',
-    doctor: 2,
-    doctor_name: 'Сервер Усманов',
-    payment_method: 'Наличные',
-    cash_register: 'cash',
-    operator_name: 'Феруза (Касса)',
-    branch: 2,
-    branch_name: 'Chilonzor filiali',
-    date: '2026-09-18 16:30',
-    notes: 'Примерка циркониевого моста 14-16'
-  },
-  {
-    id: 103,
-    amount: 450000,
-    type: 'income',
-    category: 'Оплата приема',
-    appointment: 1,
-    patient: 1,
-    patient_name: 'Лиля Гафарова',
-    doctor: 1,
-    doctor_name: 'Сардор Алимов',
-    payment_method: 'Наличные',
-    cash_register: 'cash',
-    operator_name: 'Мухаммад (Касса)',
-    branch: 1,
-    branch_name: 'Toshkent Markaziy filiali',
-    date: '2026-09-19 10:35',
-    notes: 'Снятие коронок, профгигиена'
-  },
-  {
-    id: 104,
-    amount: 200000,
-    type: 'income',
-    category: 'Предоплата',
-    appointment: 2,
-    patient: 2,
-    patient_name: 'Рустам Ахмедов',
-    doctor: 2,
-    doctor_name: 'Сервер Усманов',
-    payment_method: 'Карта / Терминал',
-    cash_register: 'terminal',
-    is_prepayment: true,
-    operator_name: 'Феруза (Касса)',
-    branch: 2,
-    branch_name: 'Chilonzor filiali',
-    date: '2026-09-19 11:20',
-    notes: 'Удаление 38 зуба'
-  },
-  {
-    id: 105,
-    amount: 300000,
-    type: 'income',
-    category: 'Оплата приема',
-    appointment: 8,
-    patient: 8,
-    patient_name: 'Жасур Умаров',
-    doctor: 4,
-    doctor_name: 'Мальвина Абдуллаева',
-    payment_method: 'Click / Payme',
-    cash_register: 'online',
-    operator_name: 'Мухаммад (Касса)',
-    branch: 1,
-    branch_name: 'Toshkent Markaziy filiali',
-    date: '2026-09-19 18:25',
-    notes: 'Профгигиена AirFlow'
-  },
-  {
-    id: 106,
-    amount: 1500000,
-    type: 'expense',
-    category: 'Аванс врачу',
-    doctor: 1,
-    doctor_name: 'Сардор Алимов',
-    payment_method: 'Наличные',
-    cash_register: 'cash',
-    operator_name: 'Директор',
-    branch: 1,
-    branch_name: 'Toshkent Markaziy filiali',
-    date: '2026-09-17 14:00',
-    notes: 'Аванс по итогам первой половины месяца'
-  },
-  {
-    id: 107,
-    amount: 1200000,
-    type: 'expense',
-    category: 'Аванс врачу',
-    doctor: 2,
-    doctor_name: 'Сервер Усманов',
-    payment_method: 'Наличные',
-    cash_register: 'cash',
-    operator_name: 'Директор',
-    branch: 2,
-    branch_name: 'Chilonzor filiali',
-    date: '2026-09-17 14:30',
-    notes: 'Аванс хирургического приема'
-  },
-  {
-    id: 108,
-    amount: 750000,
-    type: 'expense',
-    category: 'Оплата технику',
-    technician: 1,
-    technician_name: 'Rustam Zokirov',
-    payment_method: 'Перечисление (Расчетный счет)',
-    cash_register: 'bank_transfer',
-    operator_name: 'Бухгалтер',
-    branch: 1,
-    branch_name: 'Toshkent Markaziy filiali',
-    date: '2026-09-16 11:00',
-    notes: 'Оплата нарядов LAB-1049 и LAB-1050 (Цирконий)'
-  },
-  {
-    id: 109,
-    amount: 2800000,
-    type: 'expense',
-    category: 'Стоматологические материалы',
-    payment_method: 'Перечисление (Расчетный счет)',
-    cash_register: 'bank_transfer',
-    operator_name: 'Главный врач',
-    branch: 2,
-    branch_name: 'Chilonzor filiali',
-    date: '2026-09-15 10:00',
-    notes: 'Закупка анестетиков Убистезин и композитов Filtek'
-  },
-  {
-    id: 110,
-    amount: 4500000,
-    type: 'expense',
-    category: 'Аренда помещений и коммунальные',
-    payment_method: 'Перечисление (Расчетный счет)',
-    cash_register: 'bank_transfer',
-    operator_name: 'Директор',
-    branch: 1,
-    branch_name: 'Toshkent Markaziy filiali',
-    date: '2026-09-10 12:00',
-    notes: 'Аренда клиники за текущий месяц'
-  },
-  {
-    id: 111,
-    amount: 2400000,
-    type: 'income',
-    category: 'Оплата приема',
-    appointment: 7,
-    patient: 7,
-    patient_name: 'Зухра Исмаилова',
-    doctor: 3,
-    doctor_name: 'Озод Расулов',
-    payment_method: 'Наличные',
-    cash_register: 'cash',
-    operator_name: 'Кассир',
-    branch: 3,
-    branch_name: 'Yunusobod filiali',
-    date: '2026-09-19 14:00',
-    notes: 'Брекет-система Damon Q 1-etap'
-  },
-  {
-    id: 112,
-    amount: 800000,
-    type: 'expense',
-    category: 'Аванс врачу',
-    doctor: 3,
-    doctor_name: 'Озод Расулов',
-    payment_method: 'Наличные',
-    cash_register: 'cash',
-    operator_name: 'Директор',
-    branch: 3,
-    branch_name: 'Yunusobod filiali',
-    date: '2026-09-17 15:00',
-    notes: 'Аванс ортодонта'
-  },
-  {
-    id: 113,
-    amount: 650000,
-    type: 'income',
-    category: 'Оплата приема',
-    appointment: 3,
-    patient: 3,
-    patient_name: 'Дильноза Каримова',
-    doctor: 3,
-    doctor_name: 'Озод Расулов',
-    payment_method: 'Карта / Терминал',
-    cash_register: 'terminal',
-    operator_name: 'Кассир',
-    branch: 3,
-    branch_name: 'Yunusobod filiali',
-    date: '2026-09-19 16:30',
-    notes: 'Активация дуги'
-  }
+  { id: 1, amount: 150000, type: 'income', category: 'Qabul to‘lovi', appointment: 1, patient: 1, patient_name: 'Dilnoza Yusupova', doctor: 4, doctor_name: 'Sardor Alimov', payment_method: 'Naqd', cash_register: 'cash', operator_name: 'Dilorom Saidova', branch: 1, branch_name: 'Markaziy filial', date: getTodayTime(10, 5), notes: '' },
+  { id: 2, amount: 250000, type: 'income', category: 'Qabul to‘lovi', appointment: 2, patient: 2, patient_name: 'Rustam Ahmedov', doctor: 4, doctor_name: 'Sardor Alimov', payment_method: 'Karta', cash_register: 'card', operator_name: 'Dilorom Saidova', branch: 1, branch_name: 'Markaziy filial', date: getTodayTime(11, 35), notes: '' },
+  { id: 3, amount: 500000, type: 'income', category: 'Qabul to‘lovi', appointment: 4, patient: 4, patient_name: 'Jahongir Qodirov', doctor: 4, doctor_name: 'Sardor Alimov', payment_method: 'Naqd', cash_register: 'cash', operator_name: 'Dilorom Saidova', branch: 1, branch_name: 'Markaziy filial', date: getTodayTime(15, 5), notes: '' }
 ];
 
 export const mockTasks: ClinicTask[] = [
-  { id: 1, title: 'Отправить SMS напоминание о повторном приеме Лиле Гафаровой', priority: 'high', status: 'pending', assignee_name: 'Музаффар Олимов', patient_name: 'Лиля Гафарова', due_date: '2026-09-05' },
-  { id: 2, title: 'Контрольный звонок после удаления зуба 38 Рустаму Ахмедову', priority: 'high', status: 'pending', assignee_name: 'Мальвина Абдуллаева', patient_name: 'Рустам Ахмедов', due_date: '2026-09-05' },
-  { id: 3, title: 'Забрать циркониевый мост из лаборатории DentalArt', priority: 'medium', status: 'pending', assignee_name: 'Сервер Усманов', patient_name: 'Азиз Рахимов', due_date: '2026-09-06' },
-  { id: 4, title: 'Стерилизация наконечников и хирургического набора автоклав B', priority: 'high', status: 'in_progress', assignee_name: 'Музаффар Олимов', due_date: '2026-09-05' },
-  { id: 5, title: 'Пополнить запас анестетиков Убистезин Форте 1:100 000', priority: 'medium', status: 'pending', assignee_name: 'Сардор Алимов', due_date: '2026-09-07' }
+  { id: 1, title: 'Rustam Ahmedovga qayta qo‘ng‘iroq (16 tish davolash)', priority: 'high', status: 'pending', assignee_name: 'Aziza Karimova', patient_name: 'Rustam Ahmedov', due_date: getTodayTime(17, 0) },
+  { id: 2, title: 'Anestetik zaxirasini to‘ldirish', priority: 'medium', status: 'pending', assignee_name: 'Dilorom Saidova', due_date: getTodayTime(18, 0) }
 ];
 
 export const mockWarehouse: WarehouseItem[] = [
-  { id: 1, name: 'Анестетик Убистезин Форте (50 карпул)', category: 'Анестезия', quantity: 8, unit: 'уп', min_quantity: 3, cost: 320000 },
-  { id: 2, name: 'Композит Filtek Ultimate Body A2', category: 'Пломбировочные', quantity: 14, unit: 'шприц', min_quantity: 5, cost: 280000 },
-  { id: 3, name: 'Перчатки нитриловые неопудренные (р-р M)', category: 'Расходники', quantity: 25, unit: 'пачка', min_quantity: 10, cost: 65000 },
-  { id: 4, name: 'Слюноотсосы одноразовые (100 шт)', category: 'Расходники', quantity: 18, unit: 'уп', min_quantity: 5, cost: 35000 },
-  { id: 5, name: 'Боры алмазные конусные Mani (набор)', category: 'Инструменты', quantity: 6, unit: 'набор', min_quantity: 2, cost: 150000 },
-  { id: 6, name: 'Имплантат Straumann BLX 4.0x10mm', category: 'Имплантология', quantity: 4, unit: 'шт', min_quantity: 2, cost: 1800000 },
-  { id: 7, name: 'А-Силикон Elite HD+ слепочная масса', category: 'Ортопедия', quantity: 3, unit: 'набор', min_quantity: 2, cost: 420000 },
-  { id: 8, name: 'Брекеты керамические Damon Clear 2', category: 'Ортодонтия', quantity: 5, unit: 'набор', min_quantity: 2, cost: 2400000 }
+  { id: 1, name: 'Anestetik Ubistezin Forte (50 karpul)', category: 'Anesteziya', quantity: 8, unit: 'quti', min_quantity: 3, cost: 320000 },
+  { id: 2, name: 'Kompozit Filtek Ultimate A2', category: 'Plomba', quantity: 14, unit: 'shprits', min_quantity: 5, cost: 280000 },
+  { id: 3, name: 'Nitril qo‘lqop (M)', category: 'Sarflov', quantity: 25, unit: 'pachka', min_quantity: 10, cost: 65000 },
+  { id: 4, name: 'So‘lak so‘rg‘ich (100 dona)', category: 'Sarflov', quantity: 4, unit: 'quti', min_quantity: 5, cost: 35000 },
+  { id: 5, name: 'Olmos bor Mani (to‘plam)', category: 'Asboblar', quantity: 6, unit: 'to‘plam', min_quantity: 2, cost: 150000 }
 ];
 
-export const mockLabOrders: DentalLabOrder[] = [
-  {
-    id: 101,
-    order_number: 'LAB-1024',
-    patient: 6,
-    patient_name: 'Азиз Рахимов',
-    patient_phone: '+998 90 777 66 55',
-    doctor: 1,
-    doctor_name: 'Сардор Алимов',
-    technician: 1,
-    technician_name: 'Алишер Каримов',
-    tooth_numbers: '14, 15, 16',
-    work_type: 'Циркон с нанесением',
-    implant_system: 'Osstem TS-III',
-    fixation_type: 'Винтовая',
-    status: 'texnik oldi',
-    color_shade: 'A2',
-    shade_details: { cervical: 'A3', body: 'A2', incisal: 'A1', notes: 'Естественный переход, легкая прозрачность режущего края' },
-    attached_items: {
-      slepki: '2 слепка (C-силикон)',
-      lozhka: 'Инд. ложка (1 шт)',
-      registrator_prikusa: 'Силиконовый регистратор',
-      transfer_count: 2,
-      analog_count: 2,
-      has_photo: true,
-      has_xray: true,
-      has_scan: true
-    },
-    return_items: {
-      work_ready: false,
-      lozhka_returned: false,
-      transfer_returned: false,
-      analog_returned: false,
-      notes: 'В процессе спекания циркона'
-    },
-    received_date: new Date().toISOString().split('T')[0],
-    due_date: new Date(Date.now() + 4 * 86400000).toISOString().split('T')[0],
-    primerka_date: new Date(Date.now() + 2 * 86400000).toISOString().split('T')[0],
-    zdacha_date: new Date(Date.now() + 4 * 86400000).toISOString().split('T')[0],
-    clinic_name: '32Desk Toshkent Markaziy',
-    clinic_logo: '32DESK',
-    cost: 1200000,
-    clinic_price: 2400000,
-    orthopedist_wishes: 'Точная окклюзия, плотный контакт с антагонистами 45, 46. Винтовая фиксация.',
-    patient_wishes: 'Естественная белизна без чрезмерного блеска.',
-    notes: 'Трансферы и аналоги в отдельном пакете.'
-  },
-  {
-    id: 102,
-    order_number: 'LAB-1025',
-    patient: 1,
-    patient_name: 'Лиля Гафарова',
-    patient_phone: '+998 90 123 45 67',
-    doctor: 2,
-    doctor_name: 'Сервер Усманов',
-    technician: 2,
-    technician_name: 'Фарход Юсупов',
-    tooth_numbers: '11, 21',
-    work_type: 'E-max',
-    status: 'chiqarilvoti',
-    color_shade: 'BL2',
-    shade_details: { cervical: 'A1', body: 'BL2', incisal: 'BL1', notes: 'Микротекстура, мамелоны' },
-    attached_items: {
-      slepki: '1 слепок Elite HD',
-      lozhka: 'Стандартная металл',
-      registrator_prikusa: 'Воск',
-      transfer_count: 0,
-      analog_count: 0,
-      has_photo: true,
-      has_xray: true,
-      has_scan: false
-    },
-    return_items: {
-      work_ready: false,
-      lozhka_returned: false,
-      transfer_returned: false,
-      analog_returned: false,
-      notes: ''
-    },
-    received_date: new Date().toISOString().split('T')[0],
-    due_date: new Date(Date.now() + 3 * 86400000).toISOString().split('T')[0],
-    primerka_date: new Date(Date.now() + 1 * 86400000).toISOString().split('T')[0],
-    zdacha_date: new Date(Date.now() + 3 * 86400000).toISOString().split('T')[0],
-    clinic_name: '32Desk Toshkent Markaziy',
-    clinic_logo: '32DESK',
-    cost: 950000,
-    clinic_price: 2200000,
-    orthopedist_wishes: 'Идеальное краевое прилегание уступа.',
-    patient_wishes: 'Красивая улыбка, гармония с центральной линией.'
-  },
-  {
-    id: 103,
-    order_number: 'LAB-1026',
-    patient: 7,
-    patient_name: 'Зухра Исмаилова',
-    patient_phone: '+998 94 333 22 11',
-    doctor: 1,
-    doctor_name: 'Сардор Алимов',
-    technician: 1,
-    technician_name: 'Алишер Каримов',
-    tooth_numbers: '46',
-    work_type: 'Циркон (фулл)',
-    implant_system: 'Biotek',
-    fixation_type: 'Цементная',
-    status: 'texnik chiqarvorvoti',
-    color_shade: 'A3',
-    shade_details: { cervical: 'A3.5', body: 'A3', incisal: 'A2' },
-    attached_items: {
-      slepki: '2 слепка',
-      lozhka: 'Инд. ложка',
-      registrator_prikusa: 'Да',
-      transfer_count: 1,
-      analog_count: 1,
-      has_photo: true,
-      has_xray: true,
-      has_scan: true
-    },
-    return_items: {
-      work_ready: true,
-      lozhka_returned: true,
-      transfer_returned: true,
-      analog_returned: true,
-      notes: 'Работа завершена, упаковано с ложкой и трансфером.',
-      dispatched_at: new Date().toISOString()
-    },
-    clinic_received_items: {
-      work_ok: true,
-      lozhka_ok: false,
-      transfer_ok: false,
-      analog_ok: false
-    },
-    received_date: new Date(Date.now() - 3 * 86400000).toISOString().split('T')[0],
-    due_date: new Date().toISOString().split('T')[0],
-    primerka_date: new Date(Date.now() - 1 * 86400000).toISOString().split('T')[0],
-    zdacha_date: new Date().toISOString().split('T')[0],
-    clinic_name: '32Desk Toshkent Markaziy',
-    clinic_logo: '32DESK',
-    cost: 850000,
-    clinic_price: 1800000,
-    orthopedist_wishes: 'Анатомическая форма, защита десневого сосочка.',
-    patient_wishes: 'Чтобы удобно жевалось.'
-  },
-  {
-    id: 104,
-    order_number: 'LAB-1027',
-    patient: 8,
-    patient_name: 'Жасур Умаров',
-    patient_phone: '+998 90 888 11 22',
-    doctor: 3,
-    doctor_name: 'Озод Расулов',
-    technician: 3,
-    technician_name: 'Дилшод Хакимов',
-    tooth_numbers: 'ВЧ и НЧ',
-    work_type: 'Wax-Up',
-    status: 'biriktirildi',
-    color_shade: 'A2',
-    attached_items: {
-      slepki: 'Диагностические слепки',
-      lozhka: 'Стандарт',
-      registrator_prikusa: 'Воск Beauty Pink',
-      transfer_count: 0,
-      analog_count: 0,
-      has_photo: true,
-      has_xray: false,
-      has_scan: true
-    },
-    return_items: {
-      work_ready: false,
-      lozhka_returned: false,
-      transfer_returned: false,
-      analog_returned: false
-    },
-    received_date: new Date().toISOString().split('T')[0],
-    due_date: new Date(Date.now() + 5 * 86400000).toISOString().split('T')[0],
-    primerka_date: new Date(Date.now() + 3 * 86400000).toISOString().split('T')[0],
-    zdacha_date: new Date(Date.now() + 5 * 86400000).toISOString().split('T')[0],
-    clinic_name: '32Desk Toshkent Markaziy',
-    clinic_logo: '32DESK',
-    cost: 600000,
-    clinic_price: 1500000,
-    orthopedist_wishes: 'Моделирование высоты прикуса по золотому сечению.',
-    patient_wishes: 'Посмотреть будущий результат до обточки.'
-  }
-];
+// Demo laboratoriya buyurtmalari bo'sh — foydalanuvchi o'zi yaratib sinaydi
+export const mockLabOrders: DentalLabOrder[] = [];
 
 export const mockStats: DashboardStats = {
-  today: '2026-09-05',
-  total_appointments_today: 9,
+  today: new Date().toISOString().split('T')[0],
+  total_appointments_today: 4,
   completed_today: 1,
   in_progress_today: 1,
-  income_today: 6250000,
-  expense_today: 730000,
-  cash_balance: 5520000,
-  total_patients: 8,
-  pending_tasks: 4,
-  tasks_badge_count: 1192,
+  income_today: 900000,
+  expense_today: 0,
+  cash_balance: 900000,
+  total_patients: 5,
+  pending_tasks: 2,
+  tasks_badge_count: 2,
   doctors: [
-    { id: 1, name: 'Сардор Алимов', specialty: 'Хирург / Имплантолог', chair: 'Кресло 1', appointments_count: 3, avatar: 'https://images.unsplash.com/photo-1622253692010-333f2da6031d?w=150&auto=format&fit=crop&q=80' },
-    { id: 2, name: 'Сервер Усманов', specialty: 'Ортопед / Протезист', chair: 'Кресло 2', appointments_count: 2, avatar: 'https://images.unsplash.com/photo-1537368910025-700350fe46c7?w=150&auto=format&fit=crop&q=80' },
-    { id: 3, name: 'Озод Расулов', specialty: 'Ортодонт', chair: 'Кресло 3', appointments_count: 2, avatar: 'https://images.unsplash.com/photo-1612349317150-e413f6a5b16d?w=150&auto=format&fit=crop&q=80' },
-    { id: 4, name: 'Мальвина Абдуллаева', specialty: 'Терапевт / Детский врач', chair: 'Кресло 4', appointments_count: 2, avatar: 'https://images.unsplash.com/photo-1594824813589-32219d525f69?w=150&auto=format&fit=crop&q=80' }
+    { id: 4, name: 'Sardor Alimov', specialty: 'Stomatolog-terapevt', chair: 'Kreslo 1', appointments_count: 4 }
   ]
 };
 
-// ───────────────────────── PLATFORM: KLINIKALAR (Multi-tenant) ─────────────────────────
-// Har bir klinika — bitta ijaraga olgan tashkilot (tenant). Logo sifatida qisqa kod
-// (masalan «32D») saqlanadi — bu tashqi rasmlarga bog'liq bo'lmasdan doim chiroyli ko'rinadi.
+// Platformada ko'rinadigan yagona demo klinika (1 GB, Telegram/SMS ulanmagan)
 export const mockClinics: ClinicTenant[] = [
   {
     id: 1,
-    name: '32Desk Toshkent Markaziy',
+    name: 'Dentos Demo Klinika',
     logo: '32D',
     branch: 'Toshkent sh., Amir Temur 104',
     director_name: 'Jasur Usmonov',
     phone: '+998 90 100 32 32',
-    plan_tier: 'Enterprise',
-    max_doctors: 25,
-    doctors_count: 8,
-    patients_count: 1240,
-    storage_quota_gb: 120,
-    storage_used_gb: 41.6,
-    enabled_modules: { sms: true, telegram: true, whatsapp: true, lab: true, charts_3d: true, chairs: true, commissions: true },
-    linked_technicians: [1, 2],
-    status: 'active',
-    created_at: '2024-11-04T09:00:00Z'
-  },
-  {
-    id: 2,
-    name: 'Dental Academy Chilonzor',
-    logo: 'DA',
-    branch: 'Toshkent sh., Chilonzor 9-mavze',
-    director_name: 'Malika Rahimova',
-    phone: '+998 90 744 18 05',
-    plan_tier: 'Professional',
-    max_doctors: 15,
-    doctors_count: 6,
-    patients_count: 712,
-    storage_quota_gb: 60,
-    storage_used_gb: 22.4,
-    enabled_modules: { sms: true, telegram: true, whatsapp: false, lab: true, charts_3d: true, chairs: true, commissions: false },
-    linked_technicians: [1, 3],
-    status: 'active',
-    created_at: '2025-02-19T09:00:00Z'
-  },
-  {
-    id: 3,
-    name: 'Smile City Samarqand',
-    logo: 'SC',
-    branch: 'Samarqand sh., Registon ko‘chasi 12',
-    director_name: 'Bekzod Toshpo‘latov',
-    phone: '+998 91 530 77 40',
     plan_tier: 'Standard',
     max_doctors: 10,
-    doctors_count: 4,
-    patients_count: 388,
-    storage_quota_gb: 40,
-    storage_used_gb: 11.9,
-    enabled_modules: { sms: true, telegram: false, whatsapp: false, lab: true, charts_3d: false, chairs: true, commissions: false },
-    linked_technicians: [2],
+    doctors_count: 1,
+    patients_count: 5,
+    storage_quota_gb: 1,
+    storage_used_gb: 0,
+    enabled_modules: { sms: false, telegram: false, whatsapp: false, lab: true, charts_3d: true, chairs: true, commissions: false },
+    linked_technicians: [1],
     status: 'active',
-    created_at: '2025-05-08T09:00:00Z'
-  },
-  {
-    id: 4,
-    name: 'White Dent Yunusobod',
-    logo: 'WD',
-    branch: 'Toshkent sh., Yunusobod 4-mavze 18',
-    director_name: 'Dilnoza Karimova',
-    phone: '+998 93 210 64 21',
-    plan_tier: 'Professional',
-    max_doctors: 12,
-    doctors_count: 3,
-    patients_count: 205,
-    storage_quota_gb: 50,
-    storage_used_gb: 7.3,
-    enabled_modules: { sms: true, telegram: true, whatsapp: false, lab: false, charts_3d: true, chairs: false, commissions: true },
-    linked_technicians: [3],
-    status: 'paused',
-    created_at: '2025-07-22T09:00:00Z'
+    created_at: '2026-09-01T09:00:00Z'
   }
 ];
 
-// ───────────────────────── PLATFORM: ZUBNOY TEXNIKLAR (mustaqil laboratoriyalar) ─────────────────────────
 export const mockTechnicians: DentalTechnician[] = [
   {
     id: 1,
-    name: 'Алишер Каримов',
+    name: 'Alisher Karimov',
     lab_name: 'Apex Dental Lab',
-    phone: '+998 90 123 45 67',
+    phone: '+998 90 900 00 01',
     username: 'texnik_alisher',
     password: '123456',
     is_active: true,
-    linked_clinics: ['32Desk Toshkent Markaziy', 'Dental Academy Chilonzor'],
-    price_list: [
-      { id: 'tp1-1', name: 'Циркониевая коронка Prettau Multi-layer', category: 'Цирконий', price: 950000, lead_days: 3, material: 'Zirconia Katana HT' },
-      { id: 'tp1-2', name: 'Керамический винир E.max Press', category: 'Эстетика', price: 1200000, lead_days: 4, material: 'IPS e.max Press LT' },
-      { id: 'tp1-3', name: 'Металлокерамическая коронка Ivoclar', category: 'Металлокерамика', price: 450000, lead_days: 2, material: 'Ivoclar IPS Classic' },
-      { id: 'tp1-4', name: 'Индивидуальный титановый абатмент CAD/CAM', category: 'Имплантология', price: 650000, lead_days: 2, material: 'Titanium Grade 5' }
-    ],
-    created_at: '2024-12-01T09:00:00Z'
-  },
-  {
-    id: 2,
-    name: 'Фарход Юсупов',
-    lab_name: 'MasterDent CAD/CAM Lab',
-    phone: '+998 90 987 12 34',
-    username: 'texnik_farhod',
-    password: '123456',
-    is_active: true,
-    linked_clinics: ['32Desk Toshkent Markaziy', 'Smile City Samarqand'],
-    price_list: [
-      { id: 'tp2-1', name: 'Временная коронка PMMA (фрезерованная)', category: 'Временные', price: 180000, lead_days: 1, material: 'PMMA Multi' },
-      { id: 'tp2-2', name: 'Бюгельный протез на замках Bredent', category: 'Съемные протезы', price: 3200000, lead_days: 6, material: 'Bredent VKS' },
-      { id: 'tp2-3', name: 'Циркониевый мостовидный протез (за единицу)', category: 'Цирконий', price: 900000, lead_days: 4, material: 'Zirconia Prettau' }
-    ],
-    created_at: '2025-01-14T09:00:00Z'
-  },
-  {
-    id: 3,
-    name: 'Дилшод Хакимов',
-    lab_name: 'SmileAlign Orto Lab',
-    phone: '+998 93 405 90 12',
-    username: 'texnik_dilshod',
-    password: '123456',
-    is_active: true,
-    linked_clinics: ['Dental Academy Chilonzor', 'White Dent Yunusobod'],
-    price_list: [
-      { id: 'tp3-1', name: 'Набор элайнеров (полный кейс, 24 каппы)', category: 'Ортодонтия', price: 4500000, lead_days: 10, material: 'Zendura FLX' },
-      { id: 'tp3-2', name: 'Ретенционная прозрачная каппа (1 челюсть)', category: 'Ортодонтия', price: 300000, lead_days: 2, material: 'Erkodent' },
-      { id: 'tp3-3', name: 'Ночная разгрузочная каппа (бруксизм)', category: 'Ортодонтия', price: 420000, lead_days: 3, material: 'Bio-Splint' }
-    ],
-    created_at: '2025-03-02T09:00:00Z'
+    linked_clinics: ['Dentos Demo Klinika'],
+    price_list: [],
+    created_at: '2026-09-01T09:00:00Z'
   }
 ];

@@ -8,7 +8,7 @@ Oqim:
   4) GET  /api/telegram/status/     ?phone=             -> ulanish holati
 
 Ulangan sessiya Telegram'ning "Qurilmalar" ro'yxatida `device_model` nomi bilan
-ko'rinadi — bu yerda "dentical.app" deb o'rnatilgan.
+ko'rinadi — bu yerda "dentos.cc" deb o'rnatilgan.
 """
 import os
 import json
@@ -23,7 +23,7 @@ from django.conf import settings
 from asgiref.sync import sync_to_async
 from django.http import FileResponse, Http404
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
+from .access import TenantPermission
 from rest_framework.response import Response
 
 from telethon import TelegramClient, events
@@ -42,7 +42,7 @@ API_ID = int(getattr(settings, 'TELEGRAM_API_ID', '') or os.environ.get('TELEGRA
 API_HASH = getattr(settings, 'TELEGRAM_API_HASH', '') or os.environ.get('TELEGRAM_API_HASH', '')
 
 # Telegram "Qurilmalar" ro'yxatida shu nom ko'rinadi
-DEVICE_MODEL = 'dentical.app'
+DEVICE_MODEL = 'dentos.cc'
 SYSTEM_VERSION = 'web'
 APP_VERSION = '1.0'
 
@@ -59,11 +59,9 @@ MAX_MEDIA_BYTES = 30 * 1024 * 1024  # 30MB dan katta media yuklanmaydi (placehol
 # ============================================================================
 class _TgManager:
     def __init__(self):
-        self.loop = asyncio.new_event_loop()
+        self.loop = None
         self.clients = {}  # session_str -> TelegramClient
         self._lock = threading.Lock()
-        t = threading.Thread(target=self._run, daemon=True)
-        t.start()
 
     def _run(self):
         asyncio.set_event_loop(self.loop)
@@ -71,8 +69,16 @@ class _TgManager:
 
     def run(self, coro, timeout=60):
         """Coroutine'ni background loop'da bajaradi (thread-safe)."""
+        with self._lock:
+            if self.loop is None:
+                self.loop = asyncio.new_event_loop()
+                threading.Thread(target=self._run, daemon=True).start()
         fut = asyncio.run_coroutine_threadsafe(coro, self.loop)
-        return fut.result(timeout=timeout)
+        try:
+            return fut.result(timeout=timeout)
+        except TimeoutError:
+            fut.cancel()
+            raise
 
     async def _get_client(self, session_str):
         c = self.clients.get(session_str)
@@ -91,21 +97,34 @@ class _TgManager:
                     if not event.is_private or event.out:
                         return
                     sender = await event.get_sender()
-                    phone = getattr(sender, 'phone', None)
-                    name_parts = [getattr(sender, 'first_name', '') or '', getattr(sender, 'last_name', '') or '']
-                    sender_name = ' '.join(p for p in name_parts if p).strip() or None
+                    if getattr(sender, 'bot', False):
+                        return
+                    account, account_data = _account_for_session(session_str)
+                    clinic_id = await sync_to_async(_clinic_id_for_session, thread_sensitive=True)(session_str)
+                    if not account or not clinic_id or account_data.get('user', {}).get('is_bot'):
+                        return
+                    sender_id = getattr(sender, 'id', None)
+                    if not sender_id:
+                        return
+                    phone = getattr(sender, 'phone', '') or ''
+                    media = getattr(event.message, 'media', None)
+                    # An attached contact only authenticates its own Telegram user.
+                    if getattr(media, 'user_id', None) == sender_id:
+                        phone = getattr(media, 'phone_number', '') or phone
                     raw_text = (event.raw_text or '').strip()
+                    if not raw_text and phone and getattr(media, 'phone_number', None):
+                        raw_text = 'contact'
                     if not raw_text:
                         return
-                    # Ushbu sessiya qaysi klinikaga tegishli ekanini aniqlaymiz
-                    clinic_id = _clinic_id_for_session(session_str) or 1
-                    sender_id = getattr(sender, 'id', None)
-                    contact_key = f"tg:{sender_id}" if sender_id else (f"ph:{phone}" if phone else "anon")
-                    reply = await sync_to_async(_route_inbound_message, thread_sensitive=False)(
-                        clinic_id, phone or '', raw_text, sender_name, contact_key
+                    sender_name = ' '.join(filter(None, [getattr(sender, 'first_name', ''), getattr(sender, 'last_name', '')]))
+                    from .reception_account import prepare_message, mark_delivered
+                    record = await sync_to_async(prepare_message, thread_sensitive=True)(
+                        clinic_id, account, sender_id, event.id, raw_text, phone, sender_name, getattr(sender, 'access_hash', None)
                     )
-                    if reply:
-                        await event.reply(reply)
+                    if record and not record.delivered:
+                        reply = record.result.get('reply', '')
+                        outgoing = await event.reply(reply) if reply else None
+                        await sync_to_async(mark_delivered, thread_sensitive=True)(record.pk, outgoing.id if outgoing else None)
                 except Exception as e:
                     print('Auto handle reply error:', e)
 
@@ -118,50 +137,39 @@ class _TgManager:
         return self.run(self._get_client(session_str))
 
 
+def _account_for_session(session_str):
+    for account, data in _load_sessions().items():
+        if data.get('session') == session_str:
+            return account, data
+    return None, {}
+
+
 def _clinic_id_for_session(session_str):
-    """session_str bo'yicha qaysi klinikaga tegishli ekanini aniqlaydi."""
-    try:
-        sessions = _load_sessions()
-        for phone, s in sessions.items():
-            if s.get('session') == session_str:
-                return s.get('clinic_id') or 1
-    except Exception:
-        pass
-    return 1
+    """Fail closed for unbound sessions; never fall back to another clinic."""
+    account, data = _account_for_session(session_str)
+    if not account or account.startswith('bot_') or data.get('user', {}).get('is_bot'):
+        return None
+    if data.get('clinic_id'):
+        try: return int(data['clinic_id'])
+        except (TypeError, ValueError): return None
+    # Legacy sessions can be resolved from an explicit existing branch association.
+    from .models import Branch
+    ids = list(Branch.objects.filter(telegram_phone=account, clinic__isnull=False).values_list('clinic_id', flat=True).distinct())
+    return ids[0] if len(ids) == 1 else None
 
 
 def _route_inbound_message(clinic_id, phone, text, sender_name=None, contact_key=None):
-    """Kiruvchi xabarni klinika sozlamasiga qarab AI yoki avto-eslatma bilan ishlaydi.
-
-    - has_ai_agent yoqilgan bo'lsa: to'liq AI administrator (savol-javob + zapis).
-    - faqat has_auto_reminders bo'lsa: javobga qarab qabul statusini yangilaydi.
-    """
     from .models import ClinicTenant
-    clinic = None
-    if clinic_id:
-        clinic = ClinicTenant.objects.filter(id=clinic_id).first()
-    if clinic is None:
-        # Klinika aniqlanmasa — demo (1) yoki birinchi AI yoqilgan klinikani olamiz
-        clinic = ClinicTenant.objects.filter(has_ai_agent=True).first() or ClinicTenant.objects.filter(id=1).first() or ClinicTenant.objects.first()
-    if clinic is None:
+    from .reception import respond
+    if not ClinicTenant.objects.filter(pk=clinic_id, status='active', has_ai_agent=True).exists() or not contact_key:
         return ''
-
-    if clinic.has_ai_agent or str(clinic.id) == '1':
-        from .ai_agent import process_ai_inbound_message
-        res = process_ai_inbound_message(clinic.id, phone, text, sender_name, contact_key)
-        return res.get('reply', '')
-    if clinic.has_auto_reminders:
-        from . import reminders
-        res = reminders.process_patient_reply(phone, text)
-        return res.get('reply_message', '')
-    # Hech qaysi modul yoqilmagan — javob bermaymiz
-    return ''
+    return respond(clinic_id, contact_key, text, verified_phone=phone, display_name=sender_name or '').get('reply', '')
 
 
 _manager = _TgManager()
 
 # Login jarayonidagi vaqtinchalik sessiyalar (send-code -> sign-in orasida)
-_PENDING_FILE = os.path.join(settings.BASE_DIR, 'telegram_pending.json')
+_PENDING_FILE = os.path.join(settings.RUNTIME_DIR, 'telegram_pending.json')
 
 
 def _load_pending():
@@ -178,16 +186,26 @@ def _load_pending():
     return {}
 
 
-def _save_pending(data):
+def _atomic_json(path, data):
+    import tempfile
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=os.path.dirname(path), suffix='.tmp')
     try:
-        with open(_PENDING_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print('telegram pending save error:', e)
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            json.dump(data, stream, ensure_ascii=False)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary): os.unlink(temporary)
+
+def _save_pending(data):
+    _atomic_json(_PENDING_FILE, data)
 
 
 # Yakuniy (ulangan) sessiyalar shu faylga saqlanadi
-_SESS_FILE = os.path.join(settings.BASE_DIR, 'telegram_sessions.json')
+_SESS_FILE = os.path.join(settings.RUNTIME_DIR, 'telegram_sessions.json')
 
 
 def _load_sessions():
@@ -199,11 +217,7 @@ def _load_sessions():
 
 
 def _save_sessions(data):
-    try:
-        with open(_SESS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print('telegram session save error:', e)
+    _atomic_json(_SESS_FILE, data)
 
 
 def _norm(phone: str) -> str:
@@ -290,11 +304,19 @@ def _do_send_code(phone):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([TenantPermission])
 def send_code(request):
     raw_phone = request.data.get('phone', '')
     phone = _norm(raw_phone)
+    existing = _load_sessions().get(phone)
+    if existing and existing.get('clinic_id') != _get_request_clinic_id(request):
+        return Response({'ok': False, 'error': 'account_scope'}, status=403)
     data, status_code = _do_send_code(phone)
+    if data.get('ok'):
+        pending = _load_pending()
+        if phone in pending:
+            pending[phone]['clinic_id'] = _get_request_clinic_id(request)
+            _save_pending(pending)
     return Response(data, status=status_code)
 
 
@@ -312,15 +334,16 @@ async def _resend_code(phone, session_str, phone_code_hash):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([TenantPermission])
 def resend_code(request):
     raw_phone = request.data.get('phone', '')
     phone = _norm(raw_phone)
     pending = _load_pending()
     item = pending.get(phone)
+    if item and item.get('clinic_id') != _get_request_clinic_id(request):
+        return Response({'ok': False, 'error': 'account_scope'}, status=403)
     if not item:
-        data, status_code = _do_send_code(phone)
-        return Response(data, status=status_code)
+        return Response({'ok': False, 'error': 'restart_login'}, status=400)
     try:
         new_session, new_hash, sent_type = asyncio.run(_resend_code(phone, item['session'], item['phone_code_hash']))
         pending[phone]['session'] = new_session
@@ -334,8 +357,7 @@ def resend_code(request):
             'message': 'Kod qaytadan yuborildi (SMS yoki Telegram ilovangizni tekshiring)',
         })
     except Exception:
-        data, status_code = _do_send_code(phone)
-        return Response(data, status=status_code)
+        return Response({'ok': False, 'error': 'restart_login'}, status=400)
 
 
 # ------------------------- 2. KODNI TASDIQLASH -------------------------
@@ -364,13 +386,15 @@ async def _sign_in(phone, code, session_str, phone_code_hash):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([TenantPermission])
 def sign_in(request):
     raw_phone = request.data.get('phone', '')
     phone = _norm(raw_phone)
     code = str(request.data.get('code', '')).strip()
     pending = _load_pending()
     item = pending.get(phone)
+    if item and item.get('clinic_id') != _get_request_clinic_id(request):
+        return Response({'ok': False, 'error': 'account_scope'}, status=403)
     if not item:
         return Response({'ok': False, 'error': 'no_pending', 'message': 'Avval tasdiqlash kodini so‘rang'}, status=400)
     try:
@@ -383,12 +407,14 @@ def sign_in(request):
         sessions = _load_sessions()
         sessions[phone] = {
             'session': result['session'],
+            'clinic_id': _get_request_clinic_id(request),
             'device': DEVICE_MODEL,
             'user': result['user'],
             'connected': True,
             'connected_at': datetime.datetime.now().strftime('%d.%m.%Y %H:%M'),
         }
         _save_sessions(sessions)
+        _manager.run(_manager._get_client(result['session']))
         pending.pop(phone, None)
         _save_pending(pending)
         return Response({'ok': True, 'user': result['user'], 'device': DEVICE_MODEL, 'phone': phone})
@@ -419,13 +445,15 @@ async def _sign_in_password(session_str, password):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([TenantPermission])
 def sign_in_password(request):
     raw_phone = request.data.get('phone', '')
     phone = _norm(raw_phone)
     password = str(request.data.get('password', ''))
     pending = _load_pending()
     item = pending.get(phone)
+    if item and item.get('clinic_id') != _get_request_clinic_id(request):
+        return Response({'ok': False, 'error': 'account_scope'}, status=403)
     if not item:
         return Response({'ok': False, 'error': 'no_pending', 'message': 'Avval tasdiqlash kodini so‘rang'}, status=400)
     try:
@@ -433,12 +461,14 @@ def sign_in_password(request):
         sessions = _load_sessions()
         sessions[phone] = {
             'session': result['session'],
+            'clinic_id': _get_request_clinic_id(request),
             'device': DEVICE_MODEL,
             'user': result['user'],
             'connected': True,
             'connected_at': datetime.datetime.now().strftime('%d.%m.%Y %H:%M'),
         }
         _save_sessions(sessions)
+        _manager.run(_manager._get_client(result['session']))
         pending.pop(phone, None)
         _save_pending(pending)
         return Response({'ok': True, 'user': result['user'], 'device': DEVICE_MODEL, 'phone': phone})
@@ -450,22 +480,22 @@ def sign_in_password(request):
 _QR_FLOWS = {}  # token_id -> {'qr': qr_login, 'client': client, 'created_at': float}
 
 
-async def _qr_start():
+async def _qr_start(clinic_id=None):
     client = _new_client()
     await client.connect()
     qr = await client.qr_login()
     token_id = os.urandom(8).hex()
-    _QR_FLOWS[token_id] = {'qr': qr, 'client': client, 'created_at': time.time()}
+    _QR_FLOWS[token_id] = {'qr': qr, 'client': client, 'created_at': time.time(), 'clinic_id': clinic_id}
     exp_iso = qr.expires.isoformat() if getattr(qr, 'expires', None) else ''
     return token_id, qr.url, exp_iso
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([TenantPermission])
 def qr_start(request):
     """Telegram ilovasida skaner qilish uchun QR login yaratadi."""
     try:
-        token_id, url, expires = _manager.run(_qr_start())
+        token_id, url, expires = _manager.run(_qr_start(_get_request_clinic_id(request)))
         return Response({'ok': True, 'token_id': token_id, 'url': url, 'expires': expires})
     except Exception as e:
         return Response({'ok': False, 'error': 'qr_failed', 'message': str(e)}, status=500)
@@ -490,12 +520,15 @@ async def _qr_check(token_id):
         sessions = _load_sessions()
         sessions[phone] = {
             'session': session_str,
+            'clinic_id': flow.get('clinic_id'),
             'device': DEVICE_MODEL,
             'user': u_info,
             'connected': True,
             'connected_at': datetime.datetime.now().strftime('%d.%m.%Y %H:%M'),
         }
         _save_sessions(sessions)
+        await client.disconnect()
+        await _manager._get_client(session_str)
         _QR_FLOWS.pop(token_id, None)
         return {'ok': True, 'authorized': True, 'user': u_info, 'phone': phone}
     except asyncio.TimeoutError:
@@ -505,12 +538,14 @@ async def _qr_check(token_id):
 
 
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([TenantPermission])
 def qr_status(request):
     """QR kod skaner qilinganligini tekshiradi."""
     token_id = request.GET.get('token_id', '')
     if not token_id or token_id not in _QR_FLOWS:
         return Response({'ok': False, 'error': 'invalid_token'}, status=400)
+    if _QR_FLOWS[token_id].get('clinic_id') != _get_request_clinic_id(request):
+        return Response({'ok': False, 'error': 'account_scope'}, status=403)
     try:
         res = _manager.run(_qr_check(token_id))
         return Response(res)
@@ -540,26 +575,10 @@ async def _bot_login(token):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([TenantPermission])
 def bot_login(request):
     """@BotFather bergan Bot Token orqali Telegram botni ulaydi."""
-    token = str(request.data.get('bot_token', '')).strip()
-    if not token or ':' not in token:
-        return Response({'ok': False, 'error': 'invalid_token', 'message': 'Bot token noto‘g‘ri formatda'}, status=400)
-    try:
-        session_str, u_info, phone = asyncio.run(_bot_login(token))
-        sessions = _load_sessions()
-        sessions[phone] = {
-            'session': session_str,
-            'device': 'Telegram Bot',
-            'user': u_info,
-            'connected': True,
-            'connected_at': datetime.datetime.now().strftime('%d.%m.%Y %H:%M'),
-        }
-        _save_sessions(sessions)
-        return Response({'ok': True, 'user': u_info, 'phone': phone, 'device': 'Telegram Bot'})
-    except Exception as e:
-        return Response({'ok': False, 'error': 'bot_login_failed', 'message': f'Botga ulanib bo‘lmadi: {str(e)}'}, status=400)
+    return Response({'ok': False, 'error': 'login_only', 'message': 'Bot faqat login uchun. Klinika Telegram akkauntini telefon yoki QR orqali ulang.'}, status=400)
 
 
 def _get_request_clinic_id(request):
@@ -574,20 +593,18 @@ def _get_request_clinic_id(request):
 
 # ------------------------- 4. HOLAT / UZISH -------------------------
 @api_view(['GET'])
-@permission_classes([AllowAny])
+@permission_classes([TenantPermission])
 def status(request):
     raw_phone = request.GET.get('phone', '').strip()
     phone = _norm(raw_phone) if raw_phone else ''
     sessions = _load_sessions()
 
     target_cid = _get_request_clinic_id(request)
-    if target_cid is not None:
-        if target_cid == 1:
-            clinic_sessions = {p: s for p, s in sessions.items() if s.get('clinic_id') in (None, 1)}
-        else:
-            clinic_sessions = {p: s for p, s in sessions.items() if s.get('clinic_id') == target_cid}
-    else:
-        clinic_sessions = sessions
+    clinic_sessions = {
+        p: value for p, value in sessions.items()
+        if not value.get('user', {}).get('is_bot') and not p.startswith('bot_')
+        and (target_cid is not None and _clinic_id_for_session(value.get('session')) == target_cid)
+    }
 
     if phone:
         s = clinic_sessions.get(phone)
@@ -680,7 +697,10 @@ async def _download_media(client, m, chat_id):
     mt = _media_type(m)
     if not mt:
         return None, None
-    base = os.path.join(MEDIA_DIR, f'{chat_id}_{m.id}')
+    clinic_id = _clinic_id_for_session(client.session.save())
+    if not clinic_id:
+        return mt, None
+    base = os.path.join(MEDIA_DIR, f'c{clinic_id}_{chat_id}_{m.id}')
     existing = glob.glob(base + '.*')
     if existing:
         return mt, '/api/telegram/media/' + os.path.basename(existing[0])
@@ -739,20 +759,22 @@ async def _chat_history(session_str, target_phone, limit, name='Bemor', offset_i
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([TenantPermission])
 def chat(request):
     target = _norm(request.data.get('phone'))
     account = request.data.get('account_phone')
     name = request.data.get('name') or 'Bemor'
     try:
-        limit = int(request.data.get('limit', 10))
+        limit = max(1, min(50, int(request.data.get('limit', 10))))
     except Exception:
         limit = 10
     try:
         offset_id = int(request.data.get('offset_id', 0))
     except Exception:
         offset_id = 0
-    session_str = _active_session(account)
+    from .reception_account import account_for_clinic
+    _account, data = account_for_clinic(_get_request_clinic_id(request), account or '')
+    session_str = data.get('session') if data else None
     if not session_str:
         return Response({'ok': False, 'error': 'not_connected', 'message': 'Telegram akkaunt ulanmagan'}, status=400)
     if len(target) < 10:
@@ -782,7 +804,7 @@ async def _send_to(session_str, target_phone, text, name='Bemor'):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([TenantPermission])
 def send_to(request):
     target = _norm(request.data.get('phone'))
     text = str(request.data.get('text', '')).strip()
@@ -790,7 +812,9 @@ def send_to(request):
     name = request.data.get('name') or 'Bemor'
     if not text:
         return Response({'ok': False, 'error': 'empty', 'message': 'Xabar bo‘sh'}, status=400)
-    session_str = _active_session(account)
+    from .reception_account import account_for_clinic
+    _account, data = account_for_clinic(_get_request_clinic_id(request), account or '')
+    session_str = data.get('session') if data else None
     if not session_str:
         return Response({'ok': False, 'error': 'not_connected', 'message': 'Telegram akkaunt ulanmagan'}, status=400)
     try:
@@ -818,12 +842,15 @@ async def _logout(session_str):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([TenantPermission])
 def disconnect(request):
     raw_phone = request.data.get('phone', '')
     phone = _norm(raw_phone) if raw_phone else ''
     sessions = _load_sessions()
-    target_phone = phone if (phone and phone in sessions) else (next(iter(sessions.keys())) if sessions else None)
+    from .reception_account import account_for_clinic
+    target_phone, _ = account_for_clinic(_get_request_clinic_id(request), phone)
+    if not target_phone:
+        return Response({'ok': False, 'error': 'account_scope'}, status=403)
     if target_phone and target_phone in sessions:
         s = sessions.pop(target_phone)
         try:
@@ -839,6 +866,9 @@ def media(request, filename):
     """Yuklab olingan Telegram media faylini qaytaradi (rasm/video/dumaloq video/ovoz)."""
     # xavfsizlik: faqat fayl nomi (papkadan chiqib ketmasin)
     safe = os.path.basename(filename)
+    principal = getattr(request, 'crm_principal', None)
+    if not principal or (not principal.is_superuser and not safe.startswith(f'c{principal.clinic_id}_')):
+        raise Http404('media not found')
     path = os.path.join(MEDIA_DIR, safe)
     if not os.path.exists(path):
         raise Http404('media not found')
@@ -869,7 +899,7 @@ def start_listeners():
             sessions = {}
         for phone, s in (sessions.items() if sessions else []):
             sess = s.get('session')
-            if not sess:
+            if not sess or not _clinic_id_for_session(sess):
                 continue
             try:
                 # _get_client ulaydi + incoming handler'ni ro'yxatdan o'tkazadi + tinglab turadi

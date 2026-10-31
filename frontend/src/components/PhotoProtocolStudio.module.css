@@ -1,0 +1,1161 @@
+/* ==========================================================================
+   Apple iPadOS Keynote Studio Design System for DentOS Photo Protocol
+   ========================================================================== */
+
+.keynoteStudio {
+  --kn-bg-stage: #161618;
+  --kn-bar-bg: rgba(28, 28, 30, 0.95);
+  --kn-bar-border: rgba(255, 255, 255, 0.12);
+  --kn-text: #ffffff;
+  --kn-text-secondary: rgba(235, 235, 245, 0.6);
+  --kn-popover-bg: rgba(36, 36, 38, 0.96);
+  --kn-card-bg: rgba(44, 44, 46, 0.85);
+  --kn-hover-bg: rgba(255, 255, 255, 0.1);
+  --kn-accent: #007aff;
+  --kn-accent-hover: #0a84ff;
+  --kn-danger: #ff453a;
+  --kn-slide-bg: #ffffff;
+  --kn-ruler-bg: #1c1c1e;
+  --kn-ruler-text: rgba(235, 235, 245, 0.5);
+
+  position: relative;
+  width: 100%;
+  border-radius: 18px;
+  background-color: var(--kn-bg-stage);
+  color: var(--kn-text);
+  overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  user-select: none;
+  border: 1px solid var(--kn-bar-border);
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.45);
+  outline: none;
+}
+
+/* Light Mode (Kun rejimi) */
+.lightMode {
+  --kn-bg-stage: #e5e5ea;
+  --kn-bar-bg: rgba(242, 242, 247, 0.96);
+  --kn-bar-border: rgba(60, 60, 67, 0.18);
+  --kn-text: #000000;
+  --kn-text-secondary: rgba(60, 60, 67, 0.6);
+  --kn-popover-bg: rgba(255, 255, 255, 0.97);
+  --kn-card-bg: rgba(235, 235, 240, 0.9);
+  --kn-hover-bg: rgba(0, 0, 0, 0.06);
+  --kn-slide-bg: #ffffff;
+  --kn-ruler-bg: #e5e5ea;
+  --kn-ruler-text: rgba(60, 60, 67, 0.6);
+}
+
+/* Fullscreen / Presentation Mode */
+.expanded {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 99999 !important;
+  width: 100vw !important;
+  height: 100dvh !important;
+  border-radius: 0 !important;
+  border: none !important;
+}
+
+/* --------------------------------------------------------------------------
+   Top Navigation Bar (Authentic iPad Keynote Toolbar)
+   -------------------------------------------------------------------------- */
+.topBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 52px;
+  padding: 0 14px;
+  background: var(--kn-bar-bg);
+  backdrop-filter: blur(25px);
+  -webkit-backdrop-filter: blur(25px);
+  border-bottom: 1px solid var(--kn-bar-border);
+  gap: 12px;
+  position: relative;
+  z-index: 50;
+}
+
+.leftGroup {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.iconBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  background: transparent;
+  border: none;
+  color: var(--kn-text);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  padding: 0;
+}
+
+.iconBtn:hover {
+  background: var(--kn-hover-bg);
+}
+
+.iconBtn:active {
+  transform: scale(0.94);
+}
+
+.iconBtn.active {
+  background: var(--kn-hover-bg);
+  color: var(--kn-accent);
+}
+
+.iconBtn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+/* Presentation Title Dropdown Pill */
+.titlePill {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  background: var(--kn-card-bg);
+  border: 1px solid var(--kn-bar-border);
+  color: var(--kn-text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  max-width: 240px;
+}
+
+.titlePill:hover {
+  background: var(--kn-hover-bg);
+}
+
+.titlePill span {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rightGroup {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Insert Capsule Group (Tables, Charts, Shapes, Media) */
+.insertCapsule {
+  display: flex;
+  align-items: center;
+  background: var(--kn-card-bg);
+  border: 1px solid var(--kn-bar-border);
+  border-radius: 12px;
+  padding: 2px 3px;
+  gap: 2px;
+}
+
+.insertBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 32px;
+  border-radius: 8px;
+  background: transparent;
+  border: none;
+  color: var(--kn-text);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.insertBtn:hover {
+  background: var(--kn-hover-bg);
+  color: #bf5af2;
+}
+
+.insertBtn:active {
+  transform: scale(0.92);
+}
+
+/* Play Button */
+.playBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--kn-card-bg);
+  border: 1px solid var(--kn-bar-border);
+  color: var(--kn-text);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.playBtn:hover {
+  background: var(--kn-hover-bg);
+  color: #30d158;
+}
+
+.playBtn:active {
+  transform: scale(0.92);
+}
+
+.divider {
+  width: 1px;
+  height: 22px;
+  background: var(--kn-bar-border);
+  margin: 0 4px;
+}
+
+/* Save Status Indicator */
+.saveIndicator {
+  font-size: 11px;
+  color: var(--kn-text-secondary);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+}
+
+/* --------------------------------------------------------------------------
+   Main Workspace Layout (Navigator + Viewport)
+   -------------------------------------------------------------------------- */
+.workspace {
+  display: flex;
+  position: relative;
+  height: calc(100vh - 120px);
+  min-height: 560px;
+  max-height: 860px;
+  overflow: hidden;
+}
+
+.expanded .workspace {
+  height: calc(100dvh - 52px) !important;
+  max-height: none !important;
+}
+
+/* --------------------------------------------------------------------------
+   Left Slide Navigator (Thumbnails Strip)
+   -------------------------------------------------------------------------- */
+.navigator {
+  width: 145px;
+  flex-shrink: 0;
+  background: var(--kn-bar-bg);
+  border-right: 1px solid var(--kn-bar-border);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  padding: 12px 10px;
+  overflow-y: auto;
+  gap: 8px;
+  z-index: 30;
+  transition: width 0.2s ease, padding 0.2s ease;
+}
+
+.navigator.collapsed {
+  width: 0;
+  padding: 0;
+  overflow: hidden;
+  border-right: none;
+}
+
+.slideList {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+}
+
+.slideThumbItem {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  border-radius: 8px;
+  padding: 3px;
+  transition: all 0.15s ease;
+}
+
+.slideNumber {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--kn-text-secondary);
+  width: 14px;
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.thumbCard {
+  width: 104px;
+  aspect-ratio: 16 / 9;
+  background: #ffffff;
+  border-radius: 6px;
+  overflow: hidden;
+  position: relative;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.15);
+  transition: all 0.15s ease;
+}
+
+.slideThumbItem:hover .thumbCard {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 10px rgba(0, 0, 0, 0.25);
+}
+
+.slideThumbItem.active .thumbCard {
+  border: 2px solid var(--kn-accent);
+  box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.3), 0 4px 12px rgba(0, 0, 0, 0.25);
+}
+
+.thumbCardInner {
+  width: 960px;
+  height: 540px;
+  transform: scale(0.10833);
+  transform-origin: top left;
+  position: absolute;
+  top: 0;
+  left: 0;
+  background: #ffffff;
+  pointer-events: none;
+}
+
+/* Top New Slide Button in Navigator */
+.addSlideTopBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  height: 36px;
+  border-radius: 10px;
+  background: var(--kn-card-bg);
+  border: 1px solid var(--kn-bar-border);
+  color: var(--kn-text);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  margin-bottom: 8px;
+  flex-shrink: 0;
+}
+
+.addSlideTopBtn:hover {
+  background: var(--kn-hover-bg);
+  color: var(--kn-accent);
+}
+
+/* Bottom New Slide Button in Navigator */
+.addSlideBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: var(--kn-card-bg);
+  border: 1px solid var(--kn-bar-border);
+  color: var(--kn-text);
+  cursor: pointer;
+  transition: all 0.15s ease;
+  margin-top: auto;
+}
+
+.addSlideBtn:hover {
+  background: var(--kn-hover-bg);
+  color: var(--kn-accent);
+}
+
+/* --------------------------------------------------------------------------
+   Viewport & Keynote Slide Canvas
+   -------------------------------------------------------------------------- */
+.viewport {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  background-color: var(--kn-bg-stage);
+  position: relative;
+  overflow: auto;
+  padding: 16px;
+}
+
+/* Canvas Rulers Bar (Top) */
+.rulerTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  max-width: 960px;
+  height: 20px;
+  margin-bottom: 6px;
+  font-size: 10px;
+  font-family: monospace;
+  color: var(--kn-ruler-text);
+  border-bottom: 1px solid var(--kn-bar-border);
+  padding: 0 8px;
+}
+
+.rulerTicks {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  letter-spacing: 0.5px;
+}
+
+/* Slide Paper Wrap */
+.paperWrap {
+  position: relative;
+  margin: auto;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+
+.paper {
+  width: 960px;
+  height: 540px;
+  position: relative;
+  transform-origin: top left;
+  background: #ffffff;
+  color: #17212b;
+  overflow: hidden;
+  border-radius: 2px;
+}
+
+/* Alignment Guidelines */
+.guideX {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  border-left: 1px dashed #ffd60a;
+  z-index: 20;
+  pointer-events: none;
+}
+
+.guideY {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  border-top: 1px dashed #ffd60a;
+  z-index: 20;
+  pointer-events: none;
+}
+
+/* Floating Measurement Tooltip (Screenshot 4) */
+.measureBadge {
+  position: absolute;
+  z-index: 80;
+  background: rgba(0, 0, 0, 0.88);
+  color: #ffffff;
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  letter-spacing: 0.2px;
+  pointer-events: none;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  transform: translate(-50%, -130%);
+  white-space: nowrap;
+}
+
+/* --------------------------------------------------------------------------
+   Slide Elements & Selection (8 Handles)
+   -------------------------------------------------------------------------- */
+.element {
+  position: absolute;
+  touch-action: none;
+  cursor: move;
+  user-select: none;
+  box-sizing: border-box;
+}
+
+.element.selected {
+  outline: 1.5px solid var(--kn-accent);
+}
+
+.element.maskTarget {
+  outline: 2.5px solid var(--kn-accent);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.4);
+  z-index: 65;
+  cursor: grab;
+}
+
+.element.maskTarget:active {
+  cursor: grabbing;
+}
+
+.element img {
+  pointer-events: none;
+  display: block;
+}
+
+/* 8 Circular Drag Handles (Screenshot 1, 2, 3, 4) */
+.handle {
+  position: absolute;
+  width: 12px;
+  height: 12px;
+  background: #ffffff;
+  border: 2.5px solid var(--kn-accent);
+  border-radius: 50%;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.35);
+  z-index: 40;
+  touch-action: none;
+}
+
+/* Extended hit area for touch/iPad fingers */
+.handle::after {
+  content: "";
+  position: absolute;
+  inset: -12px;
+}
+
+.nw { top: -6px; left: -6px; cursor: nwse-resize; }
+.ne { top: -6px; right: -6px; cursor: nesw-resize; }
+.sw { bottom: -6px; left: -6px; cursor: nesw-resize; }
+.se { bottom: -6px; right: -6px; cursor: nwse-resize; }
+.n  { top: -6px; left: calc(50% - 6px); cursor: ns-resize; }
+.s  { bottom: -6px; left: calc(50% - 6px); cursor: ns-resize; }
+.w  { left: -6px; top: calc(50% - 6px); cursor: ew-resize; }
+.e  { right: -6px; top: calc(50% - 6px); cursor: ew-resize; }
+
+/* --------------------------------------------------------------------------
+   Floating Action Bar (Callout Bar / Context Pill) (Screenshot 1)
+   -------------------------------------------------------------------------- */
+.calloutBar {
+  position: absolute;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  background: rgba(44, 44, 46, 0.94);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  padding: 3px 5px;
+  gap: 2px;
+  white-space: nowrap;
+  animation: calloutFade 0.12s ease-out;
+  transform-origin: center center;
+}
+
+@keyframes calloutFade {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.calloutBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: transparent;
+  border: none;
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.calloutBtn:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.calloutBtn.danger {
+  color: #ff453a;
+}
+
+.calloutDivider {
+  width: 1px;
+  height: 16px;
+  background: rgba(255, 255, 255, 0.2);
+  margin: 0 2px;
+}
+
+/* --------------------------------------------------------------------------
+   iPad Keynote Context Menu Popover (Screenshots 2 & 3)
+   -------------------------------------------------------------------------- */
+.contextMenu {
+  position: absolute;
+  z-index: 90;
+  background: rgba(36, 36, 38, 0.96);
+  backdrop-filter: blur(30px);
+  -webkit-backdrop-filter: blur(30px);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 16px;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.5);
+  padding: 6px;
+  min-width: 210px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.contextMenuAnchored {
+  position: absolute;
+  z-index: 95;
+  background: rgba(36, 36, 38, 0.96);
+  backdrop-filter: blur(30px);
+  -webkit-backdrop-filter: blur(30px);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 16px;
+  box-shadow: 0 20px 48px rgba(0, 0, 0, 0.6);
+  padding: 6px;
+  min-width: 215px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  animation: calloutFade 0.12s ease-out;
+}
+
+.slideshowZoneLeft {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 50%;
+  cursor: w-resize;
+  z-index: 20;
+}
+
+.slideshowZoneRight {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 50%;
+  cursor: e-resize;
+  z-index: 20;
+}
+
+.contextMenuItem {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  background: transparent;
+  border: none;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  transition: all 0.12s ease;
+  width: 100%;
+}
+
+.contextMenuItem:hover {
+  background: var(--kn-accent);
+  color: #ffffff;
+}
+
+.contextMenuItem.danger {
+  color: #ff453a;
+}
+
+.contextMenuItem.danger:hover {
+  background: #ff453a;
+  color: #ffffff;
+}
+
+.contextMenuDivider {
+  height: 1px;
+  background: rgba(255, 255, 255, 0.1);
+  margin: 4px 6px;
+}
+
+/* --------------------------------------------------------------------------
+   Keynote Image Mask / Crop Mode ("Автообрезка") (Screenshot 5)
+   -------------------------------------------------------------------------- */
+.maskContainer {
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+}
+
+.maskOverlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  pointer-events: auto;
+}
+
+.maskFrame {
+  position: absolute;
+  outline: 2px dashed var(--kn-accent);
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.55);
+  cursor: move;
+  pointer-events: auto;
+}
+
+/* Floating Keynote Mask Toolbar Bar (Directly under the photo) */
+.maskBar {
+  position: absolute;
+  z-index: 100;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: rgba(36, 36, 38, 0.94);
+  backdrop-filter: blur(25px);
+  -webkit-backdrop-filter: blur(25px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 18px;
+  padding: 8px 16px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.5);
+  color: #ffffff;
+  white-space: nowrap;
+  animation: calloutFade 0.12s ease-out;
+  transform-origin: center center;
+}
+
+.maskAutoBtn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  color: #ffffff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease;
+}
+
+.maskAutoBtn:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.maskSliderWrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.maskSlider {
+  width: 140px;
+  accent-color: var(--kn-accent);
+  cursor: pointer;
+}
+
+.maskDoneBtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--kn-accent);
+  border: none;
+  color: #ffffff;
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.maskDoneBtn:hover {
+  transform: scale(1.08);
+}
+
+.maskResetBtn {
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.8);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.maskResetBtn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+/* --------------------------------------------------------------------------
+   Format Inspector Popover (Paintbrush 🖌️ Button Panel)
+   -------------------------------------------------------------------------- */
+.formatInspector {
+  position: absolute;
+  top: 60px;
+  right: 18px;
+  z-index: 85;
+  width: 310px;
+  max-height: calc(100% - 80px);
+  background: var(--kn-popover-bg);
+  backdrop-filter: blur(35px);
+  -webkit-backdrop-filter: blur(35px);
+  border: 1px solid var(--kn-bar-border);
+  border-radius: 20px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: inspectorSlideIn 0.15s ease-out;
+}
+
+@keyframes inspectorSlideIn {
+  from { opacity: 0; transform: translateY(-8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.inspectorHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--kn-bar-border);
+}
+
+.inspectorHeader h3 {
+  font-size: 14px;
+  font-weight: 700;
+  margin: 0;
+  color: var(--kn-text);
+}
+
+/* Segmented Control Tabs [Стиль] [Текст] [Упорядочить] */
+.segmentedControl {
+  display: flex;
+  background: var(--kn-card-bg);
+  border-radius: 10px;
+  padding: 2px;
+  margin: 10px 14px;
+  border: 1px solid var(--kn-bar-border);
+}
+
+.segmentTab {
+  flex: 1;
+  padding: 6px 0;
+  text-align: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--kn-text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.segmentTab.active {
+  background: var(--kn-popover-bg);
+  color: var(--kn-text);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+}
+
+.inspectorBody {
+  padding: 10px 16px 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.controlGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.controlLabel {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--kn-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+}
+
+/* Stepper Control for Font Size ([-] 24 pt [+]) */
+.stepperRow {
+  display: flex;
+  align-items: center;
+  background: var(--kn-card-bg);
+  border: 1px solid var(--kn-bar-border);
+  border-radius: 12px;
+  padding: 3px;
+  justify-content: space-between;
+}
+
+.stepperBtn {
+  width: 38px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--kn-text);
+  font-size: 16px;
+  font-weight: 700;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.stepperBtn:hover {
+  background: var(--kn-hover-bg);
+}
+
+.stepperBtn:active {
+  transform: scale(0.92);
+}
+
+.stepperVal {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--kn-text);
+  text-align: center;
+  min-width: 60px;
+}
+
+/* Quick Font Presets Pills */
+.fontPresetRow {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.fontPresetBtn {
+  flex: 1;
+  min-width: 36px;
+  padding: 4px 6px;
+  border-radius: 8px;
+  background: var(--kn-card-bg);
+  border: 1px solid var(--kn-bar-border);
+  color: var(--kn-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.12s ease;
+}
+
+.fontPresetBtn:hover {
+  background: var(--kn-hover-bg);
+  color: var(--kn-text);
+}
+
+.fontPresetBtn.active {
+  background: var(--kn-accent);
+  color: #ffffff;
+  border-color: var(--kn-accent);
+}
+
+/* Toggle Buttons Row (Bold, Italic, Align) */
+.toggleRow {
+  display: flex;
+  background: var(--kn-card-bg);
+  border: 1px solid var(--kn-bar-border);
+  border-radius: 10px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.toggleBtn {
+  flex: 1;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  color: var(--kn-text-secondary);
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: all 0.12s ease;
+}
+
+.toggleBtn:hover {
+  color: var(--kn-text);
+}
+
+.toggleBtn.active {
+  background: var(--kn-accent);
+  color: #ffffff;
+}
+
+/* Color Swatches Grid */
+.colorSwatches {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.colorCircle {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+  cursor: pointer;
+  transition: transform 0.15s ease, border-color 0.15s ease;
+  position: relative;
+}
+
+.colorCircle:hover {
+  transform: scale(1.15);
+}
+
+.colorCircle.selected {
+  border-color: #ffffff;
+  box-shadow: 0 0 0 2px var(--kn-accent);
+}
+
+/* Action button inside inspector */
+.inspectorActionBtn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: var(--kn-card-bg);
+  border: 1px solid var(--kn-bar-border);
+  color: var(--kn-text);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.inspectorActionBtn:hover {
+  background: var(--kn-hover-bg);
+  color: var(--kn-accent);
+}
+
+.inspectorActionBtn.primary {
+  background: var(--kn-accent);
+  color: #ffffff;
+  border-color: var(--kn-accent);
+}
+
+.inspectorActionBtn.primary:hover {
+  background: var(--kn-accent-hover);
+}
+
+/* --------------------------------------------------------------------------
+   Sticky Note Component (Screenshot 1)
+   -------------------------------------------------------------------------- */
+.stickyNote {
+  background: #fef08a;
+  border: 1px solid #fde047;
+  border-radius: 4px;
+  padding: 10px 12px;
+  box-shadow: 0 8px 16px rgba(0, 0, 0, 0.15);
+  color: #713f12;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  position: relative;
+  overflow: hidden;
+}
+
+.stickyHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+  font-weight: 700;
+  color: #a16207;
+  margin-bottom: 6px;
+  border-bottom: 1px solid rgba(161, 98, 7, 0.2);
+  padding-bottom: 4px;
+}
+
+.stickyBody {
+  font-size: 13px;
+  line-height: 1.35;
+  color: #713f12;
+  white-space: pre-wrap;
+}
+
+/* --------------------------------------------------------------------------
+   Clinical Badge (Tooth Number / Tag)
+   -------------------------------------------------------------------------- */
+.clinicalBadge {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 14px;
+  border-radius: 20px;
+  font-weight: 700;
+  font-size: 14px;
+  background: rgba(0, 122, 255, 0.12);
+  color: var(--kn-accent);
+  border: 1px solid rgba(0, 122, 255, 0.3);
+  letter-spacing: 0.3px;
+}
+
+/* --------------------------------------------------------------------------
+   Responsive & Tablet Tweaks
+   -------------------------------------------------------------------------- */
+@media (max-width: 800px) {
+  .navigator {
+    width: 105px;
+    padding: 8px 6px;
+  }
+  .thumbCard {
+    width: 80px;
+  }
+  .formatInspector {
+    width: calc(100% - 24px);
+    right: 12px;
+    top: 56px;
+  }
+}
+
+@media (max-width: 600px) {
+  .topBar {
+    padding: 0 8px;
+    gap: 6px;
+  }
+  .titlePill {
+    max-width: 130px;
+    font-size: 12px;
+    padding: 4px 8px;
+  }
+  .insertCapsule {
+    padding: 1px;
+  }
+  .insertBtn {
+    width: 28px;
+    height: 28px;
+  }
+  .workspace {
+    flex-direction: column;
+  }
+  .navigator {
+    width: 100%;
+    height: 90px;
+    flex-direction: row;
+    border-right: none;
+    border-bottom: 1px solid var(--kn-bar-border);
+    padding: 6px 8px;
+  }
+  .slideList {
+    flex-direction: row;
+  }
+  .thumbCard {
+    width: 72px;
+  }
+  .addSlideBtn {
+    margin-top: 0;
+    margin-left: auto;
+    width: 32px;
+    height: 32px;
+  }
+}

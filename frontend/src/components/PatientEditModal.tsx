@@ -4,6 +4,7 @@ import React, { useState, useEffect } from 'react';
 import { Patient } from '../lib/types';
 import { clinicApi } from '../lib/api';
 import { useI18n } from '../lib/i18n';
+import PhoneInput from './PhoneInput';
 import {
   X,
   Trash2,
@@ -66,7 +67,7 @@ export default function PatientEditModal({
   const [notifyTg, setNotifyTg] = useState(true);
   const [notifyWa, setNotifyWa] = useState(false);
 
-  const [doctors, setDoctors] = useState<string[]>(['Абдулхамид Халиков', 'Феруза Шоанварова']);
+  const [doctors, setDoctors] = useState<string[]>([]);
   const [birthDate, setBirthDate] = useState(patient.birth_date || '2009-09-23');
   const [source, setSource] = useState('');
   const [gender, setGender] = useState<'Мужчина' | 'Женщина'>(
@@ -138,11 +139,7 @@ export default function PatientEditModal({
 
   // TAB 4: Объединение
   const [searchMerge, setSearchMerge] = useState('');
-  const [mergeCandidates, setMergeCandidates] = useState([
-    { id: 2, name: 'Ислом Каримов', phone: '+998 70 114 00 00', balance: -600000, initials: 'ИК', color: 'bg-rose-500' },
-    { id: 3, name: 'Самира Каримова Жалолидин', phone: '+998 97 772 16 16', balance: -500000, initials: 'СК', color: 'bg-emerald-500' },
-    { id: 4, name: 'Тест Тест', phone: '+998 90 394 84 34', balance: 1000, initials: 'ТТ', color: 'bg-slate-800' }
-  ]);
+  const [mergeCandidates, setMergeCandidates] = useState<{ id: number; name: string; phone: string; balance: number; initials: string; color: string }[]>([]);
   const [selectedMergeId, setSelectedMergeId] = useState<number>(2);
 
   if (!isOpen) return null;
@@ -242,19 +239,11 @@ export default function PatientEditModal({
 
                 <div>
                   <label className="font-semibold text-slate-700 dark:text-slate-300 block mb-1">{tk('additional_2')}</label>
-                  <div className="flex items-center border border-slate-200 rounded-xl overflow-hidden bg-slate-50/50">
-                    <div className="px-3 py-2 bg-slate-100 border-r text-slate-600 font-medium flex items-center space-x-1">
-                      <span>🇺🇿</span>
-                      <ChevronDown className="w-3 h-3 text-slate-400" />
-                    </div>
-                    <input
-                      type="text"
-                      value={extraPhone}
-                      onChange={(e) => setExtraPhone(e.target.value)}
-                      placeholder="+998 __ ___ __ __"
-                      className="flex-1 p-2.5 bg-transparent outline-none"
-                    />
-                  </div>
+                  <PhoneInput
+                    value={extraPhone}
+                    onChange={setExtraPhone}
+                    className="w-full border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50/50 dark:bg-slate-800"
+                  />
                 </div>
 
                 <div>
@@ -356,19 +345,12 @@ export default function PatientEditModal({
 
                 <div>
                   <label className="font-semibold text-slate-700 dark:text-slate-300 block mb-1">{tk('phone')}</label>
-                  <div className="flex items-center border border-slate-200 rounded-xl overflow-hidden bg-slate-50/50">
-                    <div className="px-3 py-2 bg-slate-100 border-r text-slate-600 font-medium flex items-center space-x-1">
-                      <span>🇺🇿</span>
-                      <ChevronDown className="w-3 h-3 text-slate-400" />
-                    </div>
-                    <input
-                      type="text"
-                      required
-                      value={phone}
-                      onChange={(e) => setPhone(e.target.value)}
-                      className="flex-1 p-2.5 bg-transparent outline-none font-semibold"
-                    />
-                  </div>
+                  <PhoneInput
+                    required
+                    value={phone}
+                    onChange={setPhone}
+                    className="w-full border border-slate-200 dark:border-slate-700 rounded-xl bg-slate-50/50 dark:bg-slate-800 font-semibold"
+                  />
                 </div>
 
                 <div>

@@ -26,15 +26,15 @@ import datetime
 from django.conf import settings
 from django.utils import timezone
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
+from .access import TenantPermission
 from rest_framework.response import Response
 
 from . import telegram_auth
 from . import sms_service
 from .models import Appointment, Patient
 
-_CFG_FILE = os.path.join(settings.BASE_DIR, 'reminders_config.json')
-_SENT_FILE = os.path.join(settings.BASE_DIR, 'reminders_sent.json')
+_CFG_FILE = os.path.join(settings.RUNTIME_DIR, 'reminders_config.json')
+_SENT_FILE = os.path.join(settings.RUNTIME_DIR, 'reminders_sent.json')
 CLINIC_NAME = 'Dent Academy'
 
 # Tashkent UTC+5 Timezone
@@ -89,7 +89,7 @@ def _save(path, data):
 
 def _get_cfg_file(clinic_id=None):
     if clinic_id and str(clinic_id) != '1':
-        return os.path.join(settings.BASE_DIR, f'reminders_config_clinic_{clinic_id}.json')
+        return os.path.join(settings.RUNTIME_DIR, f'reminders_config_clinic_{clinic_id}.json')
     return _CFG_FILE
 
 
@@ -188,101 +188,10 @@ def send_dual_reminder(session_str, phone, text, name, send_tg=True, send_sms_fl
     return {'telegram': tg_sent, 'sms': sms_sent, 'any': tg_sent or sms_sent}
 
 
-def run_reminders(force=False):
-    """
-    Eslatmalarni tekshiradi va yuboradi.
-    Toshkent vaqti bilan:
-      - 18:00 (kechki 6): dam olish kuni (Yakshanba) kelasi hafta qabullari uchun
-      - 18:00: har qanday qabuldan 1 kun oldin ertangi kun uchun
-    force=True -> test tugmasi orqali vaqt/yoqilganlik chegarasisiz yuboradi.
-    """
-    cfg = _config()
-    if not cfg.get('enabled') and not force:
-        return {'ok': True, 'skipped': 'disabled', 'sent': 0}
-
-    now_tashkent = get_tashkent_now()
-    schedule_hour = int(cfg.get('schedule_hour', 18))
-
-    # 1 kun oldin / haftalik eslatmalar faqat belgilangan soatda (18:00) yuboriladi.
-    # 1 SOAT oldin eslatma esa har tik (kun davomida) ishlaydi — shuning uchun early-return yo'q.
-    can_run_daily = force or now_tashkent.hour >= schedule_hour
-
-    # Ulangan Telegram sessiyasi bormi tekshiramiz
-    sessions = telegram_auth._load_sessions()
-    session_str = next(iter(sessions.values()))['session'] if sessions else None
-
-    send_tg = bool(cfg.get('send_telegram', True)) and bool(session_str)
-    send_sms_flag = bool(cfg.get('send_sms', True))
-
-    today = now_tashkent.date()
-    tomorrow = today + datetime.timedelta(days=1)
-    is_sunday = (now_tashkent.weekday() == 6)  # Yakshanba (dam olish kuni)
-
-    sent = _load(_SENT_FILE, {})
-    default_lang = cfg.get('lang', 'uz')
-    count = 0
-    results = []
-
-    # Barcha bekor qilinmagan kelgusi qabullar
-    apts = Appointment.objects.select_related('patient', 'doctor').exclude(status='cancelled').filter(start_time__gte=now_tashkent)
-
-    for apt in apts:
-        try:
-            when = apt.start_time.astimezone(TASHKENT_TZ) if timezone.is_aware(apt.start_time) else apt.start_time
-        except Exception:
-            when = apt.start_time
-        apt_date = when.date()
-        phone = (apt.patient.phone or '').strip()
-        if not phone:
-            continue
-
-        # Bemor tili (har doim bazadagi eng yangi xizmat tilini to'g'ridan-to'g'ri olamiz)
-        patient_obj = Patient.objects.filter(id=apt.patient_id).first()
-        raw_lang = (patient_obj.service_lang if patient_obj else getattr(apt.patient, 'service_lang', None)) or default_lang or 'uz'
-        lang = str(raw_lang).strip().lower()
-        if lang not in ('uz', 'ru', 'en'):
-            lang = 'uz'
-
-        # 0) QABULDAN 1 SOAT OLDIN (kun davomida, soat chegarasisiz)
-        if cfg.get('hour_before') or force:
-            mins_to_apt = (when - now_tashkent).total_seconds() / 60.0
-            # ~45-75 daqiqa oralig'idagi qabullar (scheduler har 30 daqiqada ishlaydi)
-            if (45 <= mins_to_apt <= 75) or force:
-                key = f'{apt.id}_hour_{when.strftime("%Y%m%d%H%M")}'
-                if key not in sent or force:
-                    text = _render(cfg['hour'].get(lang) or cfg['hour']['uz'], apt, when)
-                    delivery = send_dual_reminder(session_str, phone, text, apt.patient.full_name, send_tg, send_sms_flag)
-                    if delivery['any'] or force:
-                        sent[key] = now_tashkent.isoformat()
-                        count += 1
-                        results.append({'apt': apt.id, 'type': 'hour_before', 'to': apt.patient.full_name, 'delivery': delivery})
-
-        # 1) QABULDAN 1 KUN OLDIN SOAT 18:00 DA
-        if can_run_daily and cfg.get('day_before') and apt_date == tomorrow:
-            key = f'{apt.id}_day_{apt_date.isoformat()}'
-            if key not in sent or force:
-                text = _render(cfg['day'].get(lang) or cfg['day']['uz'], apt, when)
-                delivery = send_dual_reminder(session_str, phone, text, apt.patient.full_name, send_tg, send_sms_flag)
-                if delivery['any'] or force:
-                    sent[key] = now_tashkent.isoformat()
-                    count += 1
-                    results.append({'apt': apt.id, 'type': 'day_before', 'to': apt.patient.full_name, 'delivery': delivery})
-
-        # 2) DAM OLISH KUNI (YAKSHANBA) KELASI HAFTADAGI QABULLAR UCHUN (Dushanba - Yakshanba)
-        if can_run_daily and ((cfg.get('this_week') and is_sunday) or force):
-            days_ahead = (apt_date - today).days
-            if 1 <= days_ahead <= 7:
-                key = f'{apt.id}_weekly_{today.isoformat()}'
-                if key not in sent or force:
-                    text = _render(cfg['week'].get(lang) or cfg['week']['uz'], apt, when)
-                    delivery = send_dual_reminder(session_str, phone, text, apt.patient.full_name, send_tg, send_sms_flag)
-                    if delivery['any'] or force:
-                        sent[key] = now_tashkent.isoformat()
-                        count += 1
-                        results.append({'apt': apt.id, 'type': 'weekly', 'to': apt.patient.full_name, 'delivery': delivery})
-
-    _save(_SENT_FILE, sent)
-    return {'ok': True, 'sent': count, 'results': results}
+def run_reminders(force=False, clinic_id=None):
+    # force triggers a check, never bypasses opt-out, local quiet hours or clinic scope.
+    from .reception_account import run_account_reminders
+    return run_account_reminders(clinic_id=clinic_id)
 
 
 # ============================================================================
@@ -632,13 +541,35 @@ def process_patient_reply(phone: str, text: str, appointment_id: int = None) -> 
 _scheduler_started = False
 
 
+_last_demo_seed_date = None
+
+
+def _maybe_reseed_demo_week():
+    """Demo (clinic 1) hafta jadvalini KUNIGA BIR MARTA bugunga qarab qayta seed qiladi
+    — demo kun o'tgan sayin oldiga suriladi. Backend ishga tushganda ham bir marta ishlaydi."""
+    global _last_demo_seed_date
+    today = timezone.now().date()
+    if _last_demo_seed_date == today:
+        return
+    try:
+        from .demo_week import seed_demo_week
+        seed_demo_week()
+        _last_demo_seed_date = today
+    except Exception as e:
+        print('demo week seed error:', e)
+
+
 def _loop():
     while True:
+        try:
+            _maybe_reseed_demo_week()
+        except Exception as e:
+            print('demo seed loop error:', e)
         try:
             run_reminders()
         except Exception as e:
             print('reminder loop error:', e)
-        time.sleep(1800)  # har 30 daqiqada tekshiradi
+        time.sleep(60)  # local-time reminder checks; successful deliveries are deduplicated
 
 
 def start_scheduler():
@@ -654,7 +585,7 @@ def start_scheduler():
 # API Endpointlar
 # ============================================================================
 @api_view(['GET', 'POST'])
-@permission_classes([AllowAny])
+@permission_classes([TenantPermission])
 def config(request):
     raw_cid = request.headers.get('X-Clinic-ID') or request.headers.get('X-Clinic-Id') or request.GET.get('clinic')
     clinic_id = int(raw_cid) if raw_cid and str(raw_cid).isdigit() else None
@@ -678,15 +609,18 @@ def config(request):
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([TenantPermission])
 def run_now(request):
     """Qo'lda tekshirish/yuborish (test uchun)."""
-    res = run_reminders(force=True)
+    cid = request.headers.get('X-Clinic-ID') or request.data.get('clinic_id')
+    if not cid or not str(cid).isdigit():
+        return Response({'ok': False, 'error': 'clinic_required'}, status=400)
+    res = run_reminders(force=True, clinic_id=int(cid))
     return Response(res)
 
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([TenantPermission])
 def process_reply(request):
     """
     Bemor Telegram yoki SMS orqali javob berganda chaqiriladigan NLP tahlilchi endpoint.
@@ -699,5 +633,9 @@ def process_reply(request):
     if not text:
         return Response({'ok': False, 'error': 'empty_text', 'message': 'Matn bo‘sh'}, status=400)
 
+    from .views import get_clinic_id
+    cid = get_clinic_id(request)
+    if not appointment_id or not Appointment.objects.filter(pk=appointment_id, clinic_id=cid).exists():
+        return Response({'detail': 'Shu klinikaning qabul ID si kerak.'}, status=404)
     result = process_patient_reply(phone, text, appointment_id)
     return Response(result)

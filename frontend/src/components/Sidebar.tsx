@@ -646,7 +646,7 @@ export default function Sidebar() {
 
   return (
     <aside
-      className={`bg-white dark:bg-[#0b1322] text-[#4A6585] dark:text-slate-300 flex flex-col h-screen select-none border-r border-slate-200 dark:border-slate-800 shadow-xs flex-shrink-0 z-30 transition-all duration-300 ${isCollapsed ? 'w-20' : 'w-60'
+      className={`bg-white dark:bg-[#0b1322] text-[#4A6585] dark:text-slate-300 flex flex-col h-full select-none border-r border-slate-200 dark:border-slate-800 shadow-xs flex-shrink-0 z-30 transition-all duration-300 ${isCollapsed ? 'w-20' : 'w-60'
         }`}
     >
       {/* 1. Header / Logo Section */}
@@ -657,8 +657,8 @@ export default function Sidebar() {
             title={tr('sidebarx.expandSidebar')}
             className="group relative flex flex-col items-center justify-center focus:outline-none"
           >
-            <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-600 to-sky-500 text-white flex items-center justify-center shadow-sm shadow-blue-600/30 transition-transform group-hover:scale-105">
-              <span className="font-black text-sm tracking-tight text-white">De</span>
+            <div className="w-10 h-10 flex items-center justify-center transition-transform group-hover:scale-105">
+              <img src="/logo.png" alt="DentOS" className="w-10 h-10 object-contain" />
             </div>
 
             <span className="absolute -bottom-1 -right-1 w-4 h-4 rounded-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-500 dark:text-slate-300 flex items-center justify-center shadow-xs group-hover:bg-blue-600 group-hover:text-white transition-colors">
@@ -683,8 +683,8 @@ export default function Sidebar() {
         <div className="border-b border-slate-100 dark:border-slate-800 bg-white dark:bg-[#070d17]">
           <div className="h-16 flex items-center justify-between px-3.5">
             <div className="flex items-center space-x-3 overflow-hidden">
-              <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-blue-600 to-sky-500 text-white flex items-center justify-center shadow-sm shadow-blue-600/30 flex-shrink-0">
-                <span className="font-black text-sm tracking-tight text-white">De</span>
+              <div className="w-10 h-10 flex items-center justify-center flex-shrink-0">
+                <img src="/logo.png" alt="DentOS" className="w-10 h-10 object-contain" />
               </div>
 
               <div className="min-w-0">

@@ -323,7 +323,8 @@ export default function ReportsPage() {
     return doctors.map(doc => {
       // Appointments completed for this doctor
       const docAppointments = appointments.filter(a =>
-        (a.doctor === doc.id || a.doctor_name?.toLowerCase().includes(doc.full_name.toLowerCase())) &&
+        // FAQAT aniq shifokor (id) — nom bo'yicha "includes" boshqa shifokorga ham tegib ketardi
+        (a.doctor === doc.id || (!a.doctor && (a.doctor_name || '').toLowerCase().trim() === doc.full_name.toLowerCase().trim())) &&
         (a.status === 'completed' || a.status === 'debt')
       );
 
@@ -338,7 +339,8 @@ export default function ReportsPage() {
       const paidExpenses = transactions
         .filter(t =>
           t.type === 'expense' &&
-          (t.doctor === doc.id || (t.doctor_name && t.doctor_name.toLowerCase().includes(doc.full_name.toLowerCase())))
+          // FAQAT aniq shifokor (id) — bitta shifokorga bergan avans boshqasiga tegmasin
+          (t.doctor === doc.id || (!t.doctor && (t.doctor_name || '').toLowerCase().trim() === doc.full_name.toLowerCase().trim()))
         )
         .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
 
@@ -1149,16 +1151,19 @@ export default function ReportsPage() {
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-slate-500">{tr('reports.paidAdvances')}</span>
-                      <span className="font-mono font-bold text-rose-600 dark:text-rose-400">-{doc.paidExpenses.toLocaleString()} so‘m</span>
+                      {/* Avans/to'lov — shifokorga BERILGAN (qarz emas). Shuning uchun amber, qizil emas. */}
+                      <span className="font-mono font-bold text-amber-600 dark:text-amber-400">{doc.paidExpenses.toLocaleString()} so‘m</span>
                     </div>
                   </div>
                 </div>
 
                 <div className="pt-3 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
                   <div>
-                    <span className="text-[10px] uppercase font-bold text-slate-400 block">{tr('reports.netDue')}</span>
-                    <span className={`text-base font-black font-mono ${doc.balanceDue >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600'}`}>
-                      {doc.balanceDue.toLocaleString()} UZS
+                    <span className="text-[10px] uppercase font-bold text-slate-400 block">
+                      {doc.balanceDue >= 0 ? tr('reports.netDue') : 'Avans (ortiqcha berilgan)'}
+                    </span>
+                    <span className={`text-base font-black font-mono ${doc.balanceDue >= 0 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600 dark:text-amber-400'}`}>
+                      {Math.abs(doc.balanceDue).toLocaleString()} UZS
                     </span>
                   </div>
                   <button

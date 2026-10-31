@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
-import { clinicApi } from '../../../lib/api';
+import { clinicApi, isDemoClinic } from '../../../lib/api';
 import { Patient, Employee, Appointment, ClinicTask, NaryadLogEntry, TreatmentProcedureItem, TreatmentPlanStage, NaryadCatalogItem, DentalLabOrder } from '../../../lib/types';
 import { PaidInvoiceModal, InvoiceItem } from '../../../components/PaidInvoiceModal';
 import { ActiveCheckoutModal, CheckoutItem } from '../../../components/ActiveCheckoutModal';
@@ -15,9 +15,21 @@ import NewAppointmentModal from '../../../components/NewAppointmentModal';
 import AppointmentModal from '../../../components/AppointmentModal';
 import VoiceAudioPlayer from '../../../components/VoiceAudioPlayer';
 import ToothIcon from '../../../components/ToothIcon';
-import Dental3DScanViewerModal from '../../../components/Dental3DScanViewerModal';
-import DentalRentgenViewerModal from '../../../components/DentalRentgenViewerModal';
-import KeynoteDentalPhotoProtocol from '../../../components/KeynoteDentalPhotoProtocol';
+import dynamic from 'next/dynamic';
+// Og'ir komponentlar (Three.js, DICOM, STL) — lazy-load. Shunday qilib bemor kartasi
+// ochilganda three.js/dicom BUNDLE'ga YUKLANMAYDI; faqat 3D-skan yoki rentgen modali
+// ochilganda kerakli chunk keladi (#5 — tez ochilish).
+const Dental3DScanViewerModal = dynamic(() => import('../../../components/Dental3DScanViewerModal'), { ssr: false });
+const DentalRentgenViewerModal = dynamic(() => import('../../../components/DentalRentgenViewerModal'), { ssr: false });
+const KeynoteDentalPhotoProtocol = dynamic(() => import('../../../components/KeynoteDentalPhotoProtocol'), {
+  ssr: false,
+  loading: () => (
+    <div className="py-24 flex flex-col items-center justify-center gap-3 text-slate-400">
+      <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+      <span className="text-sm font-semibold">Fotoprotokol yuklanmoqda…</span>
+    </div>
+  ),
+});
 import { dentalMediaStore } from '../../../lib/dentalMediaStore';
 import { useI18n } from '../../../lib/i18n';
 import { useAuth } from '../../../lib/auth';
@@ -241,7 +253,7 @@ export default function PatientDetailPage() {
   const [newTreatmentTooth, setNewTreatmentTooth] = useState('16');
   const [newTreatmentTitle, setNewTreatmentTitle] = useState('Кариес дентина (световая пломба Estelite)');
   const [newTreatmentPrice, setNewTreatmentPrice] = useState(450000);
-  const [newTreatmentDoctor, setNewTreatmentDoctor] = useState('Сардор Алимов');
+  const [newTreatmentDoctor, setNewTreatmentDoctor] = useState('');
   const [newTreatmentStatus, setNewTreatmentStatus] = useState<'Сделано' | 'В процессе'>('Сделано');
   const [newTreatmentCategory, setNewTreatmentCategory] = useState('Терапия');
 
@@ -254,7 +266,7 @@ export default function PatientDetailPage() {
       duration: '180 мин.',
       price: 25000000,
       status: 'Сделано',
-      doctor: 'Сардор Мирахмедов',
+      doctor: '',
       date: 'сентябрь 5-го 2026'
     },
     {
@@ -264,7 +276,7 @@ export default function PatientDetailPage() {
       duration: '45 мин.',
       price: 700000,
       status: 'Сделано',
-      doctor: 'Сардор Мирахмедов',
+      doctor: '',
       date: 'сентябрь 5-го 2026'
     },
     {
@@ -274,7 +286,7 @@ export default function PatientDetailPage() {
       duration: '45 мин.',
       price: 700000,
       status: 'Сделано',
-      doctor: 'Сардор Мирахмедов',
+      doctor: '',
       date: 'сентябрь 5-го 2026'
     }
   ]);
@@ -296,6 +308,7 @@ export default function PatientDetailPage() {
   const scanFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const handleToggle3DScan = (has: boolean) => {
+    // Demo: media ishlaydi, lekin saqlanmaydi (store darajasida demo uchun skip).
     if (!patient?.id) return;
     const updated = { ...patient3DScan, hasScan: has, scanDate: new Date().toISOString().split('T')[0] };
     setPatient3DScan(updated);
@@ -303,10 +316,11 @@ export default function PatientDetailPage() {
   };
 
   const handle3DScanFileUpload = async (files: FileList | null) => {
+    // Demo: media ishlaydi, lekin saqlanmaydi (store darajasida demo uchun skip).
     if (!files || files.length === 0 || !patient?.id) return;
     const file = files[0];
     
-    // Store real binary file into IndexedDB
+    // Store real binary file into IndexedDB (lokal) + BAZAGA (dentalMediaStore ichida avtomatik)
     await dentalMediaStore.saveScan(patient.id, file, file.name);
 
     const updated = {
@@ -326,9 +340,19 @@ export default function PatientDetailPage() {
     | { id: number; kind: 'image'; url: string; caption: string; width: 'sm' | 'md' | 'lg' | 'full'; align: 'left' | 'center' | 'right' };
   const [photoDoc, setPhotoDoc] = useState<DocBlock[]>([]);
   const dataLoadedRef = useRef(false); // load tugagachgina saqlash effektlari ishlaydi (bo'sh bilan ustiga yozib yubormasin)
+  // Saqlash effektlari FAQAT shu bemor to'liq hydrate bo'lgach va keyingi
+  // makrotaskda yoqiladi — hydration setState'lari sabab bo'lgan effekt ishga
+  // tushganda bu hali null bo'ladi, shuning uchun "ochish/reload = yozuv" bo'lmaydi.
+  // Bemor almashganda ham eski bemor qiymati yangisiga yozilmaydi.
+  const hydratedPatientIdRef = useRef<number | null>(null);
+  // Har bo'limning OXIRGI yuklangan/saqlangan JSON nusxasi. Auto-save effektlari FAQAT
+  // qiymat haqiqatan o'zgargan bo'lsa yozadi — shu tufayli oddiy ochish/reload/render
+  // takrori hech qanday POST/PUT yubormaydi (echo-save yo'q).
+  const savedSnapshotRef = useRef<Record<string, string>>({});
   const xrayPhotoInputRef = useRef<HTMLInputElement | null>(null);
   // Rasm fayllarni base64 (dataURL) ga o'girib bloklar sifatida qo'shadi — reload'dan keyin ham saqlanadi
   const handleXrayPhotos = (files: FileList | null) => {
+    // Demo: media ishlaydi, lekin saqlanmaydi (store darajasida demo uchun skip).
     if (!files || files.length === 0) return;
     Array.from(files).forEach((f, i) => {
       const reader = new FileReader();
@@ -388,24 +412,15 @@ export default function PatientDetailPage() {
   };
 
 
-  // Cancelled / X-marked treatment records that must NEVER appear in Davolash (Лечение)
-  const [cancelledTreatmentIds, setCancelledTreatmentIds] = useState<string[]>(() => {
-    if (typeof window === 'undefined') return [];
-    try {
-      const stored = localStorage.getItem(`32desk_cancelled_treatments_${patientId}`);
-      return stored ? JSON.parse(stored) : [];
-    } catch { return []; }
-  });
+  // Cancelled / X-marked treatment records that must NEVER appear in Davolash (Лечение).
+  // Bo'sh boshlaymiz — loadPatient hydratsiyadan KEYIN bazadan (yoki demo localStorage) yuklaydi.
+  const [cancelledTreatmentIds, setCancelledTreatmentIds] = useState<string[]>([]);
 
   const handleCancelTreatment = (id: string | number) => {
     const idStr = String(id);
     const next = Array.from(new Set([...cancelledTreatmentIds, idStr]));
     setCancelledTreatmentIds(next);
-    if (typeof window !== 'undefined' && patient) {
-      try {
-        localStorage.setItem(`32desk_cancelled_treatments_${patient.id}`, JSON.stringify(next));
-      } catch (e) {}
-    }
+    if (patient) clinicApi.saveCancelledTreatments(patient.id, next);  // real→baza (clinic-scoped), demo→localStorage
 
     // If it's an appointment (starts with 'apt-'), update its status to 'cancelled'
     if (idStr.startsWith('apt-')) {
@@ -452,7 +467,7 @@ export default function PatientDetailPage() {
   const [commsMessages, setCommsMessages] = useState<CommunicationLog[]>([]); // per-patient
 
   // SMS Center state
-  const [smsDraft, setSmsDraft] = useState('Уважаемый пациент! Напоминаем о записи на прием в 32Desk.');
+  const [smsDraft, setSmsDraft] = useState('Уважаемый пациент! Напоминаем о записи на прием в Toshkent Markaziy.');
   const [smsSentSuccess, setSmsSentSuccess] = useState(false);
 
   // Telegram & Bot state
@@ -499,19 +514,19 @@ export default function PatientDetailPage() {
     if (!patient) return;
     const pLang = patient.service_lang || 'uz';
     if (pLang === 'uz') {
-      setSmsDraft(`Assalomu alaykum, ${patient.full_name || 'Hurmatli bemor'}! Sizni 32Desk klinikasidagi qabulingiz haqida eslatib o'tamiz.`);
-      setWaDraft(`Assalomu alaykum, ${patient.full_name || ''}! 32Desk stomatologiya klinikasidan bezovta qilyapmiz.`);
+      setSmsDraft(`Assalomu alaykum, ${patient.full_name || 'Hurmatli bemor'}! Sizni Toshkent Markaziy klinikasidagi qabulingiz haqida eslatib o'tamiz.`);
+      setWaDraft(`Assalomu alaykum, ${patient.full_name || ''}! Toshkent Markaziy stomatologiya klinikasidan bezovta qilyapmiz.`);
     } else if (pLang === 'en') {
-      setSmsDraft(`Hello, ${patient.full_name || 'Dear patient'}! Reminding you of your upcoming appointment at 32Desk.`);
-      setWaDraft(`Hello, ${patient.full_name || ''}! We are contacting you from 32Desk dental clinic.`);
+      setSmsDraft(`Hello, ${patient.full_name || 'Dear patient'}! Reminding you of your upcoming appointment at Toshkent Markaziy.`);
+      setWaDraft(`Hello, ${patient.full_name || ''}! We are contacting you from Toshkent Markaziy dental clinic.`);
     } else {
-      setSmsDraft(`Здравствуйте, ${patient.full_name || 'Уважаемый пациент'}! Напоминаем о записи на прием в 32Desk.`);
-      setWaDraft(`Здравствуйте, ${patient.full_name || ''}! Беспокоим из стоматологической клиники 32Desk.`);
+      setSmsDraft(`Здравствуйте, ${patient.full_name || 'Уважаемый пациент'}! Напоминаем о записи на прием в Toshkent Markaziy.`);
+      setWaDraft(`Здравствуйте, ${patient.full_name || ''}! Беспокоим из стоматологической клиники Toshkent Markaziy.`);
     }
   }, [patient?.id, patient?.service_lang, patient?.full_name]);
 
   // WhatsApp state
-  const [waDraft, setWaDraft] = useState('Здравствуйте! Беспокоим из стоматологической клиники 32Desk.');
+  const [waDraft, setWaDraft] = useState('Здравствуйте! Беспокоим из стоматологической клиники Toshkent Markaziy.');
 
   // Calling simulation state
   const [isCallingModalOpen, setIsCallingModalOpen] = useState(false);
@@ -633,17 +648,23 @@ export default function PatientDetailPage() {
             done: t.status === 'completed'
           }))
         );
+      } else if (!isDemoClinic()) {
+        // REAL klinika: bemorda vazifa bo'lmasa — BO'SH ro'yxat. Namuna task
+        // avtomatik YARATILMAYDI (aks holda karta ochilgani uchun ketma-ket
+        // POST /api/tasks/ yozuvlari paydo bo'lardi).
+        setPatientTasks([]);
       } else {
         const creatorDisplayName = user?.name
           ? `${user.name}${isDirector ? ' (Direktor)' : ''}`
-          : isDirector ? 'Direktorat' : 'Sardor Alimov';
+          : isDirector ? 'Direktorat' : '';
 
+        // DEMO: namuna task ko'rsatiladi (backend yozuvi bloklangan — demo saqlanmaydi).
         const defaultSample = await clinicApi.createTask({
           title: '2 daraja - Og‘iz bo‘shlig‘i gigiyenasi va tozalash',
           description: 'Bemor tashrifdan 1 kun oldin eslatishni so‘radi.',
           patient: pId,
           patient_name: patient?.full_name || 'Bemor',
-          assignee_name: 'Sardor Alimov',
+          assignee_name: '',
           assignee: user?.id ? Number(user.id) : undefined,
           creator: user?.id ? Number(user.id) : undefined,
           creator_name: creatorDisplayName,
@@ -662,7 +683,7 @@ export default function PatientDetailPage() {
             type: 'treatment',
             start: defaultSample.start_date || 'Bugun',
             due: defaultSample.due_date || '',
-            member: defaultSample.assignee_name || 'Sardor Alimov',
+            member: defaultSample.assignee_name || '',
             assignee: defaultSample.assignee,
             creator: defaultSample.creator,
             creator_name: defaultSample.creator_name,
@@ -745,6 +766,14 @@ export default function PatientDetailPage() {
     }
     setPatientTasks((prev) => prev.filter((t) => t.id !== taskId));
     await clinicApi.deleteTask(taskId);
+  };
+
+  // Bemorni o'chirish — FAQAT direktor va boshqaruvchi (deputy_director) uchun
+  const handleDeletePatient = async () => {
+    if (!patient || !isDirector) return;
+    if (typeof window !== 'undefined' && !window.confirm(tk('pt_delete_confirm'))) return;
+    await clinicApi.deletePatient(patient.id);
+    if (typeof window !== 'undefined') window.location.href = '/patients';
   };
 
   const handleSaveEditPatientTask = async (e: React.FormEvent) => {
@@ -888,28 +917,38 @@ export default function PatientDetailPage() {
   const [spQty, setSpQty] = useState(1);
   const [spPrice, setSpPrice] = useState(0);
 
+  // Saqlash effekti faqat shu bemor hydrate bo'lgandan keyin (foydalanuvchi tahriri)
+  // ishlaydi. Oddiy ochish/reload yoki bemor almashishi yozuv yubormaydi.
+  const saveEnabled = (p: typeof patient) => !!p && dataLoadedRef.current && hydratedPatientIdRef.current === p.id;
+
   // Rentgen ro'yxati o'zgarsa → saqlash
+  // Qiymat OXIRGI yuklangan/saqlanganidan farq qilsagina yozadi (echo-save yo'q →
+  // oddiy ochish/reload POST/PUT yubormaydi). Snapshot loadPatient'da to'ldiriladi.
+  const autoSaveSection = (section: string, value: unknown, save: () => void) => {
+    if (!saveEnabled(patient)) return;
+    const json = JSON.stringify(value);
+    if (savedSnapshotRef.current[section] === json) return;  // o'zgarmagan — yozmaymiz
+    savedSnapshotRef.current[section] = json;
+    save();
+  };
+
   useEffect(() => {
-    if (!patient || !dataLoadedRef.current) return;
-    clinicApi.savePatientXrays(patient.id, xrays);
+    autoSaveSection('xrays', xrays, () => clinicApi.savePatientXrays(patient!.id, xrays));
   }, [xrays, patient]);
 
   // Foto hujjat bloklari o'zgarsa → saqlash
   useEffect(() => {
-    if (!patient || !dataLoadedRef.current) return;
-    clinicApi.savePatientPhotoDoc(patient.id, photoDoc);
+    autoSaveSection('photoDoc', photoDoc, () => clinicApi.savePatientPhotoDoc(patient!.id, photoDoc));
   }, [photoDoc, patient]);
 
   // Aloqa xabarlari o'zgarsa → saqlash (malumot yig'ilib turadi)
   useEffect(() => {
-    if (!patient || !dataLoadedRef.current) return;
-    clinicApi.savePatientComms(patient.id, commsMessages);
+    autoSaveSection('comms', commsMessages, () => clinicApi.savePatientComms(patient!.id, commsMessages));
   }, [commsMessages, patient]);
 
   // Telegram chat tarixi o'zgarsa → saqlash
   useEffect(() => {
-    if (!patient || !dataLoadedRef.current) return;
-    clinicApi.savePatientTgChat(patient.id, tgMessagesList);
+    autoSaveSection('tgchat', tgMessagesList, () => clinicApi.savePatientTgChat(patient!.id, tgMessagesList));
   }, [tgMessagesList, patient]);
 
   // Telegram sub-view ochilganda bemor bilan REAL yozishmani avtomatik qidiradi
@@ -974,7 +1013,7 @@ export default function PatientDetailPage() {
     // Inline qo'shish o'rniga — KATTA modalni ochamiz
     setStageTitle(`${tr('patientd.k')} ${treatmentPlans.length + 1}`);
     setStageDesc('');
-    setStageDoctor(patientAppointments[0]?.doctor_name || participants[0]?.full_name || 'Сардор Алимов');
+    setStageDoctor(patientAppointments[0]?.doctor_name || participants[0]?.full_name || '');
     setStageStatus('Запланировано');
     setStageProcs([]);
     setSpTeeth(''); setSpTitle(''); setSpQty(1); setSpPrice(0);
@@ -1003,7 +1042,7 @@ export default function PatientDetailPage() {
       description: stageDesc.trim(),
       cost: 0,
       status: stageStatus,
-      doctor: stageDoctor || 'Сардор Алимов',
+      doctor: stageDoctor || '',
       procedures: stageProcs
     };
     const next = [...treatmentPlans, newStage];
@@ -1046,7 +1085,7 @@ export default function PatientDetailPage() {
       teeth: procTeeth.trim(),
       quantity: Math.max(1, procQty),
       price: procPrice || selectedCatalogItem?.base_price || 0,
-      doctor: treatmentPlans.find(s => s.id === addingProcStageId)?.doctor || 'Сардор Алимов'
+      doctor: treatmentPlans.find(s => s.id === addingProcStageId)?.doctor || ''
     };
 
     const next = treatmentPlans.map(s => {
@@ -1079,7 +1118,7 @@ export default function PatientDetailPage() {
     const newTr = {
       id: Date.now(),
       title: proc.teeth ? `${proc.title} (Зуб ${proc.teeth})` : proc.title,
-      doctor: proc.doctor || 'Сардор Алимов',
+      doctor: proc.doctor || '',
       price: (proc.price || 0) * (proc.quantity || 1),
       status: 'Сделано',
       teeth: proc.teeth ? [proc.teeth] : [],
@@ -1113,13 +1152,8 @@ export default function PatientDetailPage() {
   const [labFittings, setLabFittings] = useState<string[]>([]);
   const [labWishes, setLabWishes] = useState('');
   const [labLines, setLabLines] = useState<{ name: string; qty: number; price: number }[]>([]);
-  // Demo dental laboratories / technicians the clinic works with
-  const LAB_TECHNICIANS = [
-    { name: 'Smiledent', phone: '+998 90 123 45 67' },
-    { name: 'Azimjon Xakimov', phone: '+998 90 966 37 37' },
-    { name: 'Farhod Alimov', phone: '+998 90 777 25 25' },
-    { name: 'DentalArt Lab', phone: '+998 90 555 10 10' }
-  ];
+  // Klinika ishlaydigan laboratoriyalar — real ma'lumotdan to'ladi (soxta ro'yxat yo'q)
+  const LAB_TECHNICIANS: { name: string; phone: string }[] = [];
   const LAB_WORK_TYPES = ['Циркониевая коронка', 'Керамический винир E.max', 'Мостовидный металлокерамический протез', 'Индивидуальный титановый абатмент', 'Съёмный пластиночный протез', 'Бюгельный протез'];
   const VITA_SHADES = ['A1', 'A2', 'A3', 'A3.5', 'A4', 'B1', 'B2', 'B3', 'B4', 'C1', 'C2', 'C3', 'C4', 'D2', 'D3', 'D4'];
   // Ish turi nomlari katalogda ruscha saqlanadi — ko'rsatishda tanlangan tilga o'giriladi (uz/ru/en)
@@ -1143,8 +1177,8 @@ export default function PatientDetailPage() {
 
   // General modals
   const [isEditing, setIsEditing] = useState(false);
-  const [editName, setEditName] = useState('Тест Тест');
-  const [editPhone, setEditPhone] = useState('+998 90 394 84 34');
+  const [editName, setEditName] = useState('');
+  const [editPhone, setEditPhone] = useState('');
   const [showNaryadModal, setShowNaryadModal] = useState(false);
   const [showKarzinkaModal, setShowKarzinkaModal] = useState(false);
   const [karzinkaPayMethod, setKarzinkaPayMethod] = useState('Наличные');
@@ -1176,9 +1210,15 @@ export default function PatientDetailPage() {
     isDebt: boolean;
     quantity: number;
   }>>([]);
+  // patientNaryads'ning JONLI nusxasi. Checkout "hammasini tozalash" bitta renderда
+  // KETMA-KET (forEach) har bir qatorni o'chiradi; state setter'i asinxron bo'lgani
+  // uchun closure'dagi patientNaryads eskirib qoladi va faqat oxirgi o'chirish saqlanardi.
+  // Ref sinxron yangilanadi → ketma-ket o'chirishlar to'g'ri hisoblanadi.
+  const naryadsRef = useRef(patientNaryads);
+  useEffect(() => { naryadsRef.current = patientNaryads; }, [patientNaryads]);
   const [newNaryadTitle, setNewNaryadTitle] = useState('Консультация врача и 3D рентген');
   const [newNaryadPrice, setNewNaryadPrice] = useState<number>(500000);
-  const [newNaryadDoctor, setNewNaryadDoctor] = useState('Феруза Шоанварова');
+  const [newNaryadDoctor, setNewNaryadDoctor] = useState('');
   const [newNaryadIsDebt, setNewNaryadIsDebt] = useState<boolean>(true);
 
   // Direct send message modal
@@ -1187,15 +1227,23 @@ export default function PatientDetailPage() {
   const [msgBody, setMsgBody] = useState('');
 
   useEffect(() => {
+    // Yangi bemor yuklanayotganda saqlashni O'CHIRAMIZ — hydration setState'lari
+    // (va eski bemordan yangisiga o'tish) yozuv keltirib chiqarmasin.
+    dataLoadedRef.current = false;
+    hydratedPatientIdRef.current = null;
+    let cancelled = false;
     async function loadPatient() {
+      await clinicApi.hydratePatient(patientId);
+      if (cancelled) return;
       const allPatients = await clinicApi.getPatients();
-      const p = allPatients.find((pt) => pt.id === patientId) || allPatients[0] || {
-        id: 1,
-        full_name: 'Тест Тест',
-        phone: '+998 90 394 84 34',
-        category_status: 'VIP',
-        gender: 'Женщина',
-        balance: 1000,
+      if (cancelled) return; // B ga o'tilgan bo'lsa — A natijasini EKRANGA yozmaymiz
+      const p = allPatients.find((pt) => pt.id === patientId) || {
+        id: patientId,
+        full_name: '',
+        phone: '',
+        category_status: '',
+        gender: '',
+        balance: 0,
         notes: '',
         created_at: new Date().toISOString()
       };
@@ -1210,6 +1258,7 @@ export default function PatientDetailPage() {
         clinicApi.getAppointments(),
         clinicApi.getLabOrders()
       ]);
+      if (cancelled) return; // B ga o'tilgan — A ning qolgan ma'lumotini yozmaymiz
       // This patient's real lab orders (Лаборатория tab) + o'chirish overlay'i (Удалён holati saqlanadi)
       const labDeletions = clinicApi.getLabDeletions();
       setLabOrders(
@@ -1252,15 +1301,35 @@ export default function PatientDetailPage() {
       setInvoices(clinicApi.getPatientPayments(p.id) as PaymentInvoice[]);
 
       // Restore persisted rentgen ro'yxati + foto hujjat bloklari (reload'dan keyin ham saqlanadi)
-      setXrays(clinicApi.getPatientXrays(p.id) as XrayItem[]);
-      setPhotoDoc(clinicApi.getPatientPhotoDoc(p.id) as DocBlock[]);
+      const loadedXrays = clinicApi.getPatientXrays(p.id) as XrayItem[];
+      setXrays(loadedXrays);
+      const loadedPhotoDoc = (await clinicApi.fetchPatientPhotoDoc(p.id) ?? clinicApi.getPatientPhotoDoc(p.id)) as DocBlock[];
+      if (cancelled) return; // B ga o'tilgan — A ning foto hujjatini yozmaymiz
+      setPhotoDoc(loadedPhotoDoc);
       setPatient3DScan(clinicApi.getPatient3DScan(p.id));
       // Restore qo'lda kiritilgan / rejadan o'tkazilgan davolashlar (Лечение tab) — avval tiklanmasdi
       setPatientTreatments(clinicApi.getPatientTreatments(p.id));
       // Restore Aloqa xabarlari jurnali + Telegram chat tarixi (per-patient)
-      setCommsMessages(clinicApi.getPatientComms(p.id) as CommunicationLog[]);
-      setTgMessagesList(clinicApi.getPatientTgChat(p.id) as { sender: 'bot' | 'patient'; text: string; time: string }[]);
-      dataLoadedRef.current = true;
+      const loadedComms = clinicApi.getPatientComms(p.id) as CommunicationLog[];
+      const loadedTg = clinicApi.getPatientTgChat(p.id) as { sender: 'bot' | 'patient'; text: string; time: string }[];
+      setCommsMessages(loadedComms);
+      setTgMessagesList(loadedTg);
+      // Yuklangan qiymatlarni snapshot'ga yozamiz — auto-save ularni QAYTA yozmaydi (echo yo'q).
+      savedSnapshotRef.current = {
+        xrays: JSON.stringify(loadedXrays),
+        photoDoc: JSON.stringify(loadedPhotoDoc),
+        comms: JSON.stringify(loadedComms),
+        tgchat: JSON.stringify(loadedTg),
+      };
+      // Saqlashni FAQAT hydration render'lari yakunlangach (keyingi makrotask) va shu
+      // bemorga bog'lab yoqamiz. Shu tufayli yuqoridagi setState'lar sabab ishga tushgan
+      // saqlash effektlari hali o'chiq bo'ladi (hydratedPatientIdRef === null).
+      const hydratedId = p.id;
+      setTimeout(() => {
+        if (cancelled) return;
+        dataLoadedRef.current = true;
+        hydratedPatientIdRef.current = hydratedId;
+      }, 0);
 
       // Restore persisted per-patient naryads (Karzinka)
       const loadedNaryads = clinicApi.getPatientNaryads(p.id);
@@ -1271,11 +1340,14 @@ export default function PatientDetailPage() {
       const loadedLogs = clinicApi.getNaryadLog(p.id);
       setNaryadLog(loadedLogs);
 
+      // Restore bekor qilingan davolash/naryad ID'lari (baza yoki demo localStorage)
+      setCancelledTreatmentIds(clinicApi.getCancelledTreatments(p.id));
+
       // Restore persisted treatment plans (32desk format)
       const loadedPlans = clinicApi.getTreatmentPlans(p.id);
       if (loadedPlans && loadedPlans.length > 0) {
         setTreatmentPlans(loadedPlans);
-      } else {
+      } else if (isDemoClinic()) {
         const initialPlan: TreatmentPlanStage[] = [
           {
             id: 1,
@@ -1301,7 +1373,7 @@ export default function PatientDetailPage() {
             description: 'Лечение кариеса дентина, фотополимерная реставрация, эндодонтическое лечение корневых каналов.',
             cost: 1200000,
             status: 'В процессе',
-            doctor: emps.find((e) => e.role === 'doctor')?.full_name || 'Сардор Алимов',
+            doctor: emps.find((e) => e.role === 'doctor')?.full_name || '',
             procedures: [
               {
                 id: 'proc-102',
@@ -1309,7 +1381,7 @@ export default function PatientDetailPage() {
                 teeth: '16',
                 quantity: 1,
                 price: 450000,
-                doctor: 'Сардор Алимов'
+                doctor: ''
               },
               {
                 id: 'proc-103',
@@ -1317,7 +1389,7 @@ export default function PatientDetailPage() {
                 teeth: '25',
                 quantity: 1,
                 price: 750000,
-                doctor: 'Сардор Алимов'
+                doctor: ''
               }
             ]
           },
@@ -1327,7 +1399,7 @@ export default function PatientDetailPage() {
             description: 'Изготовление и фиксация анатомических циркониевых коронок Prettau.',
             cost: 3600000,
             status: 'Запланировано',
-            doctor: emps.find((e) => e.role === 'doctor')?.full_name || 'Сардор Мирахмедов',
+            doctor: emps.find((e) => e.role === 'doctor')?.full_name || '',
             procedures: [
               {
                 id: 'proc-104',
@@ -1335,17 +1407,21 @@ export default function PatientDetailPage() {
                 teeth: '15, 16',
                 quantity: 2,
                 price: 1800000,
-                doctor: 'Сардор Мирахмедов'
+                doctor: ''
               }
             ]
           }
         ];
         setTreatmentPlans(initialPlan);
         clinicApi.saveTreatmentPlans(p.id, initialPlan);
+      } else {
+        // REAL klinika, reja yo'q — oldingi bemor rejasi EKRANDA qolib ketmasin.
+        setTreatmentPlans([]);
       }
       loadPatientTasks(p.id);
     }
-    loadPatient();
+    loadPatient().catch(error => window.dispatchEvent(new CustomEvent('dentos-save-state', { detail: { error: String(error) } })));
+    return () => { cancelled = true; };
   }, [patientId]);
 
   // --- Записи tab: real appointment stats + filtered list -----------------
@@ -1434,7 +1510,7 @@ export default function PatientDetailPage() {
       list.push({
         id: `nar-${n.id}`,
         procedure: n.title || n.name,
-        doctor_name: n.doctor || 'Сардор Алимов',
+        doctor_name: n.doctor || '',
         price: Number(n.price) || Number(n.unitPrice) || 0,
         status: n.isDebt ? 'debt' : 'completed',
         start_time: n.date || tk('txt_today'),
@@ -1452,7 +1528,7 @@ export default function PatientDetailPage() {
           {
             id: 'init-1',
             procedure: 'Кариес дентина, фотополимерная реставрация (световая пломба)',
-            doctor_name: 'Сардор Алимов',
+            doctor_name: '',
             price: 450000,
             status: 'completed',
             start_time: 'Сегодня, 11:30',
@@ -1740,18 +1816,18 @@ export default function PatientDetailPage() {
       : 'TT';
 
   const allTabDefinitions = [
-    { id: 'Основные', labelUz: 'Asosiy', labelRu: 'Основные', labelEn: 'General' },
-    { id: 'Записи', labelUz: 'Qabullar', labelRu: 'Записи', labelEn: 'Appointments' },
-    { id: 'Лечение', labelUz: 'Davolash', labelRu: 'Лечение', labelEn: 'Treatment' },
-    { id: 'План лечения', labelUz: 'Davolash rejasi', labelRu: 'План лечения', labelEn: 'Treatment Plan' },
-    { id: 'Заметки', labelUz: 'Eslatmalar', labelRu: 'Заметки', labelEn: 'Notes' },
-    { id: 'Фотопротокол', labelUz: 'Foto protokol', labelRu: 'Фотопротокол', labelEn: 'Photo Protocol' },
-    { id: 'Оплаты', labelUz: 'To‘lovlar', labelRu: 'Оплаты', labelEn: 'Billing' },
-    { id: 'Связь', labelUz: 'Aloqa', labelRu: 'Связь', labelEn: 'Communication' },
-    { id: 'Лаборатория', labelUz: 'Laboratoriya', labelRu: 'Лаборатория', labelEn: 'Laboratory' },
-    { id: 'Задачи', labelUz: 'Vazifalar', labelRu: 'Задачи', labelEn: 'Tasks' },
-    { id: 'Опросы', labelUz: 'So‘rovnomalar', labelRu: 'Опросы', labelEn: 'Surveys' },
-    { id: 'Наряды', labelUz: 'Naryad jurnali', labelRu: 'Журнал нарядов', labelEn: 'Naryad log' }
+    { id: 'Основные', labelKey: 'pid_tab_general' },
+    { id: 'Записи', labelKey: 'pid_tab_appointments' },
+    { id: 'Лечение', labelKey: 'pid_tab_treatment' },
+    { id: 'План лечения', labelKey: 'pid_tab_treatment_plan' },
+    { id: 'Заметки', labelKey: 'pid_tab_notes' },
+    { id: 'Фотопротокол', labelKey: 'pid_tab_photo' },
+    { id: 'Оплаты', labelKey: 'pid_tab_billing' },
+    { id: 'Связь', labelKey: 'pid_tab_comm' },
+    { id: 'Лаборатория', labelKey: 'pid_tab_lab' },
+    { id: 'Задачи', labelKey: 'pid_tab_tasks' },
+    { id: 'Опросы', labelKey: 'pid_tab_surveys' },
+    { id: 'Наряды', labelKey: 'pid_tab_naryads' }
   ];
 
   const adminAllowedTabs = new Set([
@@ -1779,7 +1855,7 @@ export default function PatientDetailPage() {
 
   const nowTime = () => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const nowDateLong = () => new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' });
-  const baseNote = () => ({ id: Date.now(), author: 'Мухаммад', avatarText: 'MO', date: nowDateLong(), time: nowTime() });
+  const baseNote = () => ({ id: Date.now(), author: user?.name || '', avatarText: (user?.initials || (user?.name || '·').slice(0, 2)).toUpperCase(), date: nowDateLong(), time: nowTime() });
   const blobToDataURL = (blob: Blob): Promise<string> =>
     new Promise((resolve) => { const r = new FileReader(); r.onloadend = () => resolve(String(r.result)); r.readAsDataURL(blob); });
 
@@ -1989,7 +2065,7 @@ export default function PatientDetailPage() {
           ? 'WhatsApp'
           : sendChannel === 'telegram'
           ? 'Telegram'
-          : 'SMS 32Desk',
+          : 'SMS Toshkent Markaziy',
       message: text,
       date: 'Сегодня, ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       status: 'Отправлено'
@@ -2004,7 +2080,7 @@ export default function PatientDetailPage() {
     const item: CommunicationLog = {
       id: Date.now(),
       type: 'sms',
-      title: 'SMS Шлюз 32Desk',
+      title: 'SMS Шлюз Toshkent Markaziy',
       message: smsDraft.trim(),
       date: 'Сегодня, ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       status: 'Доставлено'
@@ -2026,7 +2102,7 @@ export default function PatientDetailPage() {
     const item: CommunicationLog = {
       id: Date.now(),
       type: 'telegram',
-      title: 'Telegram Бот (Dent32DeskBot)',
+      title: 'Telegram Бот (DentBot)',
       message: tgDraft.trim(),
       date: 'Сегодня, ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       status: 'Прочитано'
@@ -2302,7 +2378,7 @@ export default function PatientDetailPage() {
     docName?: string
   ) => {
     if (!patient || items.length === 0) return;
-    const doctor = docName || (participants[0]?.full_name) || newNaryadDoctor || 'Феруза Шоанварова';
+    const doctor = docName || (participants[0]?.full_name) || newNaryadDoctor || '';
     const nowLabel = 'Сегодня, ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
     const newNaryadItems = items.map((it) => ({
@@ -2326,12 +2402,13 @@ export default function PatientDetailPage() {
     newNaryadItems.forEach((n) => {
       const entry: NaryadLogEntry = {
         id: n.id,
+        naryad_id: n.id,
         patient_id: patient.id,
         patient_name: patient.full_name,
         doctor: n.doctor,
         action: 'added' as const,
         title: n.title,
-        author: CURRENT_OPERATOR,
+        author: user?.name || '',
         date: nowLabel,
         isDebt: n.isDebt,
         price: n.price
@@ -2356,11 +2433,15 @@ export default function PatientDetailPage() {
     setShowNaryadModal(false);
   };
 
-  // Remove (x) a struck naryad from the karzinka — reverses debt and logs who/when/why
+  // Remove (x) a struck naryad from the karzinka — reverses debt and logs who/when/why.
+  // naryadsRef'dan o'qiymiz: checkout "hammasini tozalash" ketma-ket chaqirganda ham
+  // har bir o'chirish to'g'ri qoldiq ustida ishlaydi (stale closure yo'q).
   const handleRemoveNaryad = async (id: number, reason: string) => {
-    const item = patientNaryads.find((n) => n.id === id);
+    const current = naryadsRef.current;
+    const item = current.find((n) => n.id === id);
     if (!item || !patient) return;
-    const remaining = patientNaryads.filter((n) => n.id !== id);
+    const remaining = current.filter((n) => n.id !== id);
+    naryadsRef.current = remaining;            // sinxron yangilash (keyingi chaqiruv to'g'ri ko'radi)
     setPatientNaryads(remaining);
     clinicApi.savePatientNaryads(patient.id, remaining);
     setNaryadCount(remaining.length);
@@ -2371,12 +2452,13 @@ export default function PatientDetailPage() {
     }
     const logEntry: NaryadLogEntry = {
       id: Date.now(),
+      naryad_id: item.id,                        // barqaror ID bo'yicha 'added' yozuvni bekor qiladi
       patient_id: patient.id,
       patient_name: patient.full_name,
       doctor: item.doctor,
       action: 'removed',
       title: item.title,
-      author: CURRENT_OPERATOR,
+      author: user?.name || '',
       date: 'Bugun, ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
       isDebt: item.isDebt,
       price: item.price,
@@ -2454,7 +2536,7 @@ export default function PatientDetailPage() {
       const newTreatments = data.items.map((it, idx) => ({
         id: Date.now() + idx,
         title: it.name,
-        doctor: it.doctor || data.doctorName || 'Сардор Алимов',
+        doctor: it.doctor || data.doctorName || '',
         price: it.price * it.quantity,
         status: data.isDebt ? 'Долг' : 'Сделано',
         date: new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
@@ -2508,12 +2590,13 @@ export default function PatientDetailPage() {
     setNaryadCount(updatedList.length);
     const logEntry: NaryadLogEntry = {
       id: newItem.id,
+      naryad_id: newItem.id,
       patient_id: patient.id,
       patient_name: patient.full_name,
       doctor: newItem.doctor,
       action: 'added',
       title: newItem.title,
-      author: CURRENT_OPERATOR,
+      author: user?.name || '',
       date: newItem.date,
       isDebt: newItem.isDebt,
       price: newItem.price
@@ -2565,6 +2648,11 @@ export default function PatientDetailPage() {
                 <button onClick={() => setIsEditing(true)} className="p-1 text-slate-400 hover:text-blue-600 rounded-lg transition" title={tk('ttl_edit_name')}>
                   <Edit2 className="w-3.5 h-3.5" />
                 </button>
+                {isDirector && (
+                  <button onClick={handleDeletePatient} className="p-1 text-slate-400 hover:text-red-600 rounded-lg transition" title={tk('pt_delete')}>
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                )}
               </div>
               <div className="flex items-center space-x-2 text-xs text-slate-600 dark:text-slate-400 mt-1">
                 <Phone className="w-3.5 h-3.5 text-slate-400" />
@@ -2682,7 +2770,7 @@ export default function PatientDetailPage() {
       <div className="flex items-center space-x-6 overflow-x-auto border-b border-slate-200 dark:border-slate-800">
         {tabDefinitions.map((tab) => {
           const isActive = activeTab === tab.id;
-          const label = language === 'uz' ? tab.labelUz : language === 'ru' ? tab.labelRu : tab.labelEn;
+          const label = tk(tab.labelKey);
           return (
             <button key={tab.id} onClick={() => setActiveTab(tab.id)} className={`relative -mb-px px-1 pb-3 pt-1 text-sm font-semibold whitespace-nowrap transition border-b-2 ${isActive ? 'border-blue-600 text-slate-900 dark:text-white' : 'border-transparent text-slate-400 dark:text-slate-500 hover:text-slate-700 dark:hover:text-slate-200'}`}>
               {label}
@@ -2712,9 +2800,6 @@ export default function PatientDetailPage() {
             <select className="px-3 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-medium text-slate-700 dark:text-slate-200 shadow-2xs outline-none">
               <option>{tk('staff')}</option>
               <option>{tk('all_staff')}</option>
-              <option>Сардор Мирахмедов</option>
-              <option>Мирислом Абдуллаев</option>
-              <option>Феруза Шоанварова</option>
             </select>
           </div>
 
@@ -2965,7 +3050,7 @@ export default function PatientDetailPage() {
                     </div>
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between text-xs">
-                        <span className="font-bold text-slate-900 dark:text-white">Мухаммад Одилхонов</span>
+                        <span className="font-bold text-slate-900 dark:text-white">{note.author}</span>
                         <span className="text-slate-400 text-[11px]">{note.time}</span>
                       </div>
                       {note.text && <p className="text-xs text-slate-700 dark:text-slate-300 mt-1 font-medium leading-relaxed whitespace-pre-wrap">{note.text}</p>}
@@ -3474,8 +3559,6 @@ export default function PatientDetailPage() {
                           {doc.full_name} ({doc.specialty || 'Shifokor'})
                         </option>
                       ))}
-                      <option value="Сардор Алимов">Сардор Алимов</option>
-                      <option value="Мирислом Абдуллаев">Мирислом Абдуллаев</option>
                     </select>
                   </div>
 
@@ -3520,7 +3603,7 @@ export default function PatientDetailPage() {
         </div>
       )}
 
-      {/* TAB 4: ПЛАН ЛЕЧЕНИЯ (Comprehensive 32Desk Treatment Plan with Stages, Procedures, KPIs & Execution) */}
+      {/* TAB 4: ПЛАН ЛЕЧЕНИЯ (Comprehensive Toshkent Markaziy Treatment Plan with Stages, Procedures, KPIs & Execution) */}
       {activeTab === 'План лечения' && (
         <div className="space-y-5">
           <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-2xs p-6 space-y-5 text-slate-900 dark:text-white">
@@ -3537,7 +3620,7 @@ export default function PatientDetailPage() {
                 </div>
                 <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400 pl-11">
                   <span>
-                    {tk('curator_label')}: <strong className="text-slate-700 dark:text-slate-200">{participants[0]?.full_name || 'Сардор Алимов'}</strong>
+                    {tk('curator_label')}: <strong className="text-slate-700 dark:text-slate-200">{participants[0]?.full_name || ''}</strong>
                   </span>
                   <span>•</span>
                   <div className="flex items-center gap-1.5">
@@ -3716,9 +3799,6 @@ export default function PatientDetailPage() {
                             {allEmployees.filter((e) => e.role === 'doctor').map((doc) => (
                               <option key={doc.id} value={doc.full_name}>{doc.full_name}</option>
                             ))}
-                            <option value="Сардор Алимов">Сардор Алимов</option>
-                            <option value="Мирислом Абдуллаев">Мирислом Абдуллаев</option>
-                            <option value="Сардор Мирахмедов">Сардор Мирахмедов</option>
                           </select>
 
                           {/* Stage Subtotal */}
@@ -4041,7 +4121,7 @@ export default function PatientDetailPage() {
                             <option key={doc.id} value={doc.full_name}>{doc.full_name}</option>
                           ))}
                           {allEmployees.filter((e) => e.role === 'doctor').length === 0 && (
-                            <option value="Сардор Алимов">Сардор Алимов</option>
+                            <option value="">—</option>
                           )}
                         </select>
                       </div>
@@ -4712,7 +4792,7 @@ export default function PatientDetailPage() {
                           {/* O'lcham tugmalari */}
                           <div className="absolute -top-2 left-24 flex items-center bg-white dark:bg-slate-800 rounded-lg shadow-md border border-slate-200 dark:border-slate-700 overflow-hidden opacity-0 group-hover:opacity-100 transition z-10">
                             {(['sm', 'md', 'lg', 'full'] as const).map((w) => (
-                              <button key={w} onClick={() => updateDocBlock(b.id, { width: w })} className={`px-1.5 py-1 text-[10px] font-black ${b.width === w ? 'bg-indigo-500 text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700'}`} title={language === 'uz' ? (w === 'sm' ? 'Kichik' : w === 'md' ? 'O‘rta' : w === 'lg' ? 'Katta' : 'To‘liq') : (w === 'sm' ? 'Маленький' : w === 'md' ? 'Средний' : w === 'lg' ? 'Большой' : 'Полный')}>
+                              <button key={w} onClick={() => updateDocBlock(b.id, { width: w })} className={`px-1.5 py-1 text-[10px] font-black ${b.width === w ? 'bg-indigo-500 text-white' : 'text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700'}`} title={tk(w === 'sm' ? 'pid_w_sm' : w === 'md' ? 'pid_w_md' : w === 'lg' ? 'pid_w_lg' : 'pid_w_full')}>
                                 {w === 'sm' ? 'S' : w === 'md' ? 'M' : w === 'lg' ? 'L' : 'XL'}
                               </button>
                             ))}
@@ -5011,7 +5091,6 @@ export default function PatientDetailPage() {
               <select className="px-3 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 rounded-lg outline-none">
                 <option>{tk('staff_2')}</option>
                 <option>{tk('all_staff')}</option>
-                <option>Сардор Мирахмедов</option>
                 <option>{tk('reception_32desk')}</option>
               </select>
               <select className="px-3 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 rounded-lg outline-none">
@@ -5188,7 +5267,7 @@ export default function PatientDetailPage() {
                         <span className="text-amber-600 font-bold text-[10px]">{tk('queued_to_send')}</span>
                       </div>
                       <p className="font-medium text-slate-800 dark:text-slate-200">
-                        «Уважаемый пациент! Напоминаем о визите на процедуру ортопедии завтра в 15:34. Стоматология 32Desk.»
+                        «Уважаемый пациент! Напоминаем о визите на процедуру ортопедии завтра в 15:34. Стоматология Toshkent Markaziy.»
                       </p>
                       <div className="flex items-center justify-between pt-1 text-[11px] text-slate-400 border-t border-slate-50 dark:border-slate-700">
                         <span>Запланировано на: 06.09.2026, 09:00</span>
@@ -5208,7 +5287,7 @@ export default function PatientDetailPage() {
                       </p>
                       <div className="flex items-center justify-between pt-1 text-[11px] text-slate-400 border-t border-slate-50 dark:border-slate-700">
                         <span>Запланировано на: 05.09.2026, 20:00</span>
-                        <span>Канал: @Dent32DeskBot</span>
+                        <span>Канал: @DentBot</span>
                       </div>
                     </div>
                   </div>
@@ -5560,8 +5639,8 @@ export default function PatientDetailPage() {
                                 patient_name: patient?.full_name,
                                 patient_phone: patient?.phone,
                                 doctor: 1,
-                                doctor_name: participants[0]?.full_name || 'Сардор Алимов',
-                                technician_name: ord.technician || 'Apex Dental Lab',
+                                doctor_name: participants[0]?.full_name || '',
+                                technician_name: ord.technician || '',
                                 work_type: ord.type,
                                 tooth_numbers: ord.tooth,
                                 color_shade: ord.colorShade,
@@ -5842,7 +5921,7 @@ export default function PatientDetailPage() {
                             {taskMemberInitials}
                           </div>
                           <div>
-                            <p className="font-bold text-slate-900 dark:text-white">{task.member || 'Феруза Шоанварова'}</p>
+                            <p className="font-bold text-slate-900 dark:text-white">{task.member || ''}</p>
                             <p className="text-[10px] text-slate-500 dark:text-slate-400">Ijrochi shifokor</p>
                           </div>
                         </div>
@@ -6506,6 +6585,7 @@ export default function PatientDetailPage() {
               onSubmit={async (e) => {
                 e.preventDefault();
                 if (newXrayFile && patient?.id) {
+                  // IndexedDB (lokal) + BAZAGA (dentalMediaStore ichida avtomatik)
                   await dentalMediaStore.saveRentgen(patient.id, newXrayFile, newXrayFile.name);
                 }
                 const isZip = Boolean(newXrayFile?.name?.toLowerCase().endsWith('.zip'));
@@ -6523,7 +6603,7 @@ export default function PatientDetailPage() {
                     fileName: newXrayFile?.name,
                     fileSize: newXrayFile?.size,
                     isZipPackage: isZip,
-                    doctor: (patient as any)?.doctor || (patient as any)?.doctor_name || 'Сардор Мирахмедов'
+                    doctor: (patient as any)?.doctor || (patient as any)?.doctor_name || ''
                   },
                   ...xrays
                 ]);
@@ -6594,6 +6674,7 @@ export default function PatientDetailPage() {
                     accept=".zip,.dcm,image/*"
                     className="hidden"
                     onChange={(e) => {
+                      // Demo: rentgen yuklash ishlaydi, saqlanmaydi (store demo uchun skip).
                       const file = e.target.files?.[0];
                       if (file) {
                         setNewXrayFile(file);
@@ -6800,8 +6881,8 @@ export default function PatientDetailPage() {
             patient_name: patient.full_name,
             patient_phone: patient.phone,
             doctor: participants[0]?.id || 1,
-            doctor_name: participants[0]?.full_name || 'Сардор Алимов',
-            technician_name: labTech || 'Smiledent',
+            doctor_name: participants[0]?.full_name || '',
+            technician_name: labTech || '',
             tooth_numbers: labTeeth.length ? labTeeth.join(', ') : newLabTooth,
             work_type: labWork || newLabType,
             color_shade: newLabShade,
@@ -6857,7 +6938,7 @@ export default function PatientDetailPage() {
                 </div>
                 <div>
                   <h3 className="text-lg font-black text-slate-900 dark:text-white">{labStep === 1 ? tk('lab_new_work') : patient.full_name}</h3>
-                  <p className="text-xs text-slate-400">{tk('lab_technician')}: {labTech || 'Smiledent'} • {tk('due_date_lab')}: {labDueDate || tk('txt_today')}</p>
+                  <p className="text-xs text-slate-400">{tk('lab_technician')}: {labTech || ''} • {tk('due_date_lab')}: {labDueDate || tk('txt_today')}</p>
                 </div>
               </div>
               <button onClick={closeLab} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 text-2xl leading-none px-2 py-1">×</button>
@@ -7381,6 +7462,7 @@ export default function PatientDetailPage() {
         patientBalance={patient.balance}
         doctorId={participants[0]?.id}
         doctorName={participants[0]?.full_name || newNaryadDoctor}
+        doctorPercent={participants[0]?.commission_rate}
         onSave={handleNaryadSave}
       />
 
@@ -7618,7 +7700,7 @@ export default function PatientDetailPage() {
           patient_name: patient.full_name,
           patient_phone: patient.phone,
           doctor: participants[0]?.id || 0,
-          doctor_name: participants[0]?.full_name || 'Феруза Шоанварова',
+          doctor_name: participants[0]?.full_name || '',
           doctor_color: participants[0]?.color || '#3B82F6',
           start_time: new Date().toISOString(),
           end_time: new Date().toISOString(),
@@ -7641,6 +7723,21 @@ export default function PatientDetailPage() {
         })) as CheckoutItem[]}
         onComplete={handleCheckoutComplete}
         onPreviewInvoice={() => {}}
+        // Checkout ichidan "✕ bitta qator" yoki "Naryadni tozalash → sabab → O'chirish":
+        // parent patientNaryads + baza ('naryads' bo'limi) + jurnalga YOZILADI (persistKey
+        // emas — bemor kartasi naryadlarining to'liq modeli teeth/isDebt/unitPrice saqlanadi).
+        onRemoveItem={(item, reason) => handleRemoveNaryad(Number(item.id), reason)}
+        onClearAll={() => {
+          if (!patient) return;
+          // "Hammasini tozalash" oqimida modal avval onRemoveItem'ni har qator uchun
+          // chaqiradi (ref bo'shaydi). Bu — yakuniy xavfsizlik tozalovi.
+          if (naryadsRef.current.length > 0) {
+            naryadsRef.current = [];
+            clinicApi.clearPatientNaryads(patient.id);
+          }
+          setPatientNaryads([]);
+          setNaryadCount(0);
+        }}
       />
 
       {/* HISOB / CHEK — the printed receipt, shown AFTER payment (also listed in Оплаты) */}
@@ -7653,7 +7750,7 @@ export default function PatientDetailPage() {
           patient_name: patient.full_name,
           patient_phone: patient.phone,
           doctor: participants[0]?.id || 0,
-          doctor_name: participants[0]?.full_name || 'Феруза Шоанварова',
+          doctor_name: participants[0]?.full_name || '',
           doctor_color: participants[0]?.color || '#3B82F6',
           start_time: new Date().toISOString(),
           end_time: new Date().toISOString(),

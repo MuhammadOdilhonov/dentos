@@ -541,7 +541,7 @@ export default function DiagnocatDentalRadiologyViewer({
   initialFileName,
   onClose
 }: DiagnocatViewerProps) {
-  const { language, tr } = useI18n();
+  const { language, tr, tk } = useI18n();
 
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState(0);
@@ -559,20 +559,15 @@ export default function DiagnocatDentalRadiologyViewer({
   const objectUrlsRef = useRef<string[]>([]);
 
   const t = {
-    empty: language === 'ru' ? 'Файл не загружен' : language === 'en' ? 'No file uploaded' : 'Fayl yuklanmagan',
-    emptyDesc:
-      language === 'ru'
-        ? 'Загрузите ZIP (STL / DICOM) или снимок этого пациента, чтобы открыть реальный рентген.'
-        : language === 'en'
-        ? 'Upload this patient’s ZIP (STL / DICOM) or image to open the real X-ray.'
-        : 'Ushbu bemorning ZIP (STL / DICOM) yoki suratini yuklang — haqiqiy rentgen ochiladi.',
-    upload: language === 'ru' ? 'Загрузить файл' : language === 'en' ? 'Upload file' : 'Fayl yuklash',
-    opening: language === 'ru' ? 'Открытие...' : language === 'en' ? 'Opening...' : 'Ochilmoqda...',
-    model3d: language === 'ru' ? '3D Модель' : language === 'en' ? '3D Model' : '3D Model',
-    ctSlices: language === 'ru' ? 'КТ Срезы' : language === 'en' ? 'CT Slices' : 'KT Kesimlar',
-    images: language === 'ru' ? 'Снимки' : language === 'en' ? 'Images' : 'Suratlar',
-    files: language === 'ru' ? 'Файлы в архиве' : language === 'en' ? 'Files in archive' : 'Arxiv ichidagi fayllar',
-    close: language === 'ru' ? 'Закрыть' : language === 'en' ? 'Close' : 'Yopish'
+    empty: tk('dc_empty'),
+    emptyDesc: tk('dc_empty_desc'),
+    upload: tk('dc_upload'),
+    opening: tk('dc_opening'),
+    model3d: tk('dc_model3d'),
+    ctSlices: tk('dc_ct_slices'),
+    images: tk('dc_images'),
+    files: tk('dc_files'),
+    close: tk('dc_close')
   };
 
   const revokeUrls = () => {
@@ -599,7 +594,7 @@ export default function DiagnocatDentalRadiologyViewer({
         let manifestList: { name: string; size: number }[] = [];
 
         if (kind === 'zip') {
-          setStatusMsg(language === 'ru' ? 'Распаковка архива...' : language === 'en' ? 'Unpacking archive...' : 'Arxiv ochilmoqda...');
+          setStatusMsg(tk('dc_unpacking'));
           const { manifest: mf, wanted } = await extractZipCentralDir(blob, (p) => setProgress(Math.round(p * 0.6)));
           manifestList = mf;
           collected = Array.from(wanted.entries()).map(([full, bytes]) => ({
@@ -625,13 +620,7 @@ export default function DiagnocatDentalRadiologyViewer({
           collected = [{ name: nm, short: shortName(nm), size: bytes.length, kind: 'image', bytes }];
           manifestList = [{ name: nm, size: bytes.length }];
         } else {
-          throw new Error(
-            language === 'ru'
-              ? 'Формат файла не распознан (нужен ZIP, DICOM, STL или снимок).'
-              : language === 'en'
-              ? 'Unrecognized file format (need ZIP, DICOM, STL or image).'
-              : 'Fayl formati aniqlanmadi (ZIP, DICOM, STL yoki surat kerak).'
-          );
+          throw new Error(tk('dc_unrecognized'));
         }
 
         setEntries(collected);
@@ -645,7 +634,7 @@ export default function DiagnocatDentalRadiologyViewer({
         const dicomEntry = collected.find((e) => e.kind === 'dicom');
         if (dicomEntry?.bytes) {
           try {
-            setStatusMsg(language === 'ru' ? 'Построение 3D...' : language === 'en' ? 'Building 3D...' : '3D tayyorlanmoqda...');
+            setStatusMsg(tk('dc_building3d'));
             const meta = parseDicomMeta(dicomEntry.bytes);
             if (meta.patientName) setDicomPatient(meta.patientName);
             const base = kind === 'zip' ? 60 : 0;
@@ -665,13 +654,7 @@ export default function DiagnocatDentalRadiologyViewer({
         else if (hasImage) setView('image');
         else {
           setView('empty');
-          setError(
-            language === 'ru'
-              ? 'В архиве нет STL/DICOM/снимков для просмотра.'
-              : language === 'en'
-              ? 'No STL/DICOM/images to view in the archive.'
-              : 'Arxivda ko‘rsatiladigan STL/DICOM/surat topilmadi.'
-          );
+          setError(tk('dc_no_viewable'));
         }
         setStatusMsg('');
       } catch (e) {
@@ -748,7 +731,7 @@ export default function DiagnocatDentalRadiologyViewer({
           </div>
           <div className="min-w-0">
             <p className="font-extrabold text-sm tracking-tight text-white leading-tight truncate">
-              {displayPatient || (language === 'ru' ? 'Рентген' : language === 'en' ? 'Radiology' : 'Rentgen')}
+              {displayPatient || tk('dc_radiology')}
             </p>
             {sourceName && <p className="text-[10px] text-slate-400 font-mono truncate">{sourceName}</p>}
           </div>

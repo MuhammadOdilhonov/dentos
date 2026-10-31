@@ -1,44 +1,166 @@
+name: dentos
+# ── Production arxitekturasi ──────────────────────────────────────────────────
+#  Foydalanuvchi → proxy(80/443) → frontend(Next) va api(Django/Gunicorn) → db(Postgres)
+#  redis → worker(Celery) va beat(1 nusxa)
+#  telegram(1 nusxa) → Telethon sessiyalari + bemor eslatmalari (in-process, bitta egasi)
+#  Hech bir ichki port (3000/8000/5432/6379) tashqariga ochilmaydi — faqat proxy 80/443.
+x-backend: &backend
+  build: ./backend
+  env_file: .env
+  environment: &backend-env
+    IN_DOCKER: "1"
+    POSTGRES_HOST: db
+    POSTGRES_PORT: "5432"
+    RUNTIME_DIR: /app/runtime
+    REDIS_URL: redis://redis:6379/0
+    CELERY_BROKER_URL: redis://redis:6379/0
+    CELERY_RESULT_BACKEND: redis://redis:6379/1
+    TZ: Asia/Tashkent
+  volumes:
+    - media:/app/media
+    - telegram_media:/app/telegram_media
+    - runtime:/app/runtime
+  depends_on:
+    db:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+  init: true
+  logging: &logs
+    driver: json-file
+    options: {max-size: "10m", max-file: "3"}
 services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes: [pgdata:/var/lib/postgresql/data]
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 5s
+      test: [CMD-SHELL, 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+    logging: *logs
 
-  backend:
-    build: ./backend
+  redis:
+    image: redis:7-alpine
     restart: unless-stopped
-    env_file: .env
+    # Broker/natija — PERSISTENT (AOF) va NOEVICTION: navbatdagi vazifalar xotira
+    # to'lganda O'CHIRILMAYDI (cache EMAS). Internetga ochilmaydi (port yo'q).
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction", "--save", "900 1", "--save", "300 10"]
+    volumes: [redisdata:/data]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    logging: *logs
+
+  # API — public (proxy shunga yo'naltiradi). Telegram'ni OCHMAYDI → GUNICORN_WORKERS ko'paytirsa bo'ladi.
+  api:
+    <<: *backend
+    environment:
+      <<: *backend-env
+      START_BACKGROUND_SERVICES: "false"
+      RUN_MIGRATIONS: "true"
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-3}
+      GUNICORN_THREADS: ${GUNICORN_THREADS:-4}
+    expose: ["8000"]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; r=urllib.request.Request('http://127.0.0.1:8000/api/health/',headers={'X-Forwarded-Proto':'https'}); urllib.request.urlopen(r,timeout=5)"]
+      interval: 30s
+      timeout: 8s
+      retries: 3
+      start_period: 90s
+
+  # Telegram EGASI — Telethon sessiyalari + bemor eslatmalari (in-process). BITTA nusxa,
+  # migratsiya qilmaydi (api qiladi), public EMAS. Bu yagona START_BACKGROUND_SERVICES=true.
+  telegram:
+    <<: *backend
+    environment:
+      <<: *backend-env
+      START_BACKGROUND_SERVICES: "true"
+      RUN_MIGRATIONS: "false"
+      GUNICORN_WORKERS: "1"
+    expose: ["8000"]
     depends_on:
-      db:
-        condition: service_healthy
-    volumes:
-      - media:/app/media
-      - telegram_media:/app/telegram_media
-    ports:
-      - "8000:8000"
+      api: {condition: service_healthy}
+      db: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  # Celery worker — og'ir fayl (media→B2) va ops vazifalari. Chegaralangan concurrency.
+  worker:
+    <<: *backend
+    environment:
+      <<: *backend-env
+      START_BACKGROUND_SERVICES: "false"
+      RUN_MIGRATIONS: "false"
+    command: [celery, -A, core, worker, -Q, default,media,ops, --concurrency=4, --prefetch-multiplier=1, --loglevel=info]
+    depends_on:
+      api: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  # Celery beat — rejalashtirilgan ishlar. FAQAT BITTA nusxa (replicas oshirilmasin).
+  beat:
+    <<: *backend
+    environment:
+      <<: *backend-env
+      START_BACKGROUND_SERVICES: "false"
+      RUN_MIGRATIONS: "false"
+    command: [celery, -A, core, beat, --loglevel=info]
+    depends_on:
+      api: {condition: service_healthy}
+      redis: {condition: service_healthy}
+
+  # CRM login boti (Bot API, Telethon EMAS). Ixtiyoriy (telegram profili).
+  login-bot:
+    <<: *backend
+    profiles: [telegram]
+    environment:
+      <<: *backend-env
+      START_BACKGROUND_SERVICES: "false"
+      RUN_MIGRATIONS: "false"
+    command: [python, manage.py, run_login_bot]
+    depends_on:
+      api: {condition: service_healthy}
 
   frontend:
     build:
       context: ./frontend
-      args:
-        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL}
+      args: {NEXT_PUBLIC_API_URL: /api}
     restart: unless-stopped
+    init: true
+    expose: ["3000"]
+    environment: {HOSTNAME: 0.0.0.0}
     depends_on:
-      - backend
-    ports:
-      - "3000:3000"
+      api: {condition: service_healthy}
+    logging: *logs
 
+  # Proxy — Caddy (joriy, auto-TLS). Nginx'ga o'tish: deploy/RUNBOOK_PROD.md (rollback bilan).
+  # IKKALASINI bir paytda 80/443ga qo'ymang.
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:-dentos.cc}
+      BACKEND_DOMAIN: ${BACKEND_DOMAIN:-backend.dentos.cc}
+      ACME_EMAIL: ${ACME_EMAIL:?Set ACME_EMAIL}
+    ports: ["80:80", "443:443", "443:443/udp"]
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [frontend, api]
+    logging: *logs
 volumes:
   pgdata:
+  redisdata:
   media:
   telegram_media:
+  runtime:
+  caddy_data:
+  caddy_config:

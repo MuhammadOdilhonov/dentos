@@ -1,6 +1,8 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
+import { apiFetch, API_BASE_URL } from './http';
+import { clearPatientRecords, resetPatientRecords, hasUnsavedRecords, flushPatientRecords } from './patientRecords';
 import { clinicApi } from './api';
 
 export type UserRole = 'superadmin' | 'director' | 'deputy_director' | 'admin' | 'kassa' | 'doctor' | 'technician';
@@ -20,56 +22,17 @@ export interface AuthUser {
   modules?: Record<string, boolean>;
 }
 
-// Offline (backend o'chiq) uchun zaxira demo akkauntlar — normal holatda backend ishlatiladi.
-export const DEMO_ACCOUNTS: Record<string, { pass: string[]; user: AuthUser }> = {
-  superadmin: {
-    pass: ['123456', '123'],
-    user: { id: '0', username: 'superadmin', name: 'dentOS SuperAdmin', role: 'superadmin', roleLabel: 'SuperAdmin / Platforma', initials: 'DS', clinicName: 'dentOS Platforma' }
-  },
-  director: {
-    pass: ['123456', '123'],
-    user: { id: '1', username: 'director', name: 'Jasur Usmonov', role: 'director', roleLabel: 'Direktor / Bosh vrach', initials: 'JU', clinicId: 1, clinicName: '32Desk Toshkent Markaziy' }
-  },
-  deputy_director: {
-    pass: ['123456', '123'],
-    user: { id: '15', username: 'deputy_director', name: 'Muzaffar Olimov', role: 'deputy_director', roleLabel: 'Direktor o‘rinbosari / Boshqaruvchi', initials: 'MO', clinicId: 1, clinicName: '32Desk Toshkent Markaziy' }
-  },
-  admin: {
-    pass: ['123456', '123'],
-    user: { id: '2', username: 'admin', name: 'Aziza Karimova', role: 'admin', roleLabel: 'Administrator (Markaziy)', initials: 'AK', clinicId: 1, clinicName: '32Desk Toshkent Markaziy', branchId: 1, branchName: 'Toshkent Markaziy filiali' }
-  },
-  admin_chilonzor: {
-    pass: ['123456', '123'],
-    user: { id: '21', username: 'admin_chilonzor', name: 'Madina Rahimova', role: 'admin', roleLabel: 'Administrator (Chilonzor)', initials: 'MR', clinicId: 1, clinicName: '32Desk Chilonzor', branchId: 2, branchName: 'Chilonzor filiali' }
-  },
-  admin_yunusobod: {
-    pass: ['123456', '123'],
-    user: { id: '22', username: 'admin_yunusobod', name: 'Shoira Ergasheva', role: 'admin', roleLabel: 'Administrator (Yunusobod)', initials: 'SE', clinicId: 1, clinicName: '32Desk Yunusobod', branchId: 3, branchName: 'Yunusobod filiali' }
-  },
-  kassa: {
-    pass: ['123456', '123'],
-    user: { id: '3', username: 'kassa', name: 'Dilorom Saidova', role: 'kassa', roleLabel: 'Kassir', initials: 'DS', clinicId: 1, clinicName: '32Desk Toshkent Markaziy', branchId: 1, branchName: 'Toshkent Markaziy filiali' }
-  },
-  doctor: {
-    pass: ['123456', '123'],
-    user: { id: '4', username: 'doctor', name: 'Sardor Alimov', role: 'doctor', roleLabel: 'Vrach-Stomatolog', initials: 'SA', clinicId: 1, clinicName: '32Desk Toshkent Markaziy', branchId: 1, branchName: 'Toshkent Markaziy filiali' }
-  },
-  technician: {
-    pass: ['123456', '123'],
-    user: { id: '1', username: 'texnik_alisher', name: 'Алишер Каримов', role: 'technician', roleLabel: 'Zubnoy Texnik', initials: 'АК', clinicName: 'Apex Dental Lab' }
-  },
-  texnik_alisher: {
-    pass: ['123456', '123'],
-    user: { id: '1', username: 'texnik_alisher', name: 'Алишер Каримов', role: 'technician', roleLabel: 'Zubnoy Texnik', initials: 'АК', clinicName: 'Apex Dental Lab' }
-  },
-  texnik_farhod: {
-    pass: ['123456', '123'],
-    user: { id: '2', username: 'texnik_farhod', name: 'Фарход Юсупов', role: 'technician', roleLabel: 'Zubnoy Texnik', initials: 'ФЮ', clinicName: 'MasterDent CAD/CAM Lab' }
-  },
-  texnik_dilshod: {
-    pass: ['123456', '123'],
-    user: { id: '3', username: 'texnik_dilshod', name: 'Дилшод Хакимов', role: 'technician', roleLabel: 'Zubnoy Texnik', initials: 'ДХ', clinicName: 'SmileAlign Orto Lab' }
-  }
+// DEMO tugmalari — direktordan texnikgacha barcha rollar (superadmin ISTISNO:
+// u faqat haqiqiy login talab qiladi). Bular haqiqiy backend akkauntlari (seed,
+// hammasi klinika #1 "Dentos Toshkent Markaziy" + texnik shunga ulangan): backend
+// /auth/login/ orqali kiradi, hech qanday frontend bypass YO'Q.
+export const DEMO_LOGINS: Partial<Record<UserRole, { username: string; pass: string }>> = {
+  director: { username: 'director', pass: '123456' },
+  deputy_director: { username: 'deputy_director', pass: '123456' },
+  admin: { username: 'admin', pass: '123456' },
+  doctor: { username: 'doctor', pass: '123456' },
+  kassa: { username: 'kassa', pass: '123456' },
+  technician: { username: 'texnik_alisher', pass: '123456' },
 };
 
 // Backenddan kelgan user obyektini AuthUser ko'rinishiga o'giradi.
@@ -94,7 +57,7 @@ interface AuthContextType {
   isInitialized: boolean;
   login: (username: string, pass: string) => Promise<boolean>;
   loginWithBackendUser: (backendUser: any) => void;
-  logout: () => void;
+  logout: () => Promise<void>;
   switchRole: (role: UserRole) => Promise<void>;
   updateCurrentUser: (updates: Partial<AuthUser>) => void;
 }
@@ -104,7 +67,7 @@ const AuthContext = createContext<AuthContextType>({
   isInitialized: false,
   login: async () => false,
   loginWithBackendUser: () => {},
-  logout: () => {},
+  logout: async () => {},
   switchRole: async () => {},
   updateCurrentUser: () => {}
 });
@@ -114,14 +77,37 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [isInitialized, setIsInitialized] = useState(false);
 
   useEffect(() => {
+    let cancelled = false;
+    // 1) Avval localStorage'dan optimistik tiklaymiz (tez ko'rinish uchun).
+    let stored: AuthUser | null = null;
     try {
-      const stored = localStorage.getItem('32desk_auth_user');
-      if (stored) setUser(JSON.parse(stored));
-    } catch {
-      setUser(null);
-    } finally {
-      setIsInitialized(true);
-    }
+      const raw = localStorage.getItem('32desk_auth_user');
+      if (raw) { stored = JSON.parse(raw); setUser(stored); }
+    } catch { stored = null; }
+
+    // 2) Server sessiyasi bilan MOSLAYMIZ (/auth/me). Cookie yo'q/eskirgan bo'lsa
+    //    "yolg'on kirilgan" holatda qolmaymiz; API 401 zanjiri boshlanmaydi.
+    (async () => {
+      try {
+        const res = await apiFetch(`${API_BASE_URL}/auth/me/`, { method: 'GET' });
+        if (cancelled) return;
+        if (res.ok) {
+          const data = await res.json();
+          if (data?.user) persist(mapBackendUser(data.user));
+        } else if (res.status === 401) {
+          // Sessiya yo'q — localStorage'dagi eski holatni tozalaymiz.
+          setUser(null);
+          try { localStorage.removeItem('32desk_auth_user'); } catch {}
+        }
+        // boshqa statuslarda localStorage holatini saqlab qolamiz
+      } catch {
+        // Tarmoq xatosi (offline bo'lishi mumkin) — mavjud localStorage holatini
+        // buzMAYMIZ, foydalanuvchini to'satdan chiqarib yubormaymiz.
+      } finally {
+        if (!cancelled) setIsInitialized(true);
+      }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   const persist = (u: AuthUser) => {
@@ -137,7 +123,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     persist(updated);
   };
 
-  // Avval BACKEND bazasidan tekshiradi; backend o'chiq bo'lsa demo akkauntga tushadi.
+  // FAQAT backend bazasidan tekshiradi — hech qanday offline/demo bypass yo'q.
   const login = async (username: string, pass: string): Promise<boolean> => {
     const cleanUser = username.trim();
     const cleanPass = pass.trim();
@@ -145,13 +131,6 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     const backendUser = await clinicApi.platformLogin(cleanUser, cleanPass);
     if (backendUser) {
       persist(mapBackendUser(backendUser));
-      return true;
-    }
-
-    // Offline zaxira
-    const account = DEMO_ACCOUNTS[cleanUser.toLowerCase()];
-    if (account && (account.pass.includes(cleanPass) || cleanPass === '123456')) {
-      persist(account.user);
       return true;
     }
     return false;
@@ -162,24 +141,58 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     persist(mapBackendUser(backendUser));
   };
 
-  const logout = () => {
+  const logout = async () => {
+    // 1-QADAM: API'ga yuborilishi kerak bo'lgan saqlanmagan o'zgarishlarni AVVAL yuboramiz
+    // (flush). Faqat shundan keyin cookie/localStorage tozalanadi — ma'lumot yo'qolmaydi.
+    if (hasUnsavedRecords() && typeof window !== 'undefined') {
+      const allSaved = await flushPatientRecords();
+      if (!allSaved) {
+        // Ba'zi o'zgarishlar serverga yetib bormadi — jim yo'qotmaymiz, foydalanuvchidan so'raymiz.
+        const ok = window.confirm('Ba’zi o‘zgarishlar serverga saqlanmadi va chiqsangiz yo‘qoladi. Baribir chiqasizmi?');
+        if (!ok) return; // qolishni tanladi — hech narsa tozalanmaydi, sessiya ochiq qoladi
+      }
+    }
+    // 2-QADAM: Serverga logout so'rovini YUBORIB, javobini KUTAMIZ — server javobi
+    // httpOnly `dentos_session` cookie'sini O'CHIRADI (delete_cookie). Javobni kutmasak,
+    // redirect ulgurib, cookie o'chmay sessiya serverda ochiq qolishi mumkin.
+    try {
+      await apiFetch(`${API_BASE_URL}/auth/logout/`, { method: 'POST' });
+    } catch {
+      // Tarmoq uzilsa ham foydalanuvchini local sessiyadan chiqaramiz.
+    }
+    // Eski akkauntning saqlash navbatlari/xatolari yangi akkauntga bog'lanmasin.
+    resetPatientRecords();
+    clearPatientRecords();
+    // MUHIM: real klinikada ko'p ma'lumot localStorage'da (eslatma, rentgen, foto va h.k.).
+    // Shuning uchun logout'da ularni O'CHIRMAYMIZ — faqat sessiya + keshni tozalaymiz.
+    // DEMO klinikada esa hammasini tozalaymiz (keyingi kishiga demo ma'lumot ko'rinmasin).
+    const wasDemo = Number(user?.clinicId) === 1;
     setUser(null);
     try {
-      localStorage.removeItem('32desk_auth_user');
+      const keepPrefs = new Set(['32desk_theme', '32desk_lang', '32desk_sidebar_collapsed']);
+      const toRemove: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (!k) continue;
+        const isOurs = k.startsWith('32desk_') || k.startsWith('dentos_');
+        if (!isOurs || keepPrefs.has(k)) continue;
+        const isSessionOrCache = k === '32desk_auth_user' || k === 'dentos_created_clinics_auth' || k.startsWith('32desk_apicache_');
+        if (wasDemo || isSessionOrCache) toRemove.push(k); // real: faqat sessiya/kesh; demo: hammasi
+      }
+      toRemove.forEach((k) => localStorage.removeItem(k));
     } catch {}
     if (typeof window !== 'undefined') {
       window.location.href = '/login';
     }
   };
 
-  // Tez rol tanlash tugmalari — o'sha rol nomi bilan backendga 123456 parol orqali kiradi.
+  // Demo tugmalari — FAQAT direktor va texnik. Haqiqiy backend akkauntiga kiradi
+  // (DEMO_LOGINS). Bypass yo'q; backend ulanmasa yoki rad etsa — xato qaytaradi.
   const switchRole = async (role: UserRole) => {
-    const username = role === 'technician' ? 'texnik_alisher' : role;
-    const ok = await login(username, '123456');
-    if (!ok) {
-      const account = DEMO_ACCOUNTS[role];
-      if (account) persist(account.user);
-    }
+    const creds = DEMO_LOGINS[role];
+    if (!creds) throw new Error('Demo mavjud emas');
+    const ok = await login(creds.username, creds.pass);
+    if (!ok) throw new Error('Demo akkauntga kirish amalga oshmadi (backend tekshiring)');
   };
 
   return (

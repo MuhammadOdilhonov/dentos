@@ -1,4 +1,6 @@
 from django.db import models
+import uuid
+from pathlib import PurePath
 from django.contrib.auth.models import User
 
 class UserRole(models.TextChoices):
@@ -10,7 +12,20 @@ class UserRole(models.TextChoices):
     KASSA = 'kassa', 'Kassa'
     TECHNICIAN = 'technician', 'Зубной техник'
 
-class Employee(models.Model):
+class PasswordModel(models.Model):
+    class Meta:
+        abstract = True
+
+    def save(self, *args, **kwargs):
+        from django.contrib.auth.hashers import identify_hasher, make_password
+        if self.password:
+            try:
+                identify_hasher(self.password)
+            except ValueError:
+                self.password = make_password(self.password)
+        return super().save(*args, **kwargs)
+
+class Employee(PasswordModel):
     clinic = models.ForeignKey('ClinicTenant', on_delete=models.CASCADE, null=True, blank=True, related_name='employees')
     user = models.OneToOneField(User, on_delete=models.CASCADE, null=True, blank=True)
     branch = models.ForeignKey('Branch', on_delete=models.SET_NULL, null=True, blank=True, related_name='employees')
@@ -57,6 +72,9 @@ class Patient(models.Model):
     medical_history = models.TextField(blank=True)
     notes = models.TextField(blank=True)
     service_lang = models.CharField(max_length=5, default='uz')  # xizmat tili: uz/ru/en — xabar shu tilda yuboriladi
+    # Bemorga maxsus foiz (%). Belgilangan bo'lsa — naryadda xizmatning standart
+    # foizi o'rniga shu qo'llanadi. null = standart foiz ishlatiladi.
+    default_percent = models.PositiveSmallIntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
@@ -96,6 +114,7 @@ class Appointment(models.Model):
         return f"{self.patient.full_name} - {self.doctor.full_name} ({self.start_time.strftime('%H:%M')})"
 
 class FinancialTransaction(models.Model):
+    request_id = models.UUIDField(null=True, blank=True, unique=True, editable=False)
     TYPE_CHOICES = (
         ('income', 'Приход'),
         ('expense', 'Расход'),
@@ -183,8 +202,8 @@ class DentalLabOrder(models.Model):
     primerka_date = models.DateField(null=True, blank=True) # Primerka sanasi
     zdacha_date = models.DateField(null=True, blank=True) # Zdacha sanasi
     dispatch_status = models.CharField(max_length=50, default='in_lab') # in_lab, ready_for_dispatch, dispatched
-    clinic_name = models.CharField(max_length=255, blank=True, default='32Desk Toshkent Markaziy')
-    clinic_logo = models.CharField(max_length=100, blank=True, default='32DESK')
+    clinic_name = models.CharField(max_length=255, blank=True, default='Toshkent Markaziy')
+    clinic_logo = models.CharField(max_length=100, blank=True, default='TM')
     branch = models.ForeignKey('Branch', on_delete=models.SET_NULL, null=True, blank=True, related_name='lab_orders')
     branch_name = models.CharField(max_length=255, blank=True)
     destination_branch = models.ForeignKey('Branch', on_delete=models.SET_NULL, null=True, blank=True, related_name='dest_lab_orders')
@@ -199,7 +218,7 @@ class DentalLabOrder(models.Model):
     def __str__(self):
         return f"Лаб #{self.order_number or self.id}: {self.work_type} - {self.patient.full_name}"
 
-class DentalTechnician(models.Model):
+class DentalTechnician(PasswordModel):
     name = models.CharField(max_length=255)
     lab_name = models.CharField(max_length=255, default='Dental Lab Pro')
     phone = models.CharField(max_length=50, blank=True)
@@ -234,6 +253,79 @@ class ClinicTenant(models.Model):
     def __str__(self):
         return f"{self.name} ({self.branch})"
 
+def _patient_media_path(instance, filename):
+    pid = instance.patient_id or 0
+    suffix = PurePath(filename).suffix.lower()[:12]
+    return f"patient_media/{uuid.uuid4().hex}{suffix}"
+
+
+class PatientMedia(models.Model):
+    """Bemor media fayllari — BAZADA (brauzer IndexedDB/localStorage emas).
+
+    kind: foto (rasm), rentgen (rentgen/KT zip yoki rasm), skan (3D skan zip/stl).
+    Fayl diskda (MEDIA_ROOT/patient_media/...), bazada metadata. Har qanday sessiya/
+    qurilmadan bir xil ko'rinadi; admin umumiy hisob uchun shu yozuvlarni sanaydi.
+    """
+    KIND_CHOICES = (
+        ('foto', 'Foto'),
+        ('rentgen', 'Rentgen / KT'),
+        ('skan', '3D Skan'),
+    )
+    clinic = models.ForeignKey('ClinicTenant', on_delete=models.CASCADE, null=True, blank=True, related_name='patient_media')
+    patient = models.ForeignKey('Patient', on_delete=models.CASCADE, related_name='media')
+    kind = models.CharField(max_length=10, choices=KIND_CHOICES, db_index=True)
+    file = models.FileField(upload_to=_patient_media_path, null=True, blank=True)
+    file_name = models.CharField(max_length=500, blank=True)
+    file_size = models.BigIntegerField(default=0)
+    file_type = models.CharField(max_length=120, blank=True)
+    meta = models.JSONField(default=dict, blank=True)  # extractedList, filesCount, notes, scanDate, ...
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-uploaded_at']
+        indexes = [models.Index(fields=['clinic', 'patient', 'kind'])]
+
+    def __str__(self):
+        return f"{self.kind} • {self.file_name} (bemor {self.patient_id})"
+
+
+class PhotoProtocol(models.Model):
+    """Bemor foto-protokoli — slaydlar hujjati (JSON). BAZADA saqlanadi.
+
+    doc: slaydlar/bloklar ro'yxati. Slayddagi rasmlar PatientMedia(kind=foto)
+    fayllariga URL orqali bog'lanadi (JSON ichida base64 shishmaydi).
+    """
+    clinic = models.ForeignKey('ClinicTenant', on_delete=models.CASCADE, null=True, blank=True, related_name='photo_protocols')
+    patient = models.OneToOneField('Patient', on_delete=models.CASCADE, related_name='photo_protocol')
+    doc = models.JSONField(default=list, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    def __str__(self):
+        return f"Foto-protokol (bemor {self.patient_id})"
+
+
+class ClinicMonthlyPlan(models.Model):
+    """Klinikaning oylik moliyaviy rejasi — BAZADA saqlanadi (brauzer localStorage emas).
+
+    Bitta klinika + oy (YYYY-MM) uchun bitta yozuv. Filiallar bo'lsa branch_plans
+    ichida {branch_id: summa}, aks holda single_clinic_plan ishlatiladi. acknowledged
+    = direktor shu oy uchun rejani ko'rib/tasdiqlagan (avto-modal qayta ochilmasin).
+    """
+    clinic = models.ForeignKey('ClinicTenant', on_delete=models.CASCADE, related_name='monthly_plans')
+    month = models.CharField(max_length=7, db_index=True)  # 'YYYY-MM'
+    single_clinic_plan = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    branch_plans = models.JSONField(default=dict, blank=True)  # {branch_id: amount}
+    acknowledged = models.BooleanField(default=False)
+    updated_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ('clinic', 'month')
+
+    def __str__(self):
+        return f"Reja {self.clinic_id} {self.month}: {self.single_clinic_plan}"
+
+
 class Branch(models.Model):
     clinic = models.ForeignKey(ClinicTenant, on_delete=models.CASCADE, null=True, blank=True, related_name='branches')
     name = models.CharField(max_length=255)
@@ -252,7 +344,7 @@ class Branch(models.Model):
     def __str__(self):
         return f"{self.name} ({self.address})"
 
-class PlatformUser(models.Model):
+class PlatformUser(PasswordModel):
     """Platformaga login qiluvchi foydalanuvchi — rol va klinikaga bog'liq.
 
     Login/parol/rol/klinika BAZADA saqlanadi (frontend demo emas). superadmin
@@ -261,6 +353,7 @@ class PlatformUser(models.Model):
     username = models.CharField(max_length=100, unique=True)
     password = models.CharField(max_length=128, default='123456')
     full_name = models.CharField(max_length=255)
+    phone = models.CharField(max_length=20, blank=True, default='')  # Telegram/SMS kirish uchun
     role = models.CharField(max_length=20, choices=UserRole.choices, default=UserRole.ADMIN)
     clinic = models.ForeignKey('ClinicTenant', on_delete=models.SET_NULL, null=True, blank=True, related_name='users')
     branch = models.ForeignKey('Branch', on_delete=models.SET_NULL, null=True, blank=True, related_name='users')
@@ -291,7 +384,7 @@ class PlatformUser(models.Model):
         return f"{self.username} ({self.get_role_display()})"
 
 class PlatformSetting(models.Model):
-    clinic_name = models.CharField(max_length=255, default='32Desk Stomatologiya Klinikasi')
+    clinic_name = models.CharField(max_length=255, default='Dentos Stomatologiya Klinikasi')
     plan_tier = models.CharField(max_length=50, default='Pro')
     storage_quota_gb = models.DecimalField(max_digits=8, decimal_places=2, default=50.0)
     storage_used_gb = models.DecimalField(max_digits=8, decimal_places=2, default=4.8)
@@ -323,3 +416,97 @@ class Specialty(models.Model):
         return self.name
 
 
+
+class TelegramLoginContact(models.Model):
+    phone = models.CharField(max_length=20, unique=True)
+    telegram_user_id = models.BigIntegerField(unique=True)
+    chat_id = models.BigIntegerField()
+    verified_at = models.DateTimeField(auto_now=True)
+
+
+class TelegramLoginChallenge(models.Model):
+    import uuid
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    phone = models.CharField(max_length=20, db_index=True)
+    purpose = models.CharField(max_length=10, default='login')
+    code_hash = models.CharField(max_length=128)
+    created_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField()
+    attempts = models.PositiveSmallIntegerField(default=0)
+    consumed = models.BooleanField(default=False)
+    sent = models.BooleanField(default=False)
+
+
+class TelegramLoginCursor(models.Model):
+    offset = models.BigIntegerField(default=0)
+
+# Persistent reception conversations and delivery records.
+from .reception_models import ReceptionContact, ReceptionDelivery, ReceptionUpdate, ReceptionMessage
+
+
+class PatientRecord(models.Model):
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name='chart_records')
+    section = models.CharField(max_length=40)
+    value = models.JSONField(default=list)
+    version = models.PositiveIntegerField(default=1)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=['patient', 'section'], name='unique_patient_record_section')]
+
+
+class ServiceCatalogItem(models.Model):
+    """Klinikaning xizmatlar/naryad narx katalogi — BAZADA (brauzer localStorage emas).
+
+    Har bir klinika o'z katalogiga ega; narxlar boshqa qurilma/sessiyada ham bir xil
+    ko'rinadi. Demo (clinic 1) bu modeldan foydalanmaydi — frontend demo'da hardcoded
+    DEFAULT_NARYAD_CATALOG ko'rsatadi (saqlanmaydi).
+    """
+    clinic = models.ForeignKey(ClinicTenant, on_delete=models.CASCADE, null=True, blank=True, related_name='service_catalog')
+    name = models.CharField(max_length=500)
+    category = models.CharField(max_length=120, blank=True)
+    base_price = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    default_percent = models.PositiveIntegerField(null=True, blank=True)
+    description = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at', 'id']
+        indexes = [models.Index(fields=['clinic', 'category'])]
+        constraints = [
+            models.CheckConstraint(check=models.Q(base_price__gte=0), name='service_base_price_non_negative'),
+            models.CheckConstraint(
+                check=models.Q(default_percent__isnull=True) | models.Q(default_percent__gte=0, default_percent__lte=100),
+                name='service_default_percent_0_100'),
+        ]
+
+    def __str__(self):
+        return f'{self.name} ({self.base_price})'
+
+
+class DoctorNaryadRate(models.Model):
+    """Shifokorga xos naryad narxi/foizi — BAZADA, klinika+shifokor+xizmat bo'yicha.
+
+    Umumiy katalog (ServiceCatalogItem) ustiga bir shifokor uchun maxsus narx yoki
+    komissiya foizini belgilaydi. Boshqa qurilma/sessiyada ham bir xil ko'rinadi.
+    Demo (clinic 1) bu modeldan foydalanmaydi (frontend hardcoded ko'rsatadi).
+    """
+    clinic = models.ForeignKey(ClinicTenant, on_delete=models.CASCADE, null=True, blank=True, related_name='doctor_naryad_rates')
+    doctor = models.ForeignKey('Employee', on_delete=models.CASCADE, related_name='naryad_rates')
+    service = models.ForeignKey(ServiceCatalogItem, on_delete=models.CASCADE, related_name='doctor_rates')
+    custom_price = models.DecimalField(max_digits=14, decimal_places=2, default=0)
+    commission_percent = models.PositiveIntegerField(default=0)
+    is_custom_price = models.BooleanField(default=False)
+    notes = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['id']
+        constraints = [
+            models.UniqueConstraint(fields=['doctor', 'service'], name='unique_doctor_service_rate'),
+            models.CheckConstraint(check=models.Q(custom_price__gte=0), name='rate_custom_price_non_negative'),
+            models.CheckConstraint(check=models.Q(commission_percent__gte=0, commission_percent__lte=100), name='rate_commission_0_100'),
+        ]
+
+    def __str__(self):
+        return f'doctor={self.doctor_id} service={self.service_id} price={self.custom_price}'

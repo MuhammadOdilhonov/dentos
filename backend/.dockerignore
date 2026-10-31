@@ -13,3 +13,7 @@ reminders_sent.json
 ai_conversations.json
 .env
 .env.*
+
+runtime/
+*.json
+staticfiles/

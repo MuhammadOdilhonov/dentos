@@ -199,7 +199,7 @@ export default function AppointmentsCalendar() {
       const newTreatments = data.items.map((it, idx) => ({
         id: Date.now() + idx,
         title: it.name,
-        doctor: it.doctor || selectedAppointment.doctor_name || 'Сардор Алимов',
+        doctor: it.doctor || selectedAppointment.doctor_name || '',
         price: it.price * it.quantity,
         status: data.isDebt ? 'Долг' : 'Сделано',
         date: new Date().toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })

@@ -1,5 +1,5 @@
 """
-AI Smart Auto-Responder & Online Booking Engine for Dental Clinics (32Desk / DentOS).
+AI Smart Auto-Responder & Online Booking Engine for Dental Clinics (Dentos).
 
 Implements:
 1. Clinic Knowledge Engine (services, prices, doctors, branches, working hours).
@@ -18,7 +18,7 @@ from django.conf import settings
 from django.utils import timezone
 from django.db.models import Q
 from rest_framework.decorators import api_view, permission_classes
-from rest_framework.permissions import AllowAny
+from .access import TenantPermission
 from rest_framework.response import Response
 
 from .models import ClinicTenant, Branch, Employee, Patient, Appointment, Workplace
@@ -29,7 +29,7 @@ from .models import ClinicTenant, Branch, Employee, Patient, Appointment, Workpl
 # Har bir kontakt (telegram user id yoki telefon) bo'yicha holat saqlanadi:
 #   { patient_id, name, stage, draft:{intent,date,time,doctor_hint}, last_ts }
 # ============================================================================
-_CONVO_FILE = os.path.join(settings.BASE_DIR, 'ai_conversations.json')
+_CONVO_FILE = os.path.join(settings.RUNTIME_DIR, 'ai_conversations.json')
 
 
 def _load_convos():
@@ -831,17 +831,18 @@ def process_ai_inbound_message(clinic_id: int, phone: str, text: str, patient_na
 # ============================================================================
 
 @api_view(['POST'])
-@permission_classes([AllowAny])
+@permission_classes([TenantPermission])
 def ai_chat_message(request):
     """
     Simulates or handles an inbound chat message from patient (Telegram, WhatsApp, Web).
     Executes AI consultant reasoning, auto-replies, and creates appointment if requested.
     """
-    clinic_id = request.data.get('clinic_id') or request.headers.get('X-Clinic-ID') or 1
+    from .views import get_clinic_id
+    clinic_id = get_clinic_id(request)
     try:
         clinic_id = int(clinic_id)
     except (ValueError, TypeError):
-        clinic_id = 1
+        return Response({'detail': 'Klinika kerak.'}, status=400)
 
     phone = request.data.get('phone', '+998 90 123 45 67')
     message = request.data.get('message', '')
@@ -854,17 +855,18 @@ def ai_chat_message(request):
 
 
 @api_view(['GET', 'POST'])
-@permission_classes([AllowAny])
+@permission_classes([TenantPermission])
 def ai_agent_settings(request):
     """
     GET: returns clinic settings (has_ai_agent, has_auto_reminders, ai_agent_settings).
     POST: updates them.
     """
-    clinic_id = request.query_params.get('clinic') or request.headers.get('X-Clinic-ID') or 1
+    from .views import get_clinic_id
+    clinic_id = get_clinic_id(request)
     try:
         clinic_id = int(clinic_id)
     except (ValueError, TypeError):
-        clinic_id = 1
+        return Response({'detail': 'Klinika kerak.'}, status=400)
 
     clinic = ClinicTenant.objects.filter(id=clinic_id).first()
     if not clinic:

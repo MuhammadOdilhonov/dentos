@@ -1,0 +1,56 @@
+groups:
+  - name: dentos-core
+    rules:
+      - alert: InstanceDown
+        expr: up == 0
+        for: 3m
+        labels: { severity: critical }
+        annotations: { summary: "Target down: {{ $labels.job }} {{ $labels.instance }}" }
+
+      - alert: HostHighCPU
+        expr: 100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 90
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "CPU >90% (10m) {{ $labels.instance }}" }
+
+      - alert: HostHighMemory
+        expr: (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) * 100 > 90
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "RAM >90% (10m) {{ $labels.instance }}" }
+
+      - alert: HostLowDisk
+        expr: (node_filesystem_avail_bytes{mountpoint="/host"} / node_filesystem_size_bytes{mountpoint="/host"}) * 100 < 15
+        for: 10m
+        labels: { severity: critical }
+        annotations: { summary: "Disk <15% free {{ $labels.instance }}" }
+
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations: { summary: "PostgreSQL down" }
+
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 2m
+        labels: { severity: critical }
+        annotations: { summary: "Redis (broker) down" }
+
+      - alert: CeleryQueueBacklog
+        expr: redis_key_size{key=~"default|media|ops"} > 500
+        for: 10m
+        labels: { severity: warning }
+        annotations: { summary: "Celery navbat backlog >500: {{ $labels.key }}" }
+
+      - alert: HttpsProbeFailed
+        expr: probe_success == 0
+        for: 5m
+        labels: { severity: critical }
+        annotations: { summary: "HTTPS probe fail: {{ $labels.instance }}" }
+
+      - alert: TlsCertExpiringSoon
+        expr: (probe_ssl_earliest_cert_expiry - time()) / 86400 < 14
+        for: 1h
+        labels: { severity: warning }
+        annotations: { summary: "TLS sertifikat 14 kundan kam qoldi: {{ $labels.instance }}" }

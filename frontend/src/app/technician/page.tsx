@@ -42,8 +42,10 @@ import {
   HardDrive,
   FileArchive
 } from 'lucide-react';
-import Dental3DScanViewerModal from '../../components/Dental3DScanViewerModal';
-import DentalRentgenViewerModal from '../../components/DentalRentgenViewerModal';
+import dynamic from 'next/dynamic';
+// Three.js/DICOM og'ir — faqat tegishli ko'ruvchi modal ochilganda yuklanadi (#5).
+const Dental3DScanViewerModal = dynamic(() => import('../../components/Dental3DScanViewerModal'), { ssr: false });
+const DentalRentgenViewerModal = dynamic(() => import('../../components/DentalRentgenViewerModal'), { ssr: false });
 
 const CARD = 'bg-white dark:bg-[#0b1322] rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm';
 const INPUT =
@@ -70,7 +72,7 @@ const uzNumber = (n: number) => (n || 0).toLocaleString('ru-RU');
 
 function TechnicianPortalPageContent() {
   const { user } = useAuth();
-  const { language, tr } = useI18n();
+  const { language, tr, tk } = useI18n();
   const router = useRouter();
   const searchParams = useSearchParams();
 
@@ -844,7 +846,7 @@ function TechnicianPortalPageContent() {
               {(periodFilter === 'day'
                 ? [{
                     key: 'today',
-                    short: language === 'ru' ? 'Выбранный день' : language === 'en' ? 'Selected Day' : 'Tanlangan kun',
+                    short: tk('tech_selected_day'),
                     formatted: currentDate.toLocaleDateString(language === 'ru' ? 'ru-RU' : language === 'en' ? 'en-US' : 'uz-UZ', { day: 'numeric', month: 'long', weekday: 'short' }),
                     dateStr: formatLocalDate(currentDate),
                     isToday: formatLocalDate(currentDate) === formatLocalDate(new Date())
@@ -909,7 +911,7 @@ function TechnicianPortalPageContent() {
                       ) : (
                         dayOrders.map(order => {
                           const statusBadge = getStatusBadge(order.status, language as any);
-                          const clinicLogo = order.clinic_logo || '32D';
+                          const clinicLogo = order.clinic_logo || 'TM';
 
                           return (
                             <div

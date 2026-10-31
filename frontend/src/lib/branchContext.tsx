@@ -26,7 +26,7 @@ const BranchContext = createContext<BranchContextType>({
 });
 
 export function BranchProvider({ children }: { children: React.ReactNode }) {
-  const { user } = useAuth();
+  const { user, isInitialized } = useAuth();
   const [branches, setBranches] = useState<Branch[]>([]);
   const [currentBranchId, setCurrentBranchId] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -49,6 +49,14 @@ export function BranchProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let mounted = true;
+    // Auth tayyor bo'lmaguncha yoki foydalanuvchi kirmaguncha himoyalangan
+    // /api/branches/ so'rovini YUBORMAYMIZ (login sahifasida 401 bo'lmasin).
+    if (!isInitialized || !user) {
+      setBranches([]);
+      setCurrentBranchId(null);
+      setIsLoading(false);
+      return;
+    }
     (async () => {
       setIsLoading(true);
       const bList = await loadBranches();
@@ -63,7 +71,6 @@ export function BranchProvider({ children }: { children: React.ReactNode }) {
           const doc = emps.find(e =>
             (user?.username && e.username && e.username.toLowerCase() === user.username.toLowerCase()) ||
             (user?.name && e.full_name && e.full_name.toLowerCase() === user.name.toLowerCase()) ||
-            (e.full_name && (e.full_name.includes('Alimov') || e.full_name.includes('Алимов'))) ||
             String(e.id) === String(user?.id) ||
             e.role === 'doctor'
           );
@@ -90,10 +97,11 @@ export function BranchProvider({ children }: { children: React.ReactNode }) {
     return () => {
       mounted = false;
     };
-  }, [loadBranches, user?.branchId, user?.role, user?.name, user?.username, user?.id]);
+  }, [loadBranches, isInitialized, user?.branchId, user?.role, user?.name, user?.username, user?.id]);
 
   // Admin yoki doctor login qilganda filialini avtomatik faollashtirish
   useEffect(() => {
+    if (!user) return;
     if (user?.branchId) {
       setCurrentBranchId(user.branchId);
     } else if (user?.role === 'doctor') {

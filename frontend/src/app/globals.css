@@ -3,6 +3,17 @@
 @tailwind utilities;
 
 /*
+ * Tepadagi tarmoq status-bari (NetworkStatusBar) uchun JOY ajratamiz — u endi
+ * logotip/kontent USTIGA tushmaydi. `--netbar-h` = bar balandligi; body'ga shuncha
+ * padding-top beramiz, ilova qobig'i (shell) va login sahifasi esa shu balandlikni
+ * ayirib hisoblaydi (sahifa pastga sirpanib ketmaydi).
+ */
+:root { --netbar-h: 26px; }
+body { padding-top: var(--netbar-h); }
+.h-app { height: calc(100vh - var(--netbar-h)); }
+.minh-app { min-height: calc(100vh - var(--netbar-h)); }
+
+/*
  * Full-screen fixed overlays (modals) are often rendered as later siblings
  * inside a `space-y-*` container. Tailwind's space utility applies a
  * `margin-top` to every non-first child, which visually pushes a

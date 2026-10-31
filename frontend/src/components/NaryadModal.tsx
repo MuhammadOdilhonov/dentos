@@ -33,6 +33,8 @@ export interface NaryadCartItem {
   standardPrice?: number;
   technician?: string;
   category?: string;
+  percent?: number; // qo'llangan foiz (%) — shifokor foizi yoki xizmat standart foizi
+  percentSource?: 'doctor' | 'standard'; // foiz qayerdan olindi
 }
 
 interface NaryadModalProps {
@@ -43,6 +45,7 @@ interface NaryadModalProps {
   patientBalance: number;
   doctorId?: number;
   doctorName?: string;
+  doctorPercent?: number | null; // shifokor (xodim) foizi (%) — bo'lsa xizmat standarti o'rniga ishlatiladi
   onSave: (
     items: NaryadCartItem[],
     total: number,
@@ -106,7 +109,7 @@ const LOWER_TEETH = ['48', '47', '46', '45', '44', '43', '42', '41', '31', '32',
 const UPPER_TEETH_CHILD = ['55', '54', '53', '52', '51', '61', '62', '63', '64', '65'];
 const LOWER_TEETH_CHILD = ['85', '84', '83', '82', '81', '71', '72', '73', '74', '75'];
 
-const LAB_TECHNICIANS = ['Smiledent', 'MasterLab', 'DentalArt', 'PrimeLab', 'EliteDental'];
+const LAB_TECHNICIANS: string[] = [];
 
 export default function NaryadModal({
   isOpen,
@@ -116,6 +119,7 @@ export default function NaryadModal({
   patientBalance,
   doctorId,
   doctorName,
+  doctorPercent,
   onSave
 }: NaryadModalProps) {
   const { language, tk, tr } = useI18n();
@@ -129,7 +133,7 @@ export default function NaryadModal({
   const [note, setNote] = useState('');
 
   // Dental technician selection in naryad
-  const [selectedTechnician, setSelectedTechnician] = useState('Smiledent');
+  const [selectedTechnician, setSelectedTechnician] = useState('');
   const [techNote, setTechNote] = useState('');
 
   // Doctor state
@@ -156,22 +160,32 @@ export default function NaryadModal({
       }
     });
 
-    // Load catalog items
-    const cat = clinicApi.getNaryadCatalog();
-    if (cat && cat.length > 0) {
-      // Merge with dental technician category if missing
-      const hasTech = cat.some((c) => c.category === 'Зуботехнические работы');
-      if (!hasTech) {
-        const techItems = DEFAULT_SERVICES.filter((s) => s.category === 'Зуботехнические работы');
-        setCatalogItems([...cat, ...techItems]);
-      } else {
-        setCatalogItems(cat);
+    // Load catalog items (BAZADAN). Bo'sh bo'lsa standart xizmatlar ko'rsatiladi.
+    (async () => {
+      let cat: NaryadCatalogItem[] = [];
+      try {
+        cat = await clinicApi.getNaryadCatalog();
+      } catch {
+        cat = [];
       }
-    } else {
-      setCatalogItems(DEFAULT_SERVICES);
-    }
+      if (cat && cat.length > 0) {
+        // Merge with dental technician category if missing
+        const hasTech = cat.some((c) => c.category === 'Зуботехнические работы');
+        if (!hasTech) {
+          const techItems = DEFAULT_SERVICES.filter((s) => s.category === 'Зуботехнические работы');
+          setCatalogItems([...cat, ...techItems]);
+        } else {
+          setCatalogItems(cat);
+        }
+      } else {
+        setCatalogItems(DEFAULT_SERVICES);
+      }
+    })();
 
-    setDoctorAssignments(clinicApi.getDoctorNaryads());
+    (async () => {
+      try { setDoctorAssignments(await clinicApi.getDoctorNaryads()); }
+      catch { setDoctorAssignments([]); }
+    })();
 
     // Reset view
     setIsChildChart(false);
@@ -268,6 +282,10 @@ export default function NaryadModal({
       ? `${item.name} [${selectedTechnician}]`
       : item.name;
 
+    // Foiz: shifokorга (xodimga) foiz belgilangan bo'lsa — o'sha; aks holda xizmatning standart foizi.
+    const useDoctorPercent = doctorPercent != null && !Number.isNaN(Number(doctorPercent));
+    const appliedPercent = useDoctorPercent ? Number(doctorPercent) : item.default_percent;
+
     setCart((prev) => [
       ...prev,
       {
@@ -279,7 +297,9 @@ export default function NaryadModal({
         isCustomPrice: pricing.isCustom,
         standardPrice: pricing.standardPrice,
         technician: isTechService ? selectedTechnician : undefined,
-        category: item.category
+        category: item.category,
+        percent: appliedPercent,
+        percentSource: useDoctorPercent ? 'doctor' : 'standard',
       }
     ]);
     setSelectedTeeth([]);
@@ -720,6 +740,18 @@ export default function NaryadModal({
                             <span className="inline-flex items-center gap-1 text-[11px] text-blue-600 dark:text-sky-400 font-mono font-black mt-1">
                               <ToothIcon className="w-3 h-3" />
                               <span>#{item.teeth.join(', ')}</span>
+                            </span>
+                          )}
+                          {typeof item.percent === 'number' && (
+                            <span
+                              title={item.percentSource === 'doctor' ? 'Shifokor foizi' : 'Standart foiz'}
+                              className={`ml-1.5 inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 rounded-md text-[10px] font-black ${
+                                item.percentSource === 'doctor'
+                                  ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/60 dark:text-amber-300'
+                                  : 'bg-slate-200 text-slate-600 dark:bg-slate-700 dark:text-slate-300'
+                              }`}
+                            >
+                              {item.percent}% {item.percentSource === 'doctor' ? '(shifokor)' : '(std)'}
                             </span>
                           )}
                         </div>

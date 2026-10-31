@@ -58,24 +58,8 @@ interface ActiveCheckoutModalProps {
   persistKey?: number;
 }
 
-const DEFAULT_DOCTORS = [
-  'Феруза Шоанварова',
-  'Сардор Мирахмедов',
-  'Сервер Халилов',
-  'Озод Тулкинов',
-  'Мальвина Кочиева',
-  'Шахноза Шаумарова',
-  'Гульбахор Шукурова',
-  'Абдуллох Максудов',
-  'Лола Саидахмедова',
-  'Мирислом Абдуллаев',
-  'Анна Эм',
-  'Абдулхамид Халиков',
-  'Сардор Алимов',
-  'Сервер Усманов',
-  'Озод Расулов',
-  'Мальвина Абдуллаева'
-];
+// Soxta shifokor ro'yxati olib tashlandi — doctorList faqat REAL xodimlardan to'ladi.
+const DEFAULT_DOCTORS: string[] = [];
 
 export const ActiveCheckoutModal: React.FC<ActiveCheckoutModalProps> = ({
   isOpen,
@@ -124,6 +108,11 @@ export const ActiveCheckoutModal: React.FC<ActiveCheckoutModalProps> = ({
       setDoctorList(merged);
     });
 
+    let cancelled = false;
+    setDraftLoaded(false);
+    const initialize = async () => {
+    if (persistKey != null) await clinicApi.hydratePatient(persistKey);
+    if (cancelled) return;
     // Prefer explicit karzinka items; otherwise load the persisted draft; else empty.
     const loaded: CheckoutItem[] =
       initialItems && initialItems.length > 0
@@ -143,7 +132,16 @@ export const ActiveCheckoutModal: React.FC<ActiveCheckoutModalProps> = ({
     const bal = Math.max(0, patient?.balance ?? 0);
     setPayments([{ method: 'Наличные', amount: Math.max(0, st - Math.min(bal, st)) }]);
     setDraftLoaded(true);
-  }, [isOpen, appointment]);
+    };
+    void initialize().catch(error => window.dispatchEvent(new CustomEvent('dentos-save-state', {detail:{error:String(error)}})));
+    return () => { cancelled = true; };
+    // MUHIM: `appointment` obyekti ba'zi chaqiruvchilarда har renderда yangi literal
+    // bo'lib keladi (masalan bemor kartasi). Shu sabab butun obyektga EMAS, faqat
+    // barqaror `appointment?.id` + persistKey ga bog'lanamiz — aks holda har parent
+    // re-renderida bu effect qayta ishlab, foydalanuvchi kiritgan narx/chegirma/qatorlarni
+    // tiklab yuboradi (va o'chirilgan qatorni qaytaradi).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, appointment?.id, persistKey]);
 
   // Persist the unpaid draft whenever it changes (appointments flow).
   useEffect(() => {
@@ -158,7 +156,7 @@ export const ActiveCheckoutModal: React.FC<ActiveCheckoutModalProps> = ({
       name: it.name,
       unitPrice: it.price,
       teeth: [],
-      doctor: it.doctor || appointment?.doctor_name || 'Сардор Алимов',
+      doctor: it.doctor || appointment?.doctor_name || '',
       date: 'Bugun',
       price: it.price * it.quantity,
       isDebt: false,
@@ -212,7 +210,7 @@ export const ActiveCheckoutModal: React.FC<ActiveCheckoutModalProps> = ({
 
   // Add naryad lines coming back from the NaryadModal (tooth chart + catalog).
   const handleAddNaryad = (cart: NaryadCartItem[]) => {
-    const defaultDoctor = items[0]?.doctor || appointment?.doctor_name || DEFAULT_DOCTORS[0];
+    const defaultDoctor = items[0]?.doctor || appointment?.doctor_name || '';
     const newItems: CheckoutItem[] = cart.map((c, idx) => ({
       id: `${Date.now()}-${idx}`,
       name: c.teeth.length ? `${c.name} (${c.teeth.join(', ')})` : c.name,
@@ -234,12 +232,13 @@ export const ActiveCheckoutModal: React.FC<ActiveCheckoutModalProps> = ({
       newItems.forEach(n =>
         clinicApi.appendNaryadLog(persistKey, {
           id: Date.now() + Math.floor(Math.random() * 1000),
+          naryad_id: n.id,                       // barqaror ID — bekor qilishda shu bo'yicha moslashadi
           patient_id: persistKey,
           patient_name: patientName,
           doctor: n.doctor,
           action: 'added',
           title: n.name,
-          author: 'Мухаммад Одилхонов',
+          author: user?.name || '',              // kirgan foydalanuvchi (hardcoded nom EMAS)
           date: label,
           price: n.price * n.quantity
         })
@@ -260,12 +259,13 @@ export const ActiveCheckoutModal: React.FC<ActiveCheckoutModalProps> = ({
       if (persistKey != null) {
         clinicApi.appendNaryadLog(persistKey, {
           id: Date.now() + Math.floor(Math.random() * 1000),
+          naryad_id: it.id,                      // barqaror ID bo'yicha mavjud yozuvni bekor qiladi
           patient_id: persistKey,
           patient_name: patientName,
           doctor: it.doctor,
           action: 'removed',
           title: it.name,
-          author: 'Мухаммад Одилхонов',
+          author: user?.name || '',              // kirgan foydalanuvchi (hardcoded nom EMAS)
           date: 'Bugun, ' + new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
           price: it.price * it.quantity,
           reason: reasonText
@@ -308,7 +308,7 @@ export const ActiveCheckoutModal: React.FC<ActiveCheckoutModalProps> = ({
       finalTotal,
       paymentMethod: methodSummary,
       items,
-      doctorName: items[0]?.doctor || appointment.doctor_name || DEFAULT_DOCTORS[0],
+      doctorName: items[0]?.doctor || appointment.doctor_name || '',
       paidAmount: paidByMethods,
       balanceApplied,
       debtAmount,

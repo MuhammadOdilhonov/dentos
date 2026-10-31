@@ -4,14 +4,19 @@ Ishga tushirish:  python manage.py seed_platform
 Barcha parollar: 123456
 """
 from django.core.management.base import BaseCommand
+from django.contrib.auth.hashers import make_password
 from clinic.models import ClinicTenant, DentalTechnician, PlatformSetting, PlatformUser
+
+# SuperAdmin — platforma egasi. Login Gmail, parol hash'lanadi (plain saqlanmaydi).
+SUPERADMIN_USERNAME = 'ikromifortik@gmail.com'
+SUPERADMIN_PASSWORD = 'muhammad0303'
 
 
 CLINICS = [
     {
-        'name': '32Desk Toshkent Markaziy', 'logo': '32D', 'branch': 'Toshkent sh., Amir Temur 104',
+        'name': 'Toshkent Markaziy', 'logo': 'TM', 'branch': 'Toshkent sh., Amir Temur 104',
         'director_name': 'Jasur Usmonov', 'phone': '+998 90 100 32 32', 'plan_tier': 'Enterprise',
-        'max_doctors': 25, 'storage_quota_gb': 120, 'storage_used_gb': 41.6, 'status': 'active',
+        'max_doctors': 25, 'storage_quota_gb': 1, 'storage_used_gb': 0, 'status': 'active',
         'enabled_modules': {'sms': True, 'telegram': True, 'whatsapp': True, 'lab': True, 'charts_3d': True, 'chairs': True, 'commissions': True},
     },
     {
@@ -38,7 +43,7 @@ TECHNICIANS = [
     {
         'name': 'Алишер Каримов', 'lab_name': 'Apex Dental Lab', 'phone': '+998 90 123 45 67',
         'username': 'texnik_alisher', 'password': '123456',
-        'linked_clinics': ['32Desk Toshkent Markaziy', 'Dental Academy Chilonzor'],
+        'linked_clinics': ['Toshkent Markaziy', 'Dental Academy Chilonzor'],
         'price_list': [
             {'id': 'tp1-1', 'name': 'Циркониевая коронка Prettau Multi-layer', 'category': 'Цирконий', 'price': 950000, 'lead_days': 3, 'material': 'Zirconia Katana HT'},
             {'id': 'tp1-2', 'name': 'Керамический винир E.max Press', 'category': 'Эстетика', 'price': 1200000, 'lead_days': 4, 'material': 'IPS e.max Press LT'},
@@ -49,7 +54,7 @@ TECHNICIANS = [
     {
         'name': 'Фарход Юсупов', 'lab_name': 'MasterDent CAD/CAM Lab', 'phone': '+998 90 987 12 34',
         'username': 'texnik_farhod', 'password': '123456',
-        'linked_clinics': ['32Desk Toshkent Markaziy', 'Smile City Samarqand'],
+        'linked_clinics': ['Smile City Samarqand'],
         'price_list': [
             {'id': 'tp2-1', 'name': 'Временная коронка PMMA (фрезерованная)', 'category': 'Временные', 'price': 180000, 'lead_days': 1, 'material': 'PMMA Multi'},
             {'id': 'tp2-2', 'name': 'Бюгельный протез на замках Bredent', 'category': 'Съемные протезы', 'price': 3200000, 'lead_days': 6, 'material': 'Bredent VKS'},
@@ -105,11 +110,26 @@ class Command(BaseCommand):
         })
         self.stdout.write(self.style.SUCCESS("Platforma sozlamasi"))
 
-        # 4. Login foydalanuvchilari (rol + klinika, hammasi 123456)
-        c1 = clinics_by_name['32Desk Toshkent Markaziy']
+        # 4. SuperAdmin — alohida (Gmail login, hash'langan parol).
+        #    Eski demo 'superadmin'/123456 akkaunti bo'lsa — XAVFSIZLIK uchun o'chiriladi.
+        PlatformUser.objects.filter(username='superadmin').delete()
+        PlatformUser.objects.update_or_create(
+            username=SUPERADMIN_USERNAME,
+            defaults={
+                'full_name': 'dentOS SuperAdmin',
+                'role': 'superadmin',
+                'clinic': None,
+                'password': make_password(SUPERADMIN_PASSWORD),
+                'is_active': True,
+            },
+        )
+        self.stdout.write(self.style.SUCCESS(f"SuperAdmin: {SUPERADMIN_USERNAME} (parol hash'langan)"))
+
+        # 5. Qolgan demo login foydalanuvchilari (rol + klinika, parol 123456)
+        c1 = clinics_by_name['Toshkent Markaziy']
         users = [
-            {'username': 'superadmin', 'full_name': 'dentOS SuperAdmin', 'role': 'superadmin', 'clinic': None},
             {'username': 'director', 'full_name': 'Jasur Usmonov', 'role': 'director', 'clinic': c1},
+            {'username': 'deputy_director', 'full_name': 'Muzaffar Olimov', 'role': 'deputy_director', 'clinic': c1},
             {'username': 'admin', 'full_name': 'Aziza Karimova', 'role': 'admin', 'clinic': c1},
             {'username': 'kassa', 'full_name': 'Dilorom Saidova', 'role': 'kassa', 'clinic': c1},
             {'username': 'doctor', 'full_name': 'Sardor Alimov', 'role': 'doctor', 'clinic': c1},
@@ -119,5 +139,5 @@ class Command(BaseCommand):
                 username=u['username'],
                 defaults={'full_name': u['full_name'], 'role': u['role'], 'clinic': u['clinic'], 'password': '123456', 'is_active': True},
             )
-        self.stdout.write(self.style.SUCCESS(f"{len(users)} platforma foydalanuvchisi + texnik login (texnik_alisher)"))
-        self.stdout.write(self.style.SUCCESS("SEED TUGADI. Barcha parollar: 123456"))
+        self.stdout.write(self.style.SUCCESS(f"{len(users)} demo foydalanuvchi (director/admin/kassa/doctor = 123456) + texnik_alisher"))
+        self.stdout.write(self.style.SUCCESS("SEED TUGADI."))

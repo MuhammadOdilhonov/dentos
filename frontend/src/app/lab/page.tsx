@@ -46,8 +46,10 @@ import {
   HardDrive,
   FileArchive
 } from 'lucide-react';
-import Dental3DScanViewerModal from '../../components/Dental3DScanViewerModal';
-import DentalRentgenViewerModal from '../../components/DentalRentgenViewerModal';
+import dynamic from 'next/dynamic';
+// Three.js/DICOM og'ir — faqat tegishli ko'ruvchi modal ochilganda yuklanadi (#5).
+const Dental3DScanViewerModal = dynamic(() => import('../../components/Dental3DScanViewerModal'), { ssr: false });
+const DentalRentgenViewerModal = dynamic(() => import('../../components/DentalRentgenViewerModal'), { ssr: false });
 
 function getTechGradient(techName?: string) {
   const norm = (techName || '').toLowerCase();
@@ -90,7 +92,7 @@ function TechLogoPill({ name, tech }: { name: string; tech?: DentalTechnician })
 }
 
 export default function DentalLabPage() {
-    const { language, tr } = useI18n();
+    const { language, tr, tk } = useI18n();
 
   // Multi-language helper: guarantees clean single-language output
   const { user } = useAuth();
@@ -384,19 +386,8 @@ export default function DentalLabPage() {
     setLabOrders(prev => prev.filter(o => o.id !== id));
   };
 
-  // Technicians list for Day view
-  const isDemoClinic = !user?.clinicId || user?.clinicId === 1;
-  const activeTechnicians = useMemo(() => {
-    if (technicians.length > 0) return technicians;
-    if (isDemoClinic) {
-      return [
-        { id: 1, name: 'Алишер Каримов', lab_name: 'Apex Dental Lab', phone: '+998 90 123 45 67', username: 'texnik_alisher', password: '123', linked_clinics: ['32Desk Toshkent Markaziy'], price_list: [], is_active: true, created_at: '' },
-        { id: 2, name: 'Фарход Юсупов', lab_name: 'MasterDent CAD/CAM Lab', phone: '+998 90 987 12 34', username: 'texnik_farhod', password: '123', linked_clinics: ['32Desk Toshkent Markaziy'], price_list: [], is_active: true, created_at: '' },
-        { id: 3, name: 'Дилшод Хакимов', lab_name: 'SmileAlign Orto Lab', phone: '+998 93 405 90 12', username: 'texnik_dilshod', password: '123', linked_clinics: ['32Desk Toshkent Markaziy'], price_list: [], is_active: true, created_at: '' }
-      ];
-    }
-    return [];
-  }, [technicians, isDemoClinic]);
+  // Technicians list for Day view — faqat REAL texniklar (soxta namuna yo'q)
+  const activeTechnicians = useMemo(() => technicians, [technicians]);
 
   // 7 Days of the week for Week view
   const weekDays = useMemo(() => {
@@ -406,11 +397,7 @@ export default function DentalLabPage() {
     monday.setDate(curr.getDate() - dayOfWeek);
 
     const days = [];
-    const dayNames = language === 'uz'
-      ? ['Dushanba', 'Seshanba', 'Chorshanba', 'Payshanba', 'Juma', 'Shanba', 'Yakshanba']
-      : language === 'ru'
-      ? ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье']
-      : ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+    const dayNames = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].map(k => tk(k));
 
     for (let i = 0; i < 7; i++) {
       const d = new Date(monday);
@@ -853,7 +840,7 @@ export default function DentalLabPage() {
               <option value="all">{tr('lab.allStatuses')}</option>
               {LAB_STATUS_CHAIN.map(s => (
                 <option key={s.key} value={s.key}>
-                  {language === 'ru' ? s.labelRu : language === 'en' ? s.labelEn : s.labelUz}
+                  {getStatusBadge(s.key, language as any).label}
                 </option>
               ))}
             </select>
@@ -1007,7 +994,13 @@ export default function DentalLabPage() {
                 </button>
               </div>
             ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            <div className={`grid gap-4 mx-auto ${
+              activeTechnicians.length === 1
+                ? 'grid-cols-1 max-w-md'
+                : activeTechnicians.length === 2
+                ? 'grid-cols-1 md:grid-cols-2 max-w-3xl'
+                : 'grid-cols-1 md:grid-cols-2 xl:grid-cols-3'
+            }`}>
               {activeTechnicians.map(tech => {
                 const techOrders = filteredOrders.filter(
                   o => o.technician === tech.id || o.technician_name === tech.name || o.technician_name.includes(tech.name.split(' ')[0])

@@ -1,3 +1,5 @@
+import { apiFetch, ApiError, reportApiError } from './http';
+import { hydratePatientRecords, readPatientRecord, savePatientRecord, primeLocalPatientRecord } from './patientRecords';
 import {
   Employee, Patient, Appointment, FinancialTransaction,
   ClinicTask, WarehouseItem, DentalLabOrder, DashboardStats,
@@ -12,7 +14,10 @@ import {
   mockLabOrders, mockStats, mockClinics, mockTechnicians, mockBranches
 } from './mockData';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://127.0.0.1:8000/api';
+// Default to the same-origin reverse-proxy path ('/api'). In local dev Next.js
+// rewrites '/api/*' to 127.0.0.1:8000 (next.config.mjs); in production Caddy
+// proxies it. Never hardcode 127.0.0.1 — that would bypass the proxy in a browser.
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || '/api';
 
 export function getActiveClinicId(): number | null {
   if (typeof window === 'undefined') return null;
@@ -23,8 +28,30 @@ export function getActiveClinicId(): number | null {
     if (user?.clinicId !== undefined && user?.clinicId !== null) {
       return Number(user.clinicId);
     }
-  } catch {}
+  } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
   return null;
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Demo (namoyish) klinika (id = 1) — FAQAT KO'RISH rejimi.
+// Demo akkauntda: ma'lumot qo'shish/o'zgartirish/o'chirish, fayl (skan/rentgen/
+// fotoprotokol) yuklash va Telegram ulash O'CHIRILGAN. Mavjud namuna ma'lumot
+// ko'rinadi, lekin saqlanmaydi. Real klinikalar (id ≠ 1) to'liq ishlaydi.
+// ──────────────────────────────────────────────────────────────────────────
+export const DEMO_CLINIC_ID = 1;
+
+export function isDemoClinic(cid?: number | null): boolean {
+  const id = cid !== undefined ? cid : getActiveClinicId();
+  return Number(id) === DEMO_CLINIC_ID;
+}
+
+/**
+ * Demo klinika bo'lsa `true` qaytaradi — amal BAZAGA jo'natilmaydi (saqlanmaydi).
+ * ALERT YO'Q: foydalanuvchi formani to'ldirib, "Saqlash"ni bosib ko'raveradi,
+ * faqat natija bazaga ketmaydi. Eslatma — tepadagi aylanuvchi banner (DemoBanner).
+ */
+export function demoBlocked(_message?: string): boolean {
+  return isDemoClinic();
 }
 
 export function getClinicStorageKey(baseKey: string, explicitCid?: number | null): string {
@@ -34,6 +61,30 @@ export function getClinicStorageKey(baseKey: string, explicitCid?: number | null
   }
   return baseKey;
 }
+
+// ──────────────────────────────────────────────────────────────────────────
+// DEMO namuna media (bemor #1) — demo klinikada rentgen/foto/skan "ko'rsatish"
+// uchun. Saqlanmaydi; getter'lar faqat demo'da va #1-bemorda bo'sh bo'lsa qaytaradi.
+// ──────────────────────────────────────────────────────────────────────────
+const DEMO_SAMPLE_XRAYS = [
+  {
+    id: 'demo_xray_1', type: 'image', title: 'OPTG — Panoramik rentgen (demo namuna)',
+    date: '2026-10-10', src: '/dicom_slices/axial_190.png',
+    notes: 'Demo namuna rentgen tasviri (haqiqiy bemor ma\'lumoti emas).',
+    brightness: 0, contrast: 110, inverted: false, zoom: 1, rotation: 0,
+  },
+];
+const DEMO_SAMPLE_PHOTO_DOC = [
+  {
+    id: 'demo_slide_1', background: '#ffffff', elements: [
+      { id: 'demo_h', type: 'heading', x: 8, y: 6, width: 84, height: 12, content: 'Foto protokol — demo bemor', fontSize: 34, bold: true, color: '#17212b' },
+      { id: 'demo_img', type: 'image', src: '/login/photo-protocol-demo.png', caption: 'Klinik foto (demo namuna)', x: 8, y: 24, width: 62, height: 60, fit: 'contain' as const },
+    ],
+  },
+];
+const DEMO_SAMPLE_SCAN = { hasScan: true, scanDate: '2026-10-10', fileName: 'demo_maxillary.stl', notes: 'Demo 3D intraoral skan namunasi.' };
+// Demo'dagi OXIRGI bemor (clinic 1 ichidagi eng katta id) — namuna media shunga biriktiriladi.
+const DEMO_SAMPLE_PATIENT_ID = 37;
 
 // ──────────────────────────────────────────────────────────────────────────
 // Tarmoq keshi (GET) — bo'limdan bo'limga o'tishni tezlashtiradi (SWR uslubi).
@@ -47,17 +98,71 @@ const FETCH_CACHE_TTL = 15000; // ms — yangi deb hisoblanadigan oyna
 const _fetchCache = new Map<string, { ts: number; data: any }>();
 const _inflight = new Map<string, Promise<any>>();
 
+// Bemor media presence keshi (BAZADAN) — yashil ptichka sinxron o'qishi uchun.
+let _mediaPresenceCache: Record<string, { foto: boolean; rentgen: boolean; skan: boolean }> = {};
+let _mediaPresenceTotals: { foto: number; rentgen: number; skan: number; patients_with_media: number; files_total: number } | null = null;
+
 export function bustApiCache(): void {
   _fetchCache.clear();
   _inflight.clear();
 }
 
+// ──────────────────────────────────────────────────────────────────────────
+// Demo klinika (id = 1) ma'lumotini HAFTADA 1 marta avtomatik tozalash.
+// Foydalanuvchi demo ichida qo'shgan localStorage o'zgarishlari o'chiriladi va
+// demo yana toza namuna (mockData) holatiga qaytadi. Real klinikalarga (id≠1)
+// tegilmaydi. Modul yuklanganda (client) bir marta ishga tushadi.
+// ──────────────────────────────────────────────────────────────────────────
+const DEMO_SEED_TS_KEY = '32desk_demo_seed_ts';
+const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+export function maybeResetDemoData(): void {
+  if (typeof window === 'undefined') return;
+  try {
+    // FAQAT demo klinika (yoki login qilinmagan) uchun. Real klinikaga TEGILMAYDI —
+    // ya'ni real foydalanuvchiga '32desk_demo_seed_ts' yozilmaydi va lokal ma'lumoti o'chmaydi.
+    const cid = getActiveClinicId();
+    if (cid && Number(cid) !== DEMO_CLINIC_ID) return;
+    const last = Number(localStorage.getItem(DEMO_SEED_TS_KEY) || 0);
+    if (last && Date.now() - last < ONE_WEEK_MS) return;
+    const legacyDemoKeys = [
+      '32desk_custom_employees', '32desk_custom_patients', '32desk_custom_appointments',
+      '32desk_branch_plans_current', '32desk_monthly_plan_current'
+    ];
+    const toRemove: string[] = [];
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (!k) continue;
+      // Faqat demo klinika (id 1) kalitlari: "..._clinic_1" bilan tugaydiganlar + eski kalitlar
+      if (/_clinic_1$/.test(k) || legacyDemoKeys.includes(k)) toRemove.push(k);
+    }
+    toRemove.forEach(k => localStorage.removeItem(k));
+    localStorage.setItem(DEMO_SEED_TS_KEY, String(Date.now()));
+    bustApiCache();
+  } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
+}
+if (typeof window !== 'undefined') {
+  try { maybeResetDemoData(); } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
+}
+
 async function safeFetch<T>(url: string, fallback: T, options?: RequestInit): Promise<T> {
   const method = (options?.method || 'GET').toUpperCase();
   const cacheable = method === 'GET';
+  const cid = getActiveClinicId();
+
+  // Offline (backend o'chiq) uchun localStorage kesh — oxirgi MUVAFFAQIYATLI javob saqlanadi.
+  // Backend ishlamasa mock emas, SHU oxirgi haqiqiy ma'lumot ko'rsatiladi (bir xil ko'rinadi).
+  const lsKey = `32desk_apicache_${cid || 0}_${url}`;
+  const readLs = (): T | undefined => {
+    if (!isDemoClinic() || !cacheable || typeof window === 'undefined') return undefined;
+    try { const raw = localStorage.getItem(lsKey); if (raw) return JSON.parse(raw) as T; } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
+    return undefined;
+  };
+  const writeLs = (data: any) => {
+    if (!isDemoClinic() || !cacheable || typeof window === 'undefined') return;
+    try { localStorage.setItem(lsKey, JSON.stringify(data)); } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
+  };
 
   try {
-    const cid = getActiveClinicId();
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
       ...(options?.headers as Record<string, string> || {})
@@ -85,15 +190,17 @@ async function safeFetch<T>(url: string, fallback: T, options?: RequestInit): Pr
     }
 
     const doFetch = (async () => {
-      const res = await fetch(finalUrl, { ...options, headers, next: { revalidate: 0 } });
+      const res = await apiFetch(finalUrl, { ...options, headers, next: { revalidate: 0 } });
       if (!res.ok) {
-        // Xato bo'lsa — eski keshni (bor bo'lsa) qaytaramiz, aks holda fallback
+        // Xato bo'lsa — avval xotira keshi, keyin localStorage (oxirgi haqiqiy), oxirida fallback
         const stale = cacheable ? _fetchCache.get(cacheKey) : undefined;
         if (stale) return stale.data;
+        const ls = readLs();
+        if (ls !== undefined) return ls;
         return fallback;
       }
       const json = await res.json();
-      if (cacheable) _fetchCache.set(cacheKey, { ts: Date.now(), data: json });
+      if (cacheable) { _fetchCache.set(cacheKey, { ts: Date.now(), data: json }); writeLs(json); }
       return json;
     })();
 
@@ -107,11 +214,36 @@ async function safeFetch<T>(url: string, fallback: T, options?: RequestInit): Pr
     }
     return (await doFetch) as T;
   } catch {
+    // Tarmoq umuman yo'q — oxirgi haqiqiy (localStorage) ma'lumotни qaytaramiz, bo'lmasa fallback
+    const ls = readLs();
+    if (ls !== undefined) return ls;
     return fallback;
   }
 }
 
+// Naryad jurnaliga bitta yozuvni qo'llaydi (real baza va demo uchun bir xil).
+// 'removed' bo'lsa — BARQAROR naryad_id (bo'lmasa id) orqali mavjud FAOL yozuvni topib
+// "bekor qilingan" deb belgilaydi. Narx yoki nom o'xshashligi bilan MOSLASHTIRMAYDI.
+function applyNaryadLogEntry(list: NaryadLogEntry[], entry: NaryadLogEntry, patientId: number): NaryadLogEntry[] {
+  const out = list.slice();
+  if (entry.action === 'removed') {
+    const key = entry.naryad_id ?? entry.id;
+    const idx = out.findIndex(it => it.status !== 'cancelled' && (it.naryad_id ?? it.id) === key);
+    if (idx >= 0) {
+      out[idx] = { ...out[idx], status: 'cancelled', action: 'removed',
+        cancelled_by: entry.author, cancelled_date: entry.date, reason: entry.reason || 'Отменено' };
+    } else {
+      out.unshift({ ...entry, patient_id: entry.patient_id ?? patientId, status: 'cancelled',
+        cancelled_by: entry.author, cancelled_date: entry.date });
+    }
+  } else {
+    out.unshift({ ...entry, patient_id: entry.patient_id ?? patientId, status: 'active' });
+  }
+  return out;
+}
+
 export const clinicApi = {
+  async hydratePatient(patientId: number) { if (!isDemoClinic()) await hydratePatientRecords(patientId); },
   // Employees
   async getEmployees(branchId?: number, overrideClinicId?: number): Promise<Employee[]> {
     const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
@@ -125,7 +257,7 @@ export const clinicApi = {
           const legacy = localStorage.getItem('32desk_custom_employees');
           if (legacy) customEmps = JSON.parse(legacy);
         }
-      } catch (e) {
+      } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
         console.error(e);
       }
     }
@@ -137,7 +269,8 @@ export const clinicApi = {
 
     const fallbackEmployees = (cid === 1) ? mockEmployees : [];
     const defaultEmps = await safeFetch<Employee[]>(`${API_BASE}/employees/${q}`, fallbackEmployees);
-    
+    if (!isDemoClinic(cid)) return defaultEmps;
+
     // Properly merge custom overrides by id
     const customMap = new Map(customEmps.map((e) => [e.id, e]));
     const merged = defaultEmps.map((e) => {
@@ -155,13 +288,23 @@ export const clinicApi = {
         merged.unshift(e);
       }
     }
-    if (branchId) {
-      return merged.filter((e) => !e.branch || e.branch === branchId);
+    // O'chirilgan xodimlarni (seed bo'lsa ham) chiqarib tashlaymiz
+    let deletedIds: number[] = [];
+    if (typeof window !== 'undefined') {
+      try {
+        const delStored = localStorage.getItem(getClinicStorageKey('32desk_deleted_employees', cid));
+        if (delStored) deletedIds = JSON.parse(delStored);
+      } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
     }
-    return merged;
+    const visible = deletedIds.length ? merged.filter((e) => !deletedIds.includes(e.id)) : merged;
+    if (branchId) {
+      return visible.filter((e) => !e.branch || e.branch === branchId);
+    }
+    return visible;
   },
 
   async createEmployee(data: Partial<Employee>): Promise<Employee> {
+    if (demoBlocked()) return { id: 0, ...(data as any) } as Employee;
     bustApiCache();
     const cid = data.clinic !== undefined ? data.clinic : getActiveClinicId();
     const payload = {
@@ -169,7 +312,7 @@ export const clinicApi = {
       clinic: cid || undefined
     };
     try {
-      const res = await fetch(`${API_BASE}/employees/`, {
+      const res = await apiFetch(`${API_BASE}/employees/`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -188,13 +331,13 @@ export const clinicApi = {
             if (idx >= 0) customEmps[idx] = created;
             else customEmps.unshift(created);
             localStorage.setItem(storageKey, JSON.stringify(customEmps));
-          } catch (e) {
+          } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
             console.error(e);
           }
         }
         return created;
       }
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.warn('Backend createEmployee failed, falling back:', e);
     }
 
@@ -235,7 +378,7 @@ export const clinicApi = {
         const customEmps: Employee[] = stored ? JSON.parse(stored) : [];
         customEmps.unshift(newEmp);
         localStorage.setItem(storageKey, JSON.stringify(customEmps));
-      } catch (e) {
+      } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
         console.error(e);
       }
     }
@@ -243,11 +386,12 @@ export const clinicApi = {
   },
 
   async updateEmployee(id: number, data: Partial<Employee>): Promise<Employee | null> {
+    if (demoBlocked()) return null;
     bustApiCache();
     const cid = data.clinic !== undefined ? data.clinic : getActiveClinicId();
     let serverUpdated: Employee | null = null;
     try {
-      const res = await fetch(`${API_BASE}/employees/${id}/`, {
+      const res = await apiFetch(`${API_BASE}/employees/${id}/`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -258,7 +402,7 @@ export const clinicApi = {
       if (res.ok) {
         serverUpdated = await res.json();
       }
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.warn('Backend updateEmployee failed:', e);
     }
 
@@ -280,11 +424,45 @@ export const clinicApi = {
           localStorage.setItem(storageKey, JSON.stringify(customEmps));
           return updated;
         }
-      } catch (e) {
+      } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
         console.error(e);
       }
     }
     return serverUpdated;
+  },
+
+  async deleteEmployee(id: number, overrideClinicId?: number): Promise<boolean> {
+    if (demoBlocked()) return false;
+    bustApiCache();
+    const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
+    try {
+      await apiFetch(`${API_BASE}/employees/${id}/`, {
+        method: 'DELETE',
+        headers: { ...(cid ? { 'X-Clinic-ID': String(cid) } : {}) }
+      });
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
+      console.warn('Backend deleteEmployee failed:', e);
+    }
+    if (typeof window !== 'undefined') {
+      try {
+        // 1) Custom (foydalanuvchi yaratgan) ro'yxatdan olib tashlaymiz
+        const storageKey = getClinicStorageKey('32desk_custom_employees', cid);
+        const stored = localStorage.getItem(storageKey);
+        if (stored) {
+          const list: Employee[] = JSON.parse(stored);
+          localStorage.setItem(storageKey, JSON.stringify(list.filter((e) => e.id !== id)));
+        }
+        // 2) Seed (namuna) xodimni ham "o'chirilgan" deb belgilaymiz — getEmployees filtrlaydi
+        const delKey = getClinicStorageKey('32desk_deleted_employees', cid);
+        const delStored = localStorage.getItem(delKey);
+        const delIds: number[] = delStored ? JSON.parse(delStored) : [];
+        if (!delIds.includes(id)) delIds.push(id);
+        localStorage.setItem(delKey, JSON.stringify(delIds));
+      } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
+        console.error(e);
+      }
+    }
+    return true;
   },
 
   // Patients
@@ -300,7 +478,7 @@ export const clinicApi = {
           const legacy = localStorage.getItem('32desk_custom_patients');
           if (legacy) customPatients = JSON.parse(legacy);
         }
-      } catch (e) {
+      } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
         console.error(e);
       }
     }
@@ -315,6 +493,7 @@ export const clinicApi = {
       `${API_BASE}/patients/${qs}`,
       fallbackPatients
     );
+    if (!isDemoClinic(cid)) return defaultPatients;
 
     const customMap = new Map(customPatients.map((p) => [p.id, p]));
     const merged = defaultPatients.map((p) => customMap.get(p.id) || p);
@@ -324,7 +503,17 @@ export const clinicApi = {
       }
     }
 
-    const sanitized = merged.map((p) => ({
+    // O'chirilgan bemorlarni (seed bo'lsa ham) chiqarib tashlaymiz
+    let deletedIds: number[] = [];
+    if (typeof window !== 'undefined') {
+      try {
+        const delStored = localStorage.getItem(getClinicStorageKey('32desk_deleted_patients', cid));
+        if (delStored) deletedIds = JSON.parse(delStored);
+      } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
+    }
+    const visible = deletedIds.length ? merged.filter((p) => !deletedIds.includes(p.id)) : merged;
+
+    const sanitized = visible.map((p) => ({
       ...p,
       balance: Math.round(Number(p.balance) || 0)
     }));
@@ -334,7 +523,40 @@ export const clinicApi = {
     return sanitized.filter((p) => p.full_name.toLowerCase().includes(q) || p.phone.includes(q));
   },
 
+  async deletePatient(patientId: number, overrideClinicId?: number): Promise<boolean> {
+    if (demoBlocked()) return false;
+    bustApiCache();
+    const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
+    try {
+      await apiFetch(`${API_BASE}/patients/${patientId}/`, {
+        method: 'DELETE',
+        headers: { ...(cid ? { 'X-Clinic-ID': String(cid) } : {}) }
+      });
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
+      console.warn('Backend deletePatient failed:', e);
+    }
+    if (typeof window !== 'undefined') {
+      try {
+        const storageKey = getClinicStorageKey('32desk_custom_patients', cid);
+        const stored = localStorage.getItem(storageKey);
+        if (stored) {
+          const list: Patient[] = JSON.parse(stored);
+          localStorage.setItem(storageKey, JSON.stringify(list.filter((p) => p.id !== patientId)));
+        }
+        const delKey = getClinicStorageKey('32desk_deleted_patients', cid);
+        const delStored = localStorage.getItem(delKey);
+        const delIds: number[] = delStored ? JSON.parse(delStored) : [];
+        if (!delIds.includes(patientId)) delIds.push(patientId);
+        localStorage.setItem(delKey, JSON.stringify(delIds));
+      } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
+        console.error(e);
+      }
+    }
+    return true;
+  },
+
   async createPatient(data: Partial<Patient>): Promise<Patient> {
+    if (demoBlocked()) return { id: 0, ...(data as any) } as Patient;
     bustApiCache();
     const cid = data.clinic !== undefined ? data.clinic : getActiveClinicId();
     const payload = {
@@ -343,7 +565,7 @@ export const clinicApi = {
     };
 
     try {
-      const res = await fetch(`${API_BASE}/patients/`, {
+      const res = await apiFetch(`${API_BASE}/patients/`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -360,13 +582,13 @@ export const clinicApi = {
             const list: Patient[] = stored ? JSON.parse(stored) : [];
             list.unshift(created);
             localStorage.setItem(storageKey, JSON.stringify(list));
-          } catch (e) {
+          } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
             console.error(e);
           }
         }
         return created;
       }
-    } catch {}
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
 
     const newP: Patient = {
       id: Date.now(),
@@ -389,7 +611,7 @@ export const clinicApi = {
         const list: Patient[] = stored ? JSON.parse(stored) : [];
         list.unshift(newP);
         localStorage.setItem(storageKey, JSON.stringify(list));
-      } catch (e) {
+      } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
         console.error(e);
       }
     }
@@ -401,10 +623,11 @@ export const clinicApi = {
   },
 
   async updatePatient(patientId: number, data: Partial<Patient>): Promise<void> {
+    if (demoBlocked()) return;
     bustApiCache();
     const cid = data.clinic !== undefined ? data.clinic : getActiveClinicId();
     try {
-      await fetch(`${API_BASE}/patients/${patientId}/`, {
+      await apiFetch(`${API_BASE}/patients/${patientId}/`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -412,7 +635,7 @@ export const clinicApi = {
         },
         body: JSON.stringify(data)
       });
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.warn('Backend updatePatient failed:', e);
     }
 
@@ -438,12 +661,12 @@ export const clinicApi = {
               let aptList: Appointment[] = JSON.parse(storedApts);
               aptList = aptList.map(a => a.patient === patientId ? { ...a, patient_service_lang: data.service_lang } : a);
               localStorage.setItem(aptKey, JSON.stringify(aptList));
-            } catch (e) {
+            } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
               console.error(e);
             }
           }
         }
-      } catch (err) {
+      } catch (err) { if (err instanceof ApiError && !isDemoClinic()) throw err;
         console.error('Local updatePatient failed:', err);
       }
     }
@@ -476,7 +699,7 @@ export const clinicApi = {
           const legacy = localStorage.getItem('32desk_custom_appointments');
           if (legacy) customApts = JSON.parse(legacy);
         }
-      } catch (e) {
+      } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
         console.error(e);
       }
     }
@@ -492,6 +715,7 @@ export const clinicApi = {
       `${API_BASE}/appointments/${qs}`,
       fallbackAppointments
     );
+    if (!isDemoClinic(cid)) return defaultApts;
 
     const customIds = new Set(customApts.map((a) => a.id));
     const merged = [...customApts, ...defaultApts.filter((a) => !customIds.has(a.id))];
@@ -513,6 +737,7 @@ export const clinicApi = {
   },
 
   async createAppointment(data: Partial<Appointment>): Promise<Appointment> {
+    if (demoBlocked()) return { id: 0, ...(data as any) } as Appointment;
     bustApiCache();
     const cid = data.clinic !== undefined ? data.clinic : getActiveClinicId();
     const payload = {
@@ -521,7 +746,7 @@ export const clinicApi = {
     };
 
     try {
-      const res = await fetch(`${API_BASE}/appointments/`, {
+      const res = await apiFetch(`${API_BASE}/appointments/`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -538,13 +763,13 @@ export const clinicApi = {
             const customApts: Appointment[] = stored ? JSON.parse(stored) : [];
             customApts.unshift(created);
             localStorage.setItem(storageKey, JSON.stringify(customApts));
-          } catch (e) {
+          } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
             console.error(e);
           }
         }
         return created;
       }
-    } catch {}
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
 
     const newApt: Appointment = {
       id: Date.now(),
@@ -553,7 +778,7 @@ export const clinicApi = {
       patient_name: data.patient_name || 'Bemor',
       patient_phone: data.patient_phone || '+998 90 123 45 67',
       doctor: data.doctor || 1,
-      doctor_name: data.doctor_name || 'Sardor Alimov',
+      doctor_name: data.doctor_name || '',
       doctor_color: data.doctor_color || '#0EA5E9',
       branch: data.branch,
       branch_name: data.branch_name,
@@ -575,7 +800,7 @@ export const clinicApi = {
         const customApts: Appointment[] = stored ? JSON.parse(stored) : [];
         customApts.unshift(newApt);
         localStorage.setItem(storageKey, JSON.stringify(customApts));
-      } catch (e) {
+      } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
         console.error(e);
       }
     }
@@ -587,10 +812,11 @@ export const clinicApi = {
   },
 
   async updateAppointmentStatus(id: number, status: Appointment['status']): Promise<void> {
+    if (demoBlocked()) return;
     bustApiCache();
     const cid = getActiveClinicId();
     try {
-      await fetch(`${API_BASE}/appointments/${id}/change_status/`, {
+      await apiFetch(`${API_BASE}/appointments/${id}/change_status/`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -598,7 +824,7 @@ export const clinicApi = {
         },
         body: JSON.stringify({ status })
       });
-    } catch {}
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
 
     const colorMap: Record<string, string> = {
       new: '#3B82F6',
@@ -626,7 +852,7 @@ export const clinicApi = {
           found.color_code = colorMap[status] || found.color_code;
           localStorage.setItem(storageKey, JSON.stringify(customApts));
         }
-      } catch (e) {
+      } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
         console.error(e);
       }
     }
@@ -641,6 +867,7 @@ export const clinicApi = {
   },
 
   async updatePatientBalance(patientId: number, delta: number): Promise<void> {
+    if (demoBlocked()) return;
     bustApiCache();
     const cid = getActiveClinicId();
     const numDelta = Math.round(Number(delta) || 0);
@@ -659,7 +886,7 @@ export const clinicApi = {
           }
         }
         localStorage.setItem(storageKey, JSON.stringify(customPatients));
-      } catch (e) {
+      } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
         console.error(e);
       }
     }
@@ -673,6 +900,7 @@ export const clinicApi = {
   },
 
   async updateAppointment(id: number, data: Partial<Appointment>): Promise<Appointment | null> {
+    if (demoBlocked()) return null;
     bustApiCache();
     const cid = data.clinic !== undefined ? data.clinic : getActiveClinicId();
     if (typeof window !== 'undefined') {
@@ -694,7 +922,7 @@ export const clinicApi = {
             return updated;
           }
         }
-      } catch (e) {
+      } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
         console.error(e);
       }
     }
@@ -710,10 +938,11 @@ export const clinicApi = {
   },
 
   async deleteAppointment(id: number): Promise<{ ok: boolean; error?: string }> {
+    if (demoBlocked()) return { ok: false, error: 'demo' };
     bustApiCache();
     const cid = getActiveClinicId();
     try {
-      const res = await fetch(`${API_BASE}/appointments/${id}/`, {
+      const res = await apiFetch(`${API_BASE}/appointments/${id}/`, {
         method: 'DELETE',
         headers: cid ? { 'X-Clinic-ID': String(cid) } : undefined
       });
@@ -721,7 +950,7 @@ export const clinicApi = {
         const errData = await res.json().catch(() => ({}));
         return { ok: false, error: errData.detail || 'Delete failed' };
       }
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.warn('Backend delete failed, falling back to local storage:', e);
     }
 
@@ -732,7 +961,7 @@ export const clinicApi = {
         let customApts: Appointment[] = stored ? JSON.parse(stored) : [];
         customApts = customApts.filter((a) => a.id !== id);
         localStorage.setItem(storageKey, JSON.stringify(customApts));
-      } catch (e) {
+      } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
         console.error(e);
       }
     }
@@ -747,13 +976,13 @@ export const clinicApi = {
 
   async testReplyAlgorithm(phone: string, text: string, appointmentId?: number): Promise<any> {
     try {
-      const res = await fetch(`${API_BASE}/reminders/process-reply/`, {
+      const res = await apiFetch(`${API_BASE}/reminders/process-reply/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone, text, appointment_id: appointmentId })
       });
       if (res.ok) return await res.json();
-    } catch (e) {}
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;}
 
     // Fallback local NLP evaluator
     const lower = (text || '').toLowerCase().trim();
@@ -793,6 +1022,7 @@ export const clinicApi = {
   // Struck-but-unpaid naryads survive closing/reopening the checkout and page
   // reloads. Keyed by patient id inside a single localStorage map.
   getCheckoutDraft(patientId: number): NaryadDraftItem[] {
+    if (typeof window !== 'undefined' && !isDemoClinic()) return readPatientRecord(patientId, 'checkout', []);
     if (typeof window === 'undefined') return [];
     try {
       const stored = localStorage.getItem('32desk_checkout_drafts');
@@ -804,13 +1034,14 @@ export const clinicApi = {
   },
 
   saveCheckoutDraft(patientId: number, items: NaryadDraftItem[]): void {
+    if (typeof window !== 'undefined' && !isDemoClinic()) { savePatientRecord(patientId, 'checkout', items); return; }
     if (typeof window === 'undefined') return;
     try {
       const stored = localStorage.getItem('32desk_checkout_drafts');
       const map: Record<string, NaryadDraftItem[]> = stored ? JSON.parse(stored) : {};
       map[patientId] = items;
       localStorage.setItem('32desk_checkout_drafts', JSON.stringify(map));
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error(e);
     }
   },
@@ -821,6 +1052,7 @@ export const clinicApi = {
 
   // --- Patient naryads (Cart of services in Patient Card) ---
   getPatientNaryads(patientId: number): any[] {
+    if (typeof window !== 'undefined' && !isDemoClinic()) return readPatientRecord(patientId, 'naryads', []);
     if (typeof window === 'undefined') return [];
     try {
       const stored = localStorage.getItem(`32desk_patient_naryads_${patientId}`);
@@ -834,7 +1066,7 @@ export const clinicApi = {
           name: d.name,
           unitPrice: d.price,
           teeth: [],
-          doctor: d.doctor || 'Сардор Алимов',
+          doctor: d.doctor || '',
           date: 'Bugun',
           price: d.price * (d.quantity || 1),
           isDebt: false,
@@ -848,6 +1080,7 @@ export const clinicApi = {
   },
 
   savePatientNaryads(patientId: number, naryads: any[]): void {
+    if (typeof window !== 'undefined' && !isDemoClinic()) { savePatientRecord(patientId, 'naryads', naryads); return; }
     if (typeof window === 'undefined') return;
     try {
       localStorage.setItem(`32desk_patient_naryads_${patientId}`, JSON.stringify(naryads));
@@ -857,26 +1090,28 @@ export const clinicApi = {
         name: n.title || n.name,
         price: n.unitPrice || n.price,
         quantity: n.quantity || 1,
-        doctor: n.doctor || 'Сардор Алимов'
+        doctor: n.doctor || ''
       }));
       this.saveCheckoutDraft(patientId, draftItems);
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error(e);
     }
   },
 
   clearPatientNaryads(patientId: number): void {
+    if (!isDemoClinic()) { savePatientRecord(patientId, 'naryads', []); this.clearCheckoutDraft(patientId); return; }
     if (typeof window === 'undefined') return;
     try {
       localStorage.removeItem(`32desk_patient_naryads_${patientId}`);
       this.clearCheckoutDraft(patientId);
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error(e);
     }
   },
 
   // --- Patient notes (Заметки / Основные feed) — persisted per patient ---
   getPatientNotes(patientId: number): any[] {
+    if (typeof window !== 'undefined' && !isDemoClinic()) return readPatientRecord(patientId, 'notes', []);
     if (typeof window === 'undefined') return [];
     try {
       const stored = localStorage.getItem('32desk_patient_notes');
@@ -888,19 +1123,21 @@ export const clinicApi = {
   },
 
   savePatientNotes(patientId: number, notes: any[]): void {
+    if (typeof window !== 'undefined' && !isDemoClinic()) { savePatientRecord(patientId, 'notes', notes); return; }
     if (typeof window === 'undefined') return;
     try {
       const stored = localStorage.getItem('32desk_patient_notes');
       const map: Record<string, any[]> = stored ? JSON.parse(stored) : {};
       map[patientId] = notes;
       localStorage.setItem('32desk_patient_notes', JSON.stringify(map));
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error(e);
     }
   },
 
   // --- Patient payments (Оплаты receipts) — persisted per patient with operator/method/target ---
   getPatientPayments(patientId: number): any[] {
+    if (typeof window !== 'undefined' && !isDemoClinic()) return readPatientRecord(patientId, 'payments', []);
     if (typeof window === 'undefined') return [];
     try {
       const stored = localStorage.getItem('32desk_patient_payments');
@@ -912,13 +1149,14 @@ export const clinicApi = {
   },
 
   savePatientPayments(patientId: number, payments: any[]): void {
+    if (typeof window !== 'undefined' && !isDemoClinic()) { savePatientRecord(patientId, 'payments', payments); return; }
     if (typeof window === 'undefined') return;
     try {
       const stored = localStorage.getItem('32desk_patient_payments');
       const map: Record<string, any[]> = stored ? JSON.parse(stored) : {};
       map[patientId] = payments;
       localStorage.setItem('32desk_patient_payments', JSON.stringify(map));
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error(e);
     }
   },
@@ -929,6 +1167,7 @@ export const clinicApi = {
   },
 
   getPatientTreatments(patientId: number): any[] {
+    if (typeof window !== 'undefined' && !isDemoClinic()) return readPatientRecord(patientId, 'treatments', []);
     if (typeof window === 'undefined') return [];
     try {
       const stored = localStorage.getItem('32desk_patient_treatments');
@@ -940,32 +1179,38 @@ export const clinicApi = {
   },
 
   savePatientTreatments(patientId: number, treatments: any[]): void {
+    if (typeof window !== 'undefined' && !isDemoClinic()) { savePatientRecord(patientId, 'treatments', treatments); return; }
     if (typeof window === 'undefined') return;
     try {
       const stored = localStorage.getItem('32desk_patient_treatments');
       const map: Record<string, any[]> = stored ? JSON.parse(stored) : {};
       map[patientId] = treatments;
       localStorage.setItem('32desk_patient_treatments', JSON.stringify(map));
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error(e);
     }
   },
 
   // ── Rentgen ro'yxati (per-patient) ──
   getPatientXrays(patientId: number): any[] {
+    if (typeof window !== 'undefined' && !isDemoClinic()) return readPatientRecord(patientId, 'xrays', []);
     if (typeof window === 'undefined') return [];
     try {
       const map = JSON.parse(localStorage.getItem('32desk_patient_xrays') || '{}');
-      return map[patientId] || [];
-    } catch { return []; }
+      const stored = map[patientId];
+      if ((!stored || stored.length === 0) && isDemoClinic() && Number(patientId) === DEMO_SAMPLE_PATIENT_ID) return DEMO_SAMPLE_XRAYS;
+      return stored || [];
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; return []; }
   },
   savePatientXrays(patientId: number, xrays: any[]): void {
+    if (typeof window !== 'undefined' && !isDemoClinic()) { savePatientRecord(patientId, 'xrays', xrays); return; }
     if (typeof window === 'undefined') return;
+    if (isDemoClinic()) return; // demo: rentgen saqlanmaydi
     try {
       const map = JSON.parse(localStorage.getItem('32desk_patient_xrays') || '{}');
       map[patientId] = xrays;
       localStorage.setItem('32desk_patient_xrays', JSON.stringify(map));
-    } catch (e) { console.error(e); }
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; console.error(e); }
   },
 
   // ── Foto hujjat bloklari (Word-uslubidagi muharrir, per-patient) ──
@@ -973,66 +1218,225 @@ export const clinicApi = {
     if (typeof window === 'undefined') return [];
     try {
       const map = JSON.parse(localStorage.getItem('32desk_patient_photo_doc') || '{}');
-      return map[patientId] || [];
-    } catch { return []; }
+      const stored = map[patientId];
+      if ((!stored || stored.length === 0) && isDemoClinic() && Number(patientId) === DEMO_SAMPLE_PATIENT_ID) return DEMO_SAMPLE_PHOTO_DOC;
+      return stored || [];
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; return []; }
   },
   savePatientPhotoDoc(patientId: number, blocks: any[]): void {
+    if (!isDemoClinic()) { void this.savePatientPhotoDocBackend(patientId, blocks).catch(error => reportApiError(String(error))); return; }
     if (typeof window === 'undefined') return;
+    if (isDemoClinic()) return; // demo: fotoprotokol saqlanmaydi
     try {
       const map = JSON.parse(localStorage.getItem('32desk_patient_photo_doc') || '{}');
       map[patientId] = blocks;
       localStorage.setItem('32desk_patient_photo_doc', JSON.stringify(map));
-    } catch (e) { console.error(e); }
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; console.error(e); }
+    // + BAZAGA — admin/boshqa qurilma ko'radi, foto ptichkasi va hisob ishlaydi
+    this.savePatientPhotoDocBackend(patientId, blocks).catch(() => {});
   },
 
   // ── 3D Skan (per-patient) ──
   getPatient3DScan(patientId: number): { hasScan: boolean; scanDate?: string; notes?: string; fileName?: string; fileUrl?: string } {
+    if (typeof window !== 'undefined' && !isDemoClinic()) return readPatientRecord(patientId, 'scan', { hasScan: false });
     if (typeof window === 'undefined') return { hasScan: false };
     try {
       const map = JSON.parse(localStorage.getItem('32desk_patient_3d_scans') || '{}');
-      return map[patientId] || { hasScan: false };
+      const stored = map[patientId];
+      if ((!stored || !stored.hasScan) && isDemoClinic() && Number(patientId) === DEMO_SAMPLE_PATIENT_ID) return DEMO_SAMPLE_SCAN;
+      return stored || { hasScan: false };
     } catch { return { hasScan: false }; }
   },
   savePatient3DScan(patientId: number, scanData: { hasScan: boolean; scanDate?: string; notes?: string; fileName?: string; fileUrl?: string }): void {
+    if (typeof window !== 'undefined' && !isDemoClinic()) { savePatientRecord(patientId, 'scan', scanData); return; }
     if (typeof window === 'undefined') return;
+    if (isDemoClinic()) return; // demo: 3D skan saqlanmaydi
     try {
       const map = JSON.parse(localStorage.getItem('32desk_patient_3d_scans') || '{}');
       map[patientId] = scanData;
       localStorage.setItem('32desk_patient_3d_scans', JSON.stringify(map));
-    } catch (e) { console.error(e); }
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; console.error(e); }
+  },
+
+  // ═══════════ Bemor media (BAZADA — foto/rentgen/skan) ═══════════
+  // Yashil ptichka va admin umumiy hisobi uchun YAGONA manba.
+  async uploadPatientMedia(
+    patientId: number, kind: 'foto' | 'rentgen' | 'skan', file: Blob | File,
+    fileName?: string, meta?: Record<string, any>, overrideClinicId?: number
+  ): Promise<boolean> {
+    const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
+    if (!cid || isDemoClinic(cid)) return false; // demo: bazaga yozilmaydi
+    try {
+      const fd = new FormData();
+      fd.append('patient', String(patientId));
+      fd.append('kind', kind);
+      fd.append('file', file, fileName || (file as File).name || `${kind}.bin`);
+      if (meta) fd.append('meta', JSON.stringify(meta));
+      const res = await apiFetch(`${API_BASE}/patient-media/`, {
+        method: 'POST', headers: { 'X-Clinic-ID': String(cid) }, body: fd,
+      });
+      if (res.ok) {
+        // keshni yangilaymiz — ptichka darhol yashil bo'lsin
+        const slot = _mediaPresenceCache[String(patientId)] || { foto: false, rentgen: false, skan: false };
+        slot[kind] = true;
+        _mediaPresenceCache[String(patientId)] = slot;
+      }
+      if (res.ok) bustApiCache();
+      return res.ok;
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; return false; }
+  },
+
+  async listPatientMedia(patientId: number, kind?: 'foto' | 'rentgen' | 'skan', overrideClinicId?: number): Promise<any[]> {
+    const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
+    if (!cid) return [];
+    try {
+      const q = `?clinic=${cid}&patient=${patientId}${kind ? `&kind=${kind}` : ''}`;
+      const res = await apiFetch(`${API_BASE}/patient-media/${q}`, { headers: { 'X-Clinic-ID': String(cid) }, next: { revalidate: 0 } });
+      if (!res.ok) return [];
+      return await res.json();
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; return []; }
+  },
+
+  async deletePatientMedia(mediaId: number, overrideClinicId?: number): Promise<boolean> {
+    const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
+    try {
+      const res = await apiFetch(`${API_BASE}/patient-media/${mediaId}/`, {
+        method: 'DELETE', headers: cid ? { 'X-Clinic-ID': String(cid) } : {},
+      });
+      return res.ok || res.status === 204;
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; return false; }
+  },
+
+  // Klinika bo'yicha presence (yashil ptichka) + umumiy hisob (admin).
+  async fetchMediaPresence(overrideClinicId?: number): Promise<{ map: Record<string, any>; totals: any } | null> {
+    const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
+    if (!cid) return null;
+    try {
+      const res = await apiFetch(`${API_BASE}/patient-media/presence/?clinic=${cid}`, { headers: { 'X-Clinic-ID': String(cid) }, next: { revalidate: 0 } });
+      if (!res.ok) return null;
+      const data = await res.json();
+      _mediaPresenceCache = { ...(data.map || {}) };
+      _mediaPresenceTotals = data.totals || null;
+      return data;
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; return null; }
+  },
+
+  getMediaTotals(): { foto: number; rentgen: number; skan: number; patients_with_media: number; files_total: number } | null {
+    return _mediaPresenceTotals;
+  },
+
+  // ── Foto-protokol hujjati (BAZADA) ──
+  async fetchPatientPhotoDoc(patientId: number, overrideClinicId?: number): Promise<any[] | null> {
+    const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
+    if (!cid) return null;
+    try {
+      // report=false — bu O'QISH; muvaffaqiyatsiz bo'lsa global "Saqlanmadi" (yozish) bannerini
+      // chiqarMAYDI. Xatoda `null` qaytaramiz: chaqiruvchi (studio) buni "o'qilmadi" deb biladi
+      // va BO'SH hujjat bilan ustidan yozmaydi; [] esa "server bo'sh" (haqiqiy) degani.
+      const res = await apiFetch(`${API_BASE}/photo-protocol/?clinic=${cid}&patient=${patientId}`, { headers: { 'X-Clinic-ID': String(cid) }, next: { revalidate: 0 } }, false);
+      if (!res.ok) return null;
+      const data = await res.json();
+      return Array.isArray(data.doc) ? data.doc : [];
+    } catch { return null; }
+  },
+
+  // Server CANONICAL doc'ni qaytaradi (base64 rasmlar /api/patient-media/.../download/ ga
+  // aylantirilgan). Buni { ok, doc } sifatida qaytaramiz — studio uni yangi lokal tahrirlarni
+  // yo'qotmasdan singdiradi (keyingi saqlashlarda katta base64 qayta yuborilmaydi).
+  async savePatientPhotoDocBackend(patientId: number, doc: any[], overrideClinicId?: number): Promise<{ ok: boolean; doc: any[] | null }> {
+    const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
+    if (!cid || isDemoClinic(cid)) return { ok: false, doc: null };
+    try {
+      // report=false — foto saqlash xatosi global patientRecords "Qayta saqlash" bannerini
+      // chiqarmaydi (u foto POST'ini qayta urina OLMAYDI — boshqa yo'l). Studio o'zining
+      // holati va qayta-urinish tugmasi bilan boshqaradi.
+      const res = await apiFetch(`${API_BASE}/photo-protocol/`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Clinic-ID': String(cid) },
+        body: JSON.stringify({ patient: patientId, clinic: cid, doc }),
+      }, false);
+      let canonical: any[] | null = null;
+      if (res.ok) {
+        try { const data = await res.json(); if (Array.isArray(data?.doc)) canonical = data.doc; } catch {}
+        // doc'da rasm bo'lsa — foto ptichkasini yoqamiz
+        const hasImg = Array.isArray(doc) && doc.some((b: any) =>
+          (b?.kind === 'image' && b?.url) || (b?.type === 'image' && b?.src) ||
+          (Array.isArray(b?.elements) && b.elements.some((e: any) => e?.type === 'image' && (e?.src || e?.url))));
+        if (hasImg) {
+          const slot = _mediaPresenceCache[String(patientId)] || { foto: false, rentgen: false, skan: false };
+          slot.foto = true;
+          _mediaPresenceCache[String(patientId)] = slot;
+        }
+        bustApiCache();
+      }
+      return { ok: res.ok, doc: canonical };
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; return { ok: false, doc: null }; }
+  },
+
+  // Bemor kartochkasidagi yashil ptichka uchun: foto/rentgen/skan bor-yo'qligi.
+  // Avval BAZA keshi (fetchMediaPresence), bo'lmasa localStorage fallback.
+  getPatientMediaPresence(patientId: number): { foto: boolean; rentgen: boolean; skan: boolean } {
+    const backend = _mediaPresenceCache[String(patientId)];
+    if (backend) return { foto: !!backend.foto, rentgen: !!backend.rentgen, skan: !!backend.skan };
+    const xr = this.getPatientXrays(patientId);
+    const doc = this.getPatientPhotoDoc(patientId);
+    const scan = this.getPatient3DScan(patientId);
+    const foto = Array.isArray(doc) && doc.some((b: any) =>
+      (b?.kind === 'image' && b?.url) || (b?.type === 'image' && b?.src) ||
+      (Array.isArray(b?.elements) && b.elements.some((e: any) => e?.type === 'image' && e?.src))
+    );
+    return { rentgen: Array.isArray(xr) && xr.length > 0, foto, skan: !!(scan && scan.hasScan) };
+  },
+
+  // Foto tab kartochkasida ko'rsatish uchun — bemorning BIRINCHI foto rasmi (src) yoki null.
+  getPatientFirstPhoto(patientId: number): string | null {
+    const doc = this.getPatientPhotoDoc(patientId);
+    if (!Array.isArray(doc)) return null;
+    for (const b of doc) {
+      if (b?.type === 'image' && b?.src) return b.src;
+      if (b?.kind === 'image' && b?.url) return b.url;
+      if (Array.isArray(b?.elements)) {
+        const img = b.elements.find((e: any) => e?.type === 'image' && e?.src);
+        if (img) return img.src;
+      }
+    }
+    return null;
   },
 
   // ── Aloqa (Связь): xabarlar jurnali (per-patient) — Telegram/WhatsApp/SMS ──
   getPatientComms(patientId: number): any[] {
+    if (typeof window !== 'undefined' && !isDemoClinic()) return readPatientRecord(patientId, 'comms', []);
     if (typeof window === 'undefined') return [];
     try {
       const map = JSON.parse(localStorage.getItem('32desk_patient_comms') || '{}');
       return map[patientId] || [];
-    } catch { return []; }
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; return []; }
   },
   savePatientComms(patientId: number, msgs: any[]): void {
+    if (typeof window !== 'undefined' && !isDemoClinic()) { savePatientRecord(patientId, 'comms', msgs); return; }
     if (typeof window === 'undefined') return;
     try {
       const map = JSON.parse(localStorage.getItem('32desk_patient_comms') || '{}');
       map[patientId] = msgs;
       localStorage.setItem('32desk_patient_comms', JSON.stringify(map));
-    } catch (e) { console.error(e); }
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; console.error(e); }
   },
   // Telegram chat tarixi (per-patient)
   getPatientTgChat(patientId: number): any[] {
+    if (typeof window !== 'undefined' && !isDemoClinic()) return readPatientRecord(patientId, 'tgchat', []);
     if (typeof window === 'undefined') return [];
     try {
       const map = JSON.parse(localStorage.getItem('32desk_patient_tgchat') || '{}');
       return map[patientId] || [];
-    } catch { return []; }
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; return []; }
   },
   savePatientTgChat(patientId: number, chat: any[]): void {
+    if (typeof window !== 'undefined' && !isDemoClinic()) { savePatientRecord(patientId, 'tgchat', chat); return; }
     if (typeof window === 'undefined') return;
     try {
       const map = JSON.parse(localStorage.getItem('32desk_patient_tgchat') || '{}');
       map[patientId] = chat;
       localStorage.setItem('32desk_patient_tgchat', JSON.stringify(map));
-    } catch (e) { console.error(e); }
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; console.error(e); }
   },
 
   // ── Ijtimoiy tarmoq ulanishlari (Telegram / WhatsApp) — raqam + kod bilan qurilma ulash ──
@@ -1054,7 +1458,7 @@ export const clinicApi = {
     const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
     const storageKey = getClinicStorageKey('32desk_social_connections', cid);
     if (typeof window === 'undefined') return;
-    try { localStorage.setItem(storageKey, JSON.stringify(cfg)); } catch (e) { console.error(e); }
+    try { localStorage.setItem(storageKey, JSON.stringify(cfg)); } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; console.error(e); }
   },
 
   // ── Telegram REAL ulash (backend Telethon orqali) ──
@@ -1065,7 +1469,7 @@ export const clinicApi = {
       if (phone) params.append('phone', phone);
       if (cid) params.append('clinic', String(cid));
       const q = params.toString() ? `?${params.toString()}` : '';
-      const res = await fetch(`${API_BASE}/telegram/status/${q}`, {
+      const res = await apiFetch(`${API_BASE}/telegram/status/${q}`, {
         headers: cid ? { 'X-Clinic-ID': String(cid) } : {}
       });
       const data = await res.json();
@@ -1083,67 +1487,73 @@ export const clinicApi = {
         clinicApi.saveSocialConnections(updated, cid || undefined);
       }
       return data;
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       return { connected: false, error: 'network', message: String(e) };
     }
   },
   async telegramSendCode(phone: string): Promise<any> {
+    if (demoBlocked()) return { ok: false, demo: true };
     try {
-      const res = await fetch(`${API_BASE}/telegram/send-code/`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone })
+      const res = await apiFetch(`${API_BASE}/telegram/send-code/`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Clinic-ID': String(getActiveClinicId() || '') }, body: JSON.stringify({ phone })
       });
       return await res.json();
-    } catch (e) { return { ok: false, error: 'network', message: String(e) }; }
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; return { ok: false, error: 'network', message: String(e) }; }
   },
   async telegramResendCode(phone: string): Promise<any> {
+    if (demoBlocked()) return { ok: false, demo: true };
     try {
-      const res = await fetch(`${API_BASE}/telegram/resend-code/`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone })
+      const res = await apiFetch(`${API_BASE}/telegram/resend-code/`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Clinic-ID': String(getActiveClinicId() || '') }, body: JSON.stringify({ phone })
       });
       return await res.json();
-    } catch (e) { return { ok: false, error: 'network', message: String(e) }; }
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; return { ok: false, error: 'network', message: String(e) }; }
   },
   async telegramSignIn(phone: string, code: string): Promise<any> {
+    if (demoBlocked()) return { ok: false, demo: true };
     try {
-      const res = await fetch(`${API_BASE}/telegram/sign-in/`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone, code })
+      const res = await apiFetch(`${API_BASE}/telegram/sign-in/`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Clinic-ID': String(getActiveClinicId() || '') }, body: JSON.stringify({ phone, code })
       });
       return await res.json();
-    } catch (e) { return { ok: false, error: 'network', message: String(e) }; }
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; return { ok: false, error: 'network', message: String(e) }; }
   },
   async telegramPassword(phone: string, password: string): Promise<any> {
+    if (demoBlocked()) return { ok: false, demo: true };
     try {
-      const res = await fetch(`${API_BASE}/telegram/password/`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone, password })
+      const res = await apiFetch(`${API_BASE}/telegram/password/`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Clinic-ID': String(getActiveClinicId() || '') }, body: JSON.stringify({ phone, password })
       });
       return await res.json();
-    } catch (e) { return { ok: false, error: 'network', message: String(e) }; }
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; return { ok: false, error: 'network', message: String(e) }; }
   },
   async telegramQrStart(): Promise<any> {
+    if (demoBlocked()) return { ok: false, demo: true };
     try {
-      const res = await fetch(`${API_BASE}/telegram/qr-start/`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}'
+      const res = await apiFetch(`${API_BASE}/telegram/qr-start/`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Clinic-ID': String(getActiveClinicId() || '') }, body: '{}'
       });
       return await res.json();
-    } catch (e) { return { ok: false, error: 'network', message: String(e) }; }
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; return { ok: false, error: 'network', message: String(e) }; }
   },
   async telegramQrStatus(tokenId: string): Promise<any> {
     try {
-      const res = await fetch(`${API_BASE}/telegram/qr-status/?token_id=${encodeURIComponent(tokenId)}`);
+      const res = await apiFetch(`${API_BASE}/telegram/qr-status/?token_id=${encodeURIComponent(tokenId)}`);
       return await res.json();
-    } catch (e) { return { ok: false, error: 'network', message: String(e) }; }
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; return { ok: false, error: 'network', message: String(e) }; }
   },
   async telegramBotLogin(botToken: string): Promise<any> {
+    if (demoBlocked()) return { ok: false, demo: true };
     try {
-      const res = await fetch(`${API_BASE}/telegram/bot-login/`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bot_token: botToken })
+      const res = await apiFetch(`${API_BASE}/telegram/bot-login/`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Clinic-ID': String(getActiveClinicId() || '') }, body: JSON.stringify({ bot_token: botToken })
       });
       return await res.json();
-    } catch (e) { return { ok: false, error: 'network', message: String(e) }; }
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; return { ok: false, error: 'network', message: String(e) }; }
   },
   async telegramDisconnect(phone?: string): Promise<any> {
     try {
-      const res = await fetch(`${API_BASE}/telegram/disconnect/`, {
+      const res = await apiFetch(`${API_BASE}/telegram/disconnect/`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: phone || '' })
       });
       const data = await res.json();
@@ -1155,25 +1565,25 @@ export const clinicApi = {
         });
       }
       return data;
-    } catch (e) { return { ok: false, error: 'network', message: String(e) }; }
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; return { ok: false, error: 'network', message: String(e) }; }
   },
   // Bemor bilan Telegram yozishmasini qidirish (offset_id=0 → oxirgilari; offset_id=X → X'dan eskilari)
   async telegramChat(patientPhone: string, limit = 10, name = '', offsetId = 0): Promise<any> {
     try {
-      const res = await fetch(`${API_BASE}/telegram/chat/`, {
+      const res = await apiFetch(`${API_BASE}/telegram/chat/`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: patientPhone, limit, name, offset_id: offsetId })
       });
       return await res.json();
-    } catch (e) { return { ok: false, error: 'network', message: String(e) }; }
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; return { ok: false, error: 'network', message: String(e) }; }
   },
   // Bemorga Telegram orqali real xabar yuborish
   async telegramSend(patientPhone: string, text: string, name = ''): Promise<any> {
     try {
-      const res = await fetch(`${API_BASE}/telegram/send/`, {
+      const res = await apiFetch(`${API_BASE}/telegram/send/`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: patientPhone, text, name })
       });
       return await res.json();
-    } catch (e) { return { ok: false, error: 'network', message: String(e) }; }
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; return { ok: false, error: 'network', message: String(e) }; }
   },
 
   // ── Avto-eslatma (qabuldan oldin Telegram xabar) ──
@@ -1182,17 +1592,17 @@ export const clinicApi = {
     const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
     try {
       const q = cid ? `?clinic=${cid}` : '';
-      const res = await fetch(`${API_BASE}/reminders/config/${q}`, {
+      const res = await apiFetch(`${API_BASE}/reminders/config/${q}`, {
         headers: cid ? { 'X-Clinic-ID': String(cid) } : {}
       });
       return await res.json();
-    } catch (e) { return { enabled: false, error: String(e) }; }
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; return { enabled: false, error: String(e) }; }
   },
   async saveReminderConfig(cfg: any, overrideClinicId?: number): Promise<any> {
     const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
     try {
       const q = cid ? `?clinic=${cid}` : '';
-      const res = await fetch(`${API_BASE}/reminders/config/${q}`, {
+      const res = await apiFetch(`${API_BASE}/reminders/config/${q}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1201,12 +1611,12 @@ export const clinicApi = {
         body: JSON.stringify(cfg)
       });
       return await res.json();
-    } catch (e) { return { ok: false, error: 'network', message: String(e) }; }
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; return { ok: false, error: 'network', message: String(e) }; }
   },
   async runRemindersNow(): Promise<any> {
     const cid = getActiveClinicId();
     try {
-      const res = await fetch(`${API_BASE}/reminders/run/`, {
+      const res = await apiFetch(`${API_BASE}/reminders/run/`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1215,7 +1625,7 @@ export const clinicApi = {
         body: '{}'
       });
       return await res.json();
-    } catch (e) { return { ok: false, error: 'network', message: String(e) }; }
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; return { ok: false, error: 'network', message: String(e) }; }
   },
 
   // ── Xabar shablonlari (3 tilda, o'rniga qo'yiladigan parametrlar bilan) ──
@@ -1281,37 +1691,37 @@ export const clinicApi = {
     const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
     const storageKey = getClinicStorageKey('32desk_msg_templates', cid);
     if (typeof window === 'undefined') return;
-    try { localStorage.setItem(storageKey, JSON.stringify(list)); } catch (e) { console.error(e); }
+    try { localStorage.setItem(storageKey, JSON.stringify(list)); } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; console.error(e); }
   },
 
   // ── WhatsApp Business Cloud API ──
   async whatsappGetConfig(): Promise<any> {
-    try { const res = await fetch(`${API_BASE}/whatsapp/config/`); return await res.json(); }
-    catch (e) { return { connected: false, error: String(e) }; }
+    try { const res = await apiFetch(`${API_BASE}/whatsapp/config/`); return await res.json(); }
+    catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; return { connected: false, error: String(e) }; }
   },
   async whatsappSaveConfig(cfg: { phone_number_id: string; access_token?: string; verify_token?: string }): Promise<any> {
     try {
-      const res = await fetch(`${API_BASE}/whatsapp/config/`, {
+      const res = await apiFetch(`${API_BASE}/whatsapp/config/`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg)
       });
       return await res.json();
-    } catch (e) { return { ok: false, error: 'network', message: String(e) }; }
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; return { ok: false, error: 'network', message: String(e) }; }
   },
   async whatsappChat(patientPhone: string): Promise<any> {
     try {
-      const res = await fetch(`${API_BASE}/whatsapp/chat/`, {
+      const res = await apiFetch(`${API_BASE}/whatsapp/chat/`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: patientPhone })
       });
       return await res.json();
-    } catch (e) { return { ok: false, error: 'network', message: String(e) }; }
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; return { ok: false, error: 'network', message: String(e) }; }
   },
   async whatsappSend(patientPhone: string, text: string): Promise<any> {
     try {
-      const res = await fetch(`${API_BASE}/whatsapp/send/`, {
+      const res = await apiFetch(`${API_BASE}/whatsapp/send/`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone: patientPhone, text })
       });
       return await res.json();
-    } catch (e) { return { ok: false, error: 'network', message: String(e) }; }
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; return { ok: false, error: 'network', message: String(e) }; }
   },
 
   // ── Klinika xabar-akkauntlari sozlamalari (Telegram bot / WhatsApp / SMS shlyuz) ──
@@ -1330,7 +1740,7 @@ export const clinicApi = {
   },
   saveMessagingConfig(cfg: any): void {
     if (typeof window === 'undefined') return;
-    try { localStorage.setItem('32desk_messaging_config', JSON.stringify(cfg)); } catch (e) { console.error(e); }
+    try { localStorage.setItem('32desk_messaging_config', JSON.stringify(cfg)); } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; console.error(e); }
   },
 
   // ── Laboratoriya o'chirish overlay'i (backend yozuvini o'chirmasdan "Удалён" holatini saqlaydi) ──
@@ -1346,11 +1756,28 @@ export const clinicApi = {
       const map = this.getLabDeletions();
       map[orderId] = { deletedBy, deletedAt };
       localStorage.setItem('32desk_lab_deletions', JSON.stringify(map));
-    } catch (e) { console.error(e); }
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e; console.error(e); }
+  },
+
+  // --- Bekor qilingan davolash/naryad ID'lari (barqaror string id'lar: t-/apt-/nar-) ---
+  // Real klinika: BAZADA (clinic-scoped, 'cancelled_treatments' bo'limi). Demo: localStorage.
+  getCancelledTreatments(patientId: number): string[] {
+    if (typeof window !== 'undefined' && !isDemoClinic()) return (readPatientRecord(patientId, 'cancelled_treatments', []) as string[]);
+    if (typeof window === 'undefined') return [];
+    try { const s = localStorage.getItem(`32desk_cancelled_treatments_${patientId}`); return s ? JSON.parse(s) : []; }
+    catch { return []; }
+  },
+  saveCancelledTreatments(patientId: number, ids: string[]): void {
+    if (typeof window !== 'undefined' && !isDemoClinic()) { savePatientRecord(patientId, 'cancelled_treatments', ids); return; }
+    if (typeof window === 'undefined') return;
+    try { localStorage.setItem(`32desk_cancelled_treatments_${patientId}`, JSON.stringify(ids)); }
+    catch (e) { console.error(e); }
   },
 
   getNaryadLog(patientId?: number): NaryadLogEntry[] {
     if (typeof window === 'undefined') return [];
+    // Real klinika: jurnal BAZADA — clinic-scoped, auth, PatientRecord 'naryad_log' bo'limi.
+    if (patientId != null && !isDemoClinic()) return readPatientRecord(patientId, 'naryad_log', []) as NaryadLogEntry[];
     try {
       const stored = localStorage.getItem('32desk_naryad_logs');
       const map: Record<string, NaryadLogEntry[]> = stored ? JSON.parse(stored) : {};
@@ -1368,64 +1795,26 @@ export const clinicApi = {
 
   appendNaryadLog(patientId: number, entry: NaryadLogEntry): void {
     if (typeof window === 'undefined') return;
+    // Real klinika: BAZAGA yoziladi (clinic-scoped). Bekor qilishda BARQAROR naryad_id
+    // orqali moslashtiramiz (narx/nom o'xshashligi bilan EMAS).
+    if (!isDemoClinic()) {
+      const list = readPatientRecord(patientId, 'naryad_log', []) as NaryadLogEntry[];
+      const next = applyNaryadLogEntry(list, entry, patientId);
+      primeLocalPatientRecord(patientId, 'naryad_log', next);   // ketma-ket tez chaqiruvlar to'g'ri yig'ilsin
+      savePatientRecord(patientId, 'naryad_log', next);
+      return;
+    }
+    // Demo: localStorage (xatti-harakat saqlanadi) — bir xil stabil-id mantiq bilan.
     try {
       const stored = localStorage.getItem('32desk_naryad_logs');
       const map: Record<string, NaryadLogEntry[]> = stored ? JSON.parse(stored) : {};
-      const currentList: NaryadLogEntry[] = map[patientId] || [];
-
-      const allStored = localStorage.getItem('32desk_all_naryad_logs');
-      let allLogs: NaryadLogEntry[] = allStored ? JSON.parse(allStored) : [];
-
-      if (entry.action === 'removed') {
-        // Find existing active entry for this patient to update in place
-        const matchIdx = currentList.findIndex(
-          item =>
-            (item.status !== 'cancelled') &&
-            ((entry.naryad_id && item.naryad_id === entry.naryad_id) ||
-             (item.title && entry.title && item.title.includes(entry.title.slice(0, 15))) ||
-             (item.price === entry.price))
-        );
-
-        if (matchIdx >= 0) {
-          const target = currentList[matchIdx];
-          target.status = 'cancelled';
-          target.action = 'removed';
-          target.cancelled_by = entry.author;
-          target.cancelled_date = entry.date;
-          target.reason = entry.reason || 'Отменено';
-
-          // Also update in allLogs
-          const allIdx = allLogs.findIndex(l => l.id === target.id || (l.patient_id === patientId && l.title === target.title && l.status !== 'cancelled'));
-          if (allIdx >= 0) {
-            allLogs[allIdx] = { ...allLogs[allIdx], status: 'cancelled', action: 'removed', cancelled_by: entry.author, cancelled_date: entry.date, reason: entry.reason };
-          }
-        } else {
-          // If not found, add as cancelled card
-          const cancelledEntry: NaryadLogEntry = {
-            ...entry,
-            status: 'cancelled',
-            cancelled_by: entry.author,
-            cancelled_date: entry.date
-          };
-          currentList.unshift(cancelledEntry);
-          allLogs.unshift({ ...cancelledEntry, patient_id: patientId });
-        }
-      } else {
-        // Created / Added naryad
-        const activeEntry: NaryadLogEntry = {
-          ...entry,
-          status: 'active'
-        };
-        currentList.unshift(activeEntry);
-        allLogs.unshift({ ...activeEntry, patient_id: patientId });
-      }
-
-      map[patientId] = currentList;
+      const nextList = applyNaryadLogEntry(map[patientId] || [], entry, patientId);
+      map[patientId] = nextList;
       localStorage.setItem('32desk_naryad_logs', JSON.stringify(map));
-      localStorage.setItem('32desk_all_naryad_logs', JSON.stringify(allLogs.slice(0, 1000)));
-    } catch (e) {
-      console.error(e);
-    }
+      const allStored = localStorage.getItem('32desk_all_naryad_logs');
+      const allLogs: NaryadLogEntry[] = allStored ? JSON.parse(allStored) : [];
+      localStorage.setItem('32desk_all_naryad_logs', JSON.stringify([{ ...nextList[0], patient_id: patientId }, ...allLogs].slice(0, 1000)));
+    } catch (e) { console.error(e); }
   },
 
   getAllNaryadLogs(): NaryadLogEntry[] {
@@ -1448,6 +1837,7 @@ export const clinicApi = {
 
   // --- Treatment Plans (План лечения) — persisted per patient ---
   getTreatmentPlans(patientId: number): TreatmentPlanStage[] {
+    if (typeof window !== 'undefined' && !isDemoClinic()) return readPatientRecord(patientId, 'plans', []);
     if (typeof window === 'undefined') return DEFAULT_TREATMENT_PLANS;
     try {
       const stored = localStorage.getItem(`32desk_treatment_plans_${patientId}`);
@@ -1459,10 +1849,11 @@ export const clinicApi = {
   },
 
   saveTreatmentPlans(patientId: number, plans: TreatmentPlanStage[]): void {
+    if (typeof window !== 'undefined' && !isDemoClinic()) { savePatientRecord(patientId, 'plans', plans); return; }
     if (typeof window === 'undefined') return;
     try {
       localStorage.setItem(`32desk_treatment_plans_${patientId}`, JSON.stringify(plans));
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error(e);
     }
   },
@@ -1483,17 +1874,20 @@ export const clinicApi = {
     );
 
     try {
-      await fetch(`${API_BASE}/appointments/${appointmentId}/record_payment/`, {
+      await apiFetch(`${API_BASE}/appointments/${appointmentId}/record_payment/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          request_id: crypto.randomUUID(),
           amount,
           payment_method,
           operator_name: operator_name || 'Kassir',
           cash_register: reg
         })
       });
-    } catch {}
+      bustApiCache();
+      if (!isDemoClinic()) return;
+    } catch (error) { if (!isDemoClinic()) throw error; }
 
     let aptObj: Appointment | undefined;
 
@@ -1511,7 +1905,7 @@ export const clinicApi = {
           aptObj = found;
           localStorage.setItem('32desk_custom_appointments', JSON.stringify(customApts));
         }
-      } catch (e) {
+      } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
         console.error(e);
       }
     }
@@ -1548,12 +1942,12 @@ export const clinicApi = {
 
   async toggleSms(appointmentId: number): Promise<boolean> {
     try {
-      const res = await fetch(`${API_BASE}/appointments/${appointmentId}/toggle_sms/`, { method: 'POST' });
+      const res = await apiFetch(`${API_BASE}/appointments/${appointmentId}/toggle_sms/`, { method: 'POST' });
       if (res.ok) {
         const data = await res.json();
         return data.sms_sent;
       }
-    } catch {}
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
     const apt = mockAppointments.find(a => a.id === appointmentId);
     if (apt) {
       apt.sms_sent = !apt.sms_sent;
@@ -1575,7 +1969,7 @@ export const clinicApi = {
           const legacy = localStorage.getItem('32desk_custom_transactions');
           if (legacy) customTx = JSON.parse(legacy);
         }
-      } catch (e) {
+      } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
         console.error(e);
       }
     }
@@ -1587,6 +1981,7 @@ export const clinicApi = {
 
     const fallbackTransactions = (cid === 1) ? mockTransactions : [];
     const backendData = await safeFetch<FinancialTransaction[]>(`${API_BASE}/finance/${q}`, fallbackTransactions);
+    if (!isDemoClinic(cid)) return backendData;
     const customIds = new Set(customTx.map(t => t.id));
     const merged = [...customTx, ...backendData.filter(t => !customIds.has(t.id))];
 
@@ -1628,6 +2023,45 @@ export const clinicApi = {
     return res;
   },
 
+  // ═══════════ Oylik moliyaviy reja (BAZADA — localStorage emas) ═══════════
+  async getMonthlyPlan(month?: string, overrideClinicId?: number): Promise<{
+    exists: boolean; month: string; single_clinic_plan: number;
+    branch_plans: Record<string, number>; acknowledged: boolean;
+  } | null> {
+    const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
+    if (!cid) return null;
+    try {
+      const q = month ? `?clinic=${cid}&month=${month}` : `?clinic=${cid}`;
+      const res = await apiFetch(`${API_BASE}/monthly-plan/${q}`, {
+        headers: { 'X-Clinic-ID': String(cid) },
+        next: { revalidate: 0 },
+      });
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  },
+
+  async saveMonthlyPlan(payload: {
+    single_clinic_plan: number; branch_plans?: Record<string, number>;
+    month?: string; acknowledged?: boolean;
+  }, overrideClinicId?: number): Promise<boolean> {
+    const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
+    if (!cid) return false;
+    try {
+      const res = await apiFetch(`${API_BASE}/monthly-plan/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Clinic-ID': String(cid) },
+        body: JSON.stringify({ clinic: cid, acknowledged: true, ...payload }),
+      });
+      if (res.ok) bustApiCache();
+      return res.ok;
+    } catch {
+      return false;
+    }
+  },
+
   async createTransaction(data: Omit<FinancialTransaction, 'id'>): Promise<FinancialTransaction> {
     bustApiCache();
     const cid = (data as any).clinic !== undefined ? (data as any).clinic : getActiveClinicId();
@@ -1640,7 +2074,7 @@ export const clinicApi = {
     };
 
     try {
-      const res = await fetch(`${API_BASE}/finance/`, {
+      const res = await apiFetch(`${API_BASE}/finance/`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1654,7 +2088,7 @@ export const clinicApi = {
         this.saveTransactionLocal(normSaved, cid);
         return normSaved;
       }
-    } catch {}
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
 
     this.saveTransactionLocal(newTx, cid);
     return newTx;
@@ -1671,7 +2105,7 @@ export const clinicApi = {
       const filtered = list.filter(t => t.id !== cleanTx.id);
       filtered.unshift(cleanTx);
       localStorage.setItem(storageKey, JSON.stringify(filtered));
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error(e);
     }
   },
@@ -1686,16 +2120,16 @@ export const clinicApi = {
           const list: FinancialTransaction[] = JSON.parse(stored);
           localStorage.setItem(storageKey, JSON.stringify(list.filter(t => t.id !== id)));
         }
-      } catch (e) {
+      } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
         console.error(e);
       }
     }
     try {
-      await fetch(`${API_BASE}/finance/${id}/`, {
+      await apiFetch(`${API_BASE}/finance/${id}/`, {
         method: 'DELETE',
         headers: cid ? { 'X-Clinic-ID': String(cid) } : undefined
       });
-    } catch {}
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
   },
 
   // Tasks
@@ -1712,7 +2146,7 @@ export const clinicApi = {
           const legacy = localStorage.getItem('32desk_tasks');
           if (legacy) localTasks = JSON.parse(legacy);
         }
-      } catch (e) {
+      } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
         console.error(e);
       }
     }
@@ -1720,6 +2154,7 @@ export const clinicApi = {
     const q = cid ? `?clinic=${cid}` : '';
     const fallbackTasks = (cid === 1) ? mockTasks : [];
     const backendData = await safeFetch<ClinicTask[]>(`${API_BASE}/tasks/${q}`, fallbackTasks);
+    if (!isDemoClinic(cid)) return backendData;
     if (localTasks.length === 0) {
       localTasks = backendData || fallbackTasks;
       if (typeof window !== 'undefined') {
@@ -1766,7 +2201,7 @@ export const clinicApi = {
     };
 
     try {
-      await fetch(`${API_BASE}/tasks/`, {
+      await apiFetch(`${API_BASE}/tasks/`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -1774,7 +2209,7 @@ export const clinicApi = {
         },
         body: JSON.stringify(newTask)
       });
-    } catch {}
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
 
     if (typeof window !== 'undefined') {
       try {
@@ -1783,7 +2218,7 @@ export const clinicApi = {
         const tasks: ClinicTask[] = stored ? JSON.parse(stored) : ((cid === 1) ? [...mockTasks] : []);
         tasks.unshift(newTask);
         localStorage.setItem(storageKey, JSON.stringify(tasks));
-      } catch (e) {
+      } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
         console.error(e);
       }
     }
@@ -1794,7 +2229,7 @@ export const clinicApi = {
     bustApiCache();
     const cid = (patch as any).clinic !== undefined ? (patch as any).clinic : getActiveClinicId();
     try {
-      await fetch(`${API_BASE}/tasks/${id}/`, {
+      await apiFetch(`${API_BASE}/tasks/${id}/`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -1802,7 +2237,7 @@ export const clinicApi = {
         },
         body: JSON.stringify(patch)
       });
-    } catch {}
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
 
     if (typeof window !== 'undefined') {
       try {
@@ -1815,7 +2250,7 @@ export const clinicApi = {
           localStorage.setItem(storageKey, JSON.stringify(tasks));
           return tasks[idx];
         }
-      } catch (e) {
+      } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
         console.error(e);
       }
     }
@@ -1832,16 +2267,16 @@ export const clinicApi = {
         const tasks: ClinicTask[] = stored ? JSON.parse(stored) : ((cid === 1) ? [...mockTasks] : []);
         const next = tasks.filter((t) => t.id !== id);
         localStorage.setItem(storageKey, JSON.stringify(next));
-      } catch (e) {
+      } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
         console.error(e);
       }
     }
     try {
-      await fetch(`${API_BASE}/tasks/${id}/`, {
+      await apiFetch(`${API_BASE}/tasks/${id}/`, {
         method: 'DELETE',
         headers: cid ? { 'X-Clinic-ID': String(cid) } : undefined
       });
-    } catch {}
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
     return true;
   },
 
@@ -1860,10 +2295,11 @@ export const clinicApi = {
       try {
         const stored = localStorage.getItem(storageKey);
         if (stored) list = JSON.parse(stored);
-      } catch {}
+      } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
     }
     const fallbackWarehouse = (cid === 1) ? mockWarehouse : [];
     const backendData = await safeFetch<WarehouseItem[]>(`${API_BASE}/warehouse/${q}`, list.length ? list : fallbackWarehouse);
+    if (!isDemoClinic(cid)) return backendData;
     if (backendData && backendData.length > 0) {
       if (typeof window !== 'undefined') {
         localStorage.setItem(storageKey, JSON.stringify(backendData));
@@ -1878,7 +2314,7 @@ export const clinicApi = {
     const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
     const payload = { ...data, clinic: cid || 1 };
     try {
-      const res = await fetch(`${API_BASE}/warehouse/`, {
+      const res = await apiFetch(`${API_BASE}/warehouse/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'X-Clinic-ID': String(cid || 1) },
         body: JSON.stringify(payload)
@@ -1892,7 +2328,7 @@ export const clinicApi = {
         }
         return created;
       }
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error('Create warehouse item error:', e);
     }
     const newItem: WarehouseItem = {
@@ -1916,7 +2352,7 @@ export const clinicApi = {
     bustApiCache();
     const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
     try {
-      const res = await fetch(`${API_BASE}/warehouse/${id}/`, {
+      const res = await apiFetch(`${API_BASE}/warehouse/${id}/`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json', 'X-Clinic-ID': String(cid || 1) },
         body: JSON.stringify(data)
@@ -1930,7 +2366,7 @@ export const clinicApi = {
         }
         return updatedItem;
       }
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error('Update warehouse item error:', e);
     }
     const current = await this.getWarehouse(cid || undefined);
@@ -1948,7 +2384,7 @@ export const clinicApi = {
     bustApiCache();
     const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
     try {
-      const res = await fetch(`${API_BASE}/warehouse/${id}/`, {
+      const res = await apiFetch(`${API_BASE}/warehouse/${id}/`, {
         method: 'DELETE',
         headers: { 'X-Clinic-ID': String(cid || 1) }
       });
@@ -1960,7 +2396,7 @@ export const clinicApi = {
         }
         return true;
       }
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error('Delete warehouse item error:', e);
     }
     const current = await this.getWarehouse(cid || undefined);
@@ -1985,11 +2421,12 @@ export const clinicApi = {
           const legacy = localStorage.getItem('32desk_lab_orders');
           if (legacy) list = JSON.parse(legacy);
         }
-      } catch {}
+      } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
     }
     const q = cid ? `?clinic=${cid}` : '';
     const fallbackOrders = (cid === 1) ? mockLabOrders : [];
     const backendData = await safeFetch<DentalLabOrder[]>(`${API_BASE}/lab-orders/${q}`, list.length ? list : fallbackOrders);
+    if (!isDemoClinic(cid)) return backendData;
     if (backendData && backendData.length > 0) {
       const existingIds = new Set(backendData.map(b => b.id));
       const merged = [...backendData, ...list.filter(l => !existingIds.has(l.id))];
@@ -2009,7 +2446,7 @@ export const clinicApi = {
       const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
       const storageKey = getClinicStorageKey('32desk_lab_orders', cid);
       localStorage.setItem(storageKey, JSON.stringify(orders));
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error(e);
     }
   },
@@ -2030,7 +2467,7 @@ export const clinicApi = {
 
     // Try backend create
     try {
-      const res = await fetch(`${API_BASE}/lab-orders/`, {
+      const res = await apiFetch(`${API_BASE}/lab-orders/`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2048,7 +2485,7 @@ export const clinicApi = {
         this.saveLabOrders(updated, cid || undefined);
         return saved;
       }
-    } catch {}
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
 
     const updated = [newOrder, ...list];
     this.saveLabOrders(updated, cid || undefined);
@@ -2068,7 +2505,7 @@ export const clinicApi = {
     }
 
     try {
-      await fetch(`${API_BASE}/lab-orders/${id}/`, {
+      await apiFetch(`${API_BASE}/lab-orders/${id}/`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -2076,7 +2513,7 @@ export const clinicApi = {
         },
         body: JSON.stringify(updates)
       });
-    } catch {}
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
 
     return updatedItem;
   },
@@ -2097,11 +2534,11 @@ export const clinicApi = {
     const list = await this.getLabOrders(cid || undefined);
     this.saveLabOrders(list.filter(o => o.id !== id), cid || undefined);
     try {
-      await fetch(`${API_BASE}/lab-orders/${id}/`, {
+      await apiFetch(`${API_BASE}/lab-orders/${id}/`, {
         method: 'DELETE',
         headers: cid ? { 'X-Clinic-ID': String(cid) } : undefined
       });
-    } catch {}
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
   },
 
   // Stats
@@ -2162,7 +2599,7 @@ export const clinicApi = {
     const q = params.toString() ? `?${params.toString()}` : '';
 
     try {
-      const res = await fetch(`${API_BASE}/workplaces/${q}`, {
+      const res = await apiFetch(`${API_BASE}/workplaces/${q}`, {
         headers: cid ? { 'X-Clinic-ID': String(cid) } : undefined,
       });
       if (res.ok) {
@@ -2173,7 +2610,7 @@ export const clinicApi = {
         if (branchId) return data.filter(w => !w.branch || w.branch === branchId);
         return data;
       }
-    } catch {}
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
 
     // Backend ishlamasa — localStorage kesh yoki demo fallback
     if (typeof window !== 'undefined') {
@@ -2184,7 +2621,7 @@ export const clinicApi = {
           if (branchId) return parsed.filter(w => !w.branch || w.branch === branchId);
           return parsed;
         }
-      } catch {}
+      } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
     }
     return branchId ? fallback.filter(w => !w.branch || w.branch === branchId) : fallback;
   },
@@ -2198,7 +2635,7 @@ export const clinicApi = {
     };
 
     try {
-      const res = await fetch(`${API_BASE}/workplaces/`, {
+      const res = await apiFetch(`${API_BASE}/workplaces/`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2213,7 +2650,7 @@ export const clinicApi = {
         if (typeof window !== 'undefined') localStorage.setItem(storageKey, JSON.stringify(next));
         return item;
       }
-    } catch {}
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
     const newItem: WorkplaceItem = {
       id: Date.now(),
       clinic: cid || undefined,
@@ -2231,7 +2668,7 @@ export const clinicApi = {
     const cid = data.clinic !== undefined ? data.clinic : getActiveClinicId();
     const storageKey = getClinicStorageKey('32desk_workplaces', cid);
     try {
-      const res = await fetch(`${API_BASE}/workplaces/${id}/`, {
+      const res = await apiFetch(`${API_BASE}/workplaces/${id}/`, {
         method: 'PATCH',
         headers: {
           'Content-Type': 'application/json',
@@ -2246,7 +2683,7 @@ export const clinicApi = {
         if (typeof window !== 'undefined') localStorage.setItem(storageKey, JSON.stringify(next));
         return updated;
       }
-    } catch {}
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
     const current = await this.getWorkplaces(undefined, cid || undefined);
     const idx = current.findIndex(w => String(w.id) === String(id));
     if (idx >= 0) {
@@ -2261,11 +2698,11 @@ export const clinicApi = {
     const cid = getActiveClinicId();
     const storageKey = getClinicStorageKey('32desk_workplaces', cid);
     try {
-      await fetch(`${API_BASE}/workplaces/${id}/`, {
+      await apiFetch(`${API_BASE}/workplaces/${id}/`, {
         method: 'DELETE',
         headers: cid ? { 'X-Clinic-ID': String(cid) } : {}
       });
-    } catch {}
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
     const current = await this.getWorkplaces(undefined, cid || undefined);
     const next = current.filter(w => String(w.id) !== String(id));
     if (typeof window !== 'undefined') localStorage.setItem(storageKey, JSON.stringify(next));
@@ -2289,7 +2726,7 @@ export const clinicApi = {
       try {
         const stored = localStorage.getItem('32desk_specialties');
         if (stored) return JSON.parse(stored);
-      } catch {}
+      } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
     }
     const res = await safeFetch<SpecialtyItem[]>(`${API_BASE}/specialties/`, fallback);
     if (typeof window !== 'undefined' && res && res.length > 0) {
@@ -2300,7 +2737,7 @@ export const clinicApi = {
 
   async createSpecialty(name: string): Promise<SpecialtyItem> {
     try {
-      const res = await fetch(`${API_BASE}/specialties/`, {
+      const res = await apiFetch(`${API_BASE}/specialties/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name })
@@ -2312,7 +2749,7 @@ export const clinicApi = {
         if (typeof window !== 'undefined') localStorage.setItem('32desk_specialties', JSON.stringify(next));
         return item;
       }
-    } catch {}
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
     const newItem: SpecialtyItem = {
       id: Date.now(),
       name,
@@ -2326,159 +2763,187 @@ export const clinicApi = {
 
   async deleteSpecialty(id: number | string): Promise<boolean> {
     try {
-      await fetch(`${API_BASE}/specialties/${id}/`, { method: 'DELETE' });
-    } catch {}
+      await apiFetch(`${API_BASE}/specialties/${id}/`, { method: 'DELETE' });
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
     const current = await this.getSpecialties();
     const next = current.filter(s => String(s.id) !== String(id));
     if (typeof window !== 'undefined') localStorage.setItem('32desk_specialties', JSON.stringify(next));
     return true;
   },
 
-  // --- Director: Naryad / Service Price Catalog (Multi-clinic supported) ---
-  getNaryadCatalog(clinicId?: number | string | null): NaryadCatalogItem[] {
-    const key = clinicId ? `32desk_naryad_catalog_${clinicId}` : '32desk_naryad_catalog';
-    if (typeof window === 'undefined') return DEFAULT_NARYAD_CATALOG;
-    try {
-      const stored = localStorage.getItem(key);
-      if (stored) {
-        const list: NaryadCatalogItem[] = JSON.parse(stored);
-        const existingNames = new Set(list.map(i => i.name.toLowerCase().trim()));
-        let hasNew = false;
-        DEFAULT_NARYAD_CATALOG.forEach(def => {
-          if (!existingNames.has(def.name.toLowerCase().trim())) {
-            list.push(clinicId ? { ...def, base_price: 0 } : def);
-            hasNew = true;
-          }
-        });
-        if (hasNew) {
-          localStorage.setItem(key, JSON.stringify(list));
-        }
-        return list;
-      }
-      // If no stored catalog for this specific clinic, initialize with price 0
-      if (clinicId) {
-        const zeroList = DEFAULT_NARYAD_CATALOG.map(def => ({
-          ...def,
-          base_price: 0
-        }));
-        localStorage.setItem(key, JSON.stringify(zeroList));
-        return zeroList;
-      }
-      localStorage.setItem(key, JSON.stringify(DEFAULT_NARYAD_CATALOG));
-      return DEFAULT_NARYAD_CATALOG;
-    } catch {
-      return DEFAULT_NARYAD_CATALOG;
-    }
-  },
-
-  saveNaryadCatalog(items: NaryadCatalogItem[], clinicId?: number | string | null): void {
-    const key = clinicId ? `32desk_naryad_catalog_${clinicId}` : '32desk_naryad_catalog';
-    if (typeof window === 'undefined') return;
-    try {
-      localStorage.setItem(key, JSON.stringify(items));
-    } catch (e) {
-      console.error(e);
-    }
-  },
-
-  initClinicWithZeroPrices(clinicId: number | string): NaryadCatalogItem[] {
-    const key = `32desk_naryad_catalog_${clinicId}`;
-    const zeroList = DEFAULT_NARYAD_CATALOG.map(item => ({
-      ...item,
-      base_price: 0
-    }));
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(key, JSON.stringify(zeroList));
-    }
-    return zeroList;
-  },
-
-  createNaryadCatalogItem(item: Omit<NaryadCatalogItem, 'id'>, clinicId?: number | string | null): NaryadCatalogItem {
-    const list = this.getNaryadCatalog(clinicId);
-    const newItem: NaryadCatalogItem = {
-      ...item,
-      id: `nar-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-      created_at: new Date().toISOString()
+  // --- Director: Naryad / Service Price Catalog ---
+  // BAZADA (backend /service-catalog/). Klinika bo'yicha scoping serverda (cookie
+  // sessiyasi) va X-Clinic-ID bo'yicha. Narx boshqa qurilma/sessiyada bir xil ko'rinadi.
+  // DEMO klinika (id=1): hardcoded DEFAULT_NARYAD_CATALOG — saqlanmaydi.
+  _mapCatalogRow(row: any): NaryadCatalogItem {
+    return {
+      id: String(row.id),
+      name: row.name,
+      category: row.category || '',
+      base_price: Number(row.base_price) || 0,
+      default_percent: row.default_percent ?? undefined,
+      description: row.description || '',
+      created_at: row.created_at,
     };
-    list.unshift(newItem);
-    this.saveNaryadCatalog(list, clinicId);
-    return newItem;
   },
 
-  updateNaryadCatalogItem(id: string, updates: Partial<NaryadCatalogItem>, clinicId?: number | string | null): NaryadCatalogItem | null {
-    const list = this.getNaryadCatalog(clinicId);
-    const idx = list.findIndex(i => i.id === id);
-    if (idx >= 0) {
-      list[idx] = { ...list[idx], ...updates };
-      this.saveNaryadCatalog(list, clinicId);
-      return list[idx];
+  // Klinika serverda sessiya (cookie + X-Clinic-ID) bo'yicha aniqlanadi — shuning
+  // uchun bu metodlar klinika argumentini OLMAYDI (chalg'ituvchi bo'lardi).
+  async getNaryadCatalog(): Promise<NaryadCatalogItem[]> {
+    if (typeof window === 'undefined') return DEFAULT_NARYAD_CATALOG;
+    // DEMO: narxlar bilan to'liq katalog. Saqlanmaydi.
+    if (isDemoClinic()) {
+      return DEFAULT_NARYAD_CATALOG.map((d) => ({ ...d }));
     }
-    return null;
+    // Backend down bo'lsa [] (bo'sh) — soxta narx ko'rsatmaymiz. Yangi klinikada ham
+    // katalog bo'sh bo'lishi normal (direktor to'ldiradi yoki import qiladi).
+    const rows = await safeFetch<any[]>(`${API_BASE}/service-catalog/`, []);
+    return Array.isArray(rows) ? rows.map((r) => this._mapCatalogRow(r)) : [];
   },
 
-  deleteNaryadCatalogItem(id: string, clinicId?: number | string | null): void {
-    const list = this.getNaryadCatalog(clinicId).filter(i => i.id !== id);
-    this.saveNaryadCatalog(list, clinicId);
+  // Yangi klinika katalogi BO'SH boshlanadi — serverga avtomatik yozilmaydi.
+  // Direktor naryadlar sahifasida qo'lda qo'shadi yoki import qiladi (nazoratli).
+  initClinicWithZeroPrices(): NaryadCatalogItem[] {
+    return [];
+  },
+
+  async createNaryadCatalogItem(item: Omit<NaryadCatalogItem, 'id'>): Promise<NaryadCatalogItem> {
+    if (isDemoClinic()) {
+      // demo: saqlanmaydi — vaqtinchalik obyekt qaytaramiz (reload'da yo'qoladi)
+      return { ...item, id: `demo-${Date.now()}` } as NaryadCatalogItem;
+    }
+    const res = await apiFetch(`${API_BASE}/service-catalog/`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: item.name, category: item.category,
+        base_price: item.base_price, default_percent: item.default_percent,
+        description: item.description || '',
+      }),
+    });
+    const row = await res.json();
+    bustApiCache();
+    return this._mapCatalogRow(row);
+  },
+
+  async updateNaryadCatalogItem(id: string, updates: Partial<NaryadCatalogItem>): Promise<NaryadCatalogItem | null> {
+    if (isDemoClinic()) return null; // demo: saqlanmaydi
+    const body: Record<string, any> = {};
+    for (const k of ['name', 'category', 'base_price', 'default_percent', 'description'] as const) {
+      if (updates[k] !== undefined) body[k] = updates[k];
+    }
+    const res = await apiFetch(`${API_BASE}/service-catalog/${id}/`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const row = await res.json();
+    bustApiCache();
+    return this._mapCatalogRow(row);
+  },
+
+  async deleteNaryadCatalogItem(id: string): Promise<void> {
+    if (isDemoClinic()) return; // demo: saqlanmaydi
+    await apiFetch(`${API_BASE}/service-catalog/${id}/`, { method: 'DELETE' });
+    bustApiCache();
+  },
+
+  // Nazoratli import — ATOMAR va IDEMPOTENT (backend `bulk_import` tranzaksiyasi).
+  // source='local': shu brauzerdagi eski katalogni import qiladi; topilmasa/buzilgan
+  //   bo'lsa ANIQ xato tashlaydi (standart narxlarga YASHIRIN o'tmaydi).
+  // source='default': standart ro'yxatni narx 0 bilan import qiladi (ochiq tanlov).
+  // O'rtada xato bo'lsa server hech narsa yozmaydi; qayta urinish dublikat yaratmaydi
+  // (mavjud nomlar o'tkazib yuboriladi). {created, skipped} qaytaradi.
+  async importNaryadCatalog(source: 'local' | 'default'): Promise<{ created: number; skipped: number }> {
+    if (isDemoClinic()) return { created: 0, skipped: 0 };
+    let items: Omit<NaryadCatalogItem, 'id'>[] = [];
+    if (source === 'local') {
+      if (typeof window === 'undefined') throw new ApiError('Lokal ma’lumot faqat brauzerda mavjud.');
+      const cid = getActiveClinicId();
+      const keys = [cid ? `32desk_naryad_catalog_${cid}` : null, cid ? `dentos_naryad_catalog_${cid}` : null].filter(Boolean) as string[];
+      let raw: string | null = null;
+      for (const key of keys) { raw = localStorage.getItem(key); if (raw) break; }
+      if (!raw) throw new ApiError('Bu brauzerda importga eski narx ma’lumoti topilmadi.');
+      try {
+        const parsed = JSON.parse(raw);
+        if (!Array.isArray(parsed) || parsed.length === 0) throw new Error('empty');
+        items = parsed;
+      } catch {
+        throw new ApiError('Eski narx ma’lumoti buzilgan — import qilib bo‘lmadi.');
+      }
+    } else {
+      items = DEFAULT_NARYAD_CATALOG.map((d) => ({ ...d, base_price: 0 }));
+    }
+    const res = await apiFetch(`${API_BASE}/service-catalog/bulk_import/`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ items: items.map((it) => ({
+        name: it.name, category: it.category, base_price: Number(it.base_price) || 0,
+        default_percent: it.default_percent, description: it.description || '',
+      })) }),
+    });
+    bustApiCache();
+    const data = await res.json();
+    return { created: Number(data.created) || 0, skipped: Number(data.skipped) || 0 };
   },
 
   // --- Director: Doctor Naryad Assignments & Custom Pricing ---
-  getDoctorNaryads(doctorId?: number): DoctorNaryadAssignment[] {
-    if (typeof window === 'undefined') {
-      return doctorId != null ? DEFAULT_DOCTOR_NARYADS.filter(d => d.doctor_id === doctorId) : DEFAULT_DOCTOR_NARYADS;
-    }
-    try {
-      const stored = localStorage.getItem('32desk_doctor_naryad_assignments');
-      const all: DoctorNaryadAssignment[] = stored ? JSON.parse(stored) : DEFAULT_DOCTOR_NARYADS;
-      if (!stored) {
-        localStorage.setItem('32desk_doctor_naryad_assignments', JSON.stringify(DEFAULT_DOCTOR_NARYADS));
-      }
-      return doctorId != null ? all.filter(d => d.doctor_id === doctorId) : all;
-    } catch {
-      return doctorId != null ? DEFAULT_DOCTOR_NARYADS.filter(d => d.doctor_id === doctorId) : DEFAULT_DOCTOR_NARYADS;
-    }
-  },
-
-  saveDoctorNaryads(items: DoctorNaryadAssignment[]): void {
-    if (typeof window === 'undefined') return;
-    try {
-      localStorage.setItem('32desk_doctor_naryad_assignments', JSON.stringify(items));
-    } catch (e) {
-      console.error(e);
-    }
-  },
-
-  assignDoctorNaryad(assignment: Omit<DoctorNaryadAssignment, 'id'>): DoctorNaryadAssignment {
-    const all = this.getDoctorNaryads();
-    // Check if already assigned
-    const existingIdx = all.findIndex(a => a.doctor_id === assignment.doctor_id && a.naryad_id === assignment.naryad_id);
-    if (existingIdx >= 0) {
-      all[existingIdx] = { ...all[existingIdx], ...assignment };
-      this.saveDoctorNaryads(all);
-      return all[existingIdx];
-    }
-    const newAssignment: DoctorNaryadAssignment = {
-      ...assignment,
-      id: `dna-${Date.now()}-${Math.floor(Math.random() * 1000)}`
+  // BAZADA (backend /doctor-naryads/), klinika+shifokor+xizmat bo'yicha scoping.
+  // DEMO (id=1): hardcoded DEFAULT_DOCTOR_NARYADS — saqlanmaydi.
+  _mapRateRow(row: any): DoctorNaryadAssignment {
+    return {
+      id: String(row.id),
+      doctor_id: Number(row.doctor_id),
+      naryad_id: String(row.naryad_id),
+      name: row.name || '',
+      category: row.category || '',
+      custom_price: Number(row.custom_price) || 0,
+      commission_percent: Number(row.commission_percent) || 0,
+      is_custom_price: !!row.is_custom_price,
+      notes: row.notes || '',
     };
-    all.push(newAssignment);
-    this.saveDoctorNaryads(all);
-    return newAssignment;
   },
 
-  updateDoctorNaryad(id: string, updates: Partial<DoctorNaryadAssignment>): DoctorNaryadAssignment | null {
-    const all = this.getDoctorNaryads();
-    const idx = all.findIndex(a => a.id === id);
-    if (idx >= 0) {
-      all[idx] = { ...all[idx], ...updates };
-      this.saveDoctorNaryads(all);
-      return all[idx];
+  async getDoctorNaryads(doctorId?: number): Promise<DoctorNaryadAssignment[]> {
+    if (isDemoClinic()) {
+      return doctorId != null ? DEFAULT_DOCTOR_NARYADS.filter(d => d.doctor_id === doctorId) : DEFAULT_DOCTOR_NARYADS;
     }
-    return null;
+    const q = doctorId != null ? `?doctor=${doctorId}` : '';
+    const rows = await safeFetch<any[]>(`${API_BASE}/doctor-naryads/${q}`, []);
+    return Array.isArray(rows) ? rows.map((r) => this._mapRateRow(r)) : [];
   },
 
-  removeDoctorNaryad(id: string): void {
-    const all = this.getDoctorNaryads().filter(a => a.id !== id);
-    this.saveDoctorNaryads(all);
+  async assignDoctorNaryad(assignment: Omit<DoctorNaryadAssignment, 'id'>): Promise<DoctorNaryadAssignment | null> {
+    if (isDemoClinic()) return { ...assignment, id: `demo-${Date.now()}` } as DoctorNaryadAssignment;
+    // Backend upsert (klinika+shifokor+xizmat bo'yicha) — takroriy "assign" xavfsiz.
+    const res = await apiFetch(`${API_BASE}/doctor-naryads/`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        doctor_id: assignment.doctor_id, naryad_id: assignment.naryad_id,
+        custom_price: assignment.custom_price, commission_percent: assignment.commission_percent,
+        is_custom_price: assignment.is_custom_price ?? false, notes: assignment.notes || '',
+      }),
+    });
+    bustApiCache();
+    return this._mapRateRow(await res.json());
+  },
+
+  async updateDoctorNaryad(id: string, updates: Partial<DoctorNaryadAssignment>): Promise<DoctorNaryadAssignment | null> {
+    if (isDemoClinic()) return null;
+    const body: Record<string, any> = {};
+    for (const k of ['custom_price', 'commission_percent', 'is_custom_price', 'notes'] as const) {
+      if (updates[k] !== undefined) body[k] = updates[k];
+    }
+    const res = await apiFetch(`${API_BASE}/doctor-naryads/${id}/`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    bustApiCache();
+    return this._mapRateRow(await res.json());
+  },
+
+  async removeDoctorNaryad(id: string): Promise<void> {
+    if (isDemoClinic()) return;
+    await apiFetch(`${API_BASE}/doctor-naryads/${id}/`, { method: 'DELETE' });
+    bustApiCache();
   },
 
   // --- Doctor Certificates & Diplomas ---
@@ -2534,51 +2999,29 @@ export const clinicApi = {
   // --- Platforma login (rol + klinika bazadan) ---
   async platformLogin(username: string, password: string): Promise<any | null> {
     try {
-      const res = await fetch(`${API_BASE}/auth/login/`, {
+      const res = await apiFetch(`${API_BASE}/auth/login/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username, password })
       });
       const data = await res.json();
       if (res.ok && data.ok) return data.user;
-    } catch (e) {
+      if (res.status !== 400) throw new ApiError(data.detail || data.message || `Kirish serverida xato (HTTP ${res.status}).`, res.status);
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error(e);
     }
 
-    // Offline & dinamik yaratilgan klinikalar autentifikatsiya tekshiruvi:
-    try {
-      const storedAuthStr = typeof window !== 'undefined' ? localStorage.getItem('dentos_created_clinics_auth') : null;
-      if (storedAuthStr) {
-        const list = JSON.parse(storedAuthStr);
-        if (Array.isArray(list)) {
-          const match = list.find((item: any) =>
-            (item.email?.toLowerCase() === username.toLowerCase() || item.username?.toLowerCase() === username.toLowerCase()) &&
-            (item.password === password || password === '123456')
-          );
-          if (match) {
-            return {
-              id: String(match.clinic_id || Date.now()),
-              username: match.email || match.username,
-              full_name: match.full_name || 'Klinika Rahbari',
-              role: 'director',
-              role_label: 'Direktor / Bosh vrach',
-              clinic: match.clinic_id,
-              clinic_name: match.clinic_name || 'dentOS Klinika',
-              initials: (match.full_name || 'DR').slice(0, 2).toUpperCase(),
-              is_active: true
-            };
-          }
-        }
-      }
-    } catch {}
-
+    // XAVFSIZLIK: offline/localStorage bypass OLIB TASHLANDI.
+    // Kirish faqat backend /auth/login/ orqali — login/parol bazadan tekshiriladi.
+    // Yaratilgan klinikalar ham backendда director akkaunti sifatida saqlanadi,
+    // shuning uchun ular ham shu endpoint orqali kiradi.
     return null;
   },
 
   // ── SMS / Telegram kod bilan kirish (OTP) ──
   async requestLoginCode(phone: string, method: 'sms' | 'telegram'): Promise<{ ok: boolean; message?: string; sent?: boolean; dev_code?: string | null }> {
     try {
-      const res = await fetch(`${API_BASE}/auth/request-code/`, {
+      const res = await apiFetch(`${API_BASE}/auth/request-code/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone, method })
@@ -2593,7 +3036,7 @@ export const clinicApi = {
 
   async verifyLoginCode(phone: string, code: string): Promise<any | null> {
     try {
-      const res = await fetch(`${API_BASE}/auth/verify-code/`, {
+      const res = await apiFetch(`${API_BASE}/auth/verify-code/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ phone, code })
@@ -2619,7 +3062,7 @@ export const clinicApi = {
     role?: string;
   }): Promise<{ ok: boolean; message: string; user?: any }> {
     try {
-      const res = await fetch(`${API_BASE}/auth/update-profile/`, {
+      const res = await apiFetch(`${API_BASE}/auth/update-profile/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
@@ -2633,7 +3076,7 @@ export const clinicApi = {
       if (resData.message) {
         return { ok: false, message: resData.message };
       }
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error(e);
     }
 
@@ -2655,7 +3098,7 @@ export const clinicApi = {
     new_status?: string;
   }> {
     try {
-      const res = await fetch(`${API_BASE}/ai-agent/chat/`, {
+      const res = await apiFetch(`${API_BASE}/ai-agent/chat/`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2664,7 +3107,7 @@ export const clinicApi = {
         body: JSON.stringify({ clinic_id: clinicId, phone, message, patient_name: patientName })
       });
       return await res.json();
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       return {
         ok: false,
         reply: 'Tarmoq xatosi. AI serverga ulanish imkoni bo‘lmadi.'
@@ -2674,18 +3117,18 @@ export const clinicApi = {
 
   async aiAgentGetSettings(clinicId: number): Promise<any> {
     try {
-      const res = await fetch(`${API_BASE}/ai-agent/settings/?clinic=${clinicId}`, {
+      const res = await apiFetch(`${API_BASE}/ai-agent/settings/?clinic=${clinicId}`, {
         headers: { 'X-Clinic-ID': String(clinicId) }
       });
       return await res.json();
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       return { ok: false, has_ai_agent: false, has_auto_reminders: false };
     }
   },
 
   async aiAgentSaveSettings(clinicId: number, data: { has_ai_agent?: boolean; has_auto_reminders?: boolean; ai_agent_settings?: any }): Promise<any> {
     try {
-      const res = await fetch(`${API_BASE}/ai-agent/settings/?clinic=${clinicId}`, {
+      const res = await apiFetch(`${API_BASE}/ai-agent/settings/?clinic=${clinicId}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2694,7 +3137,7 @@ export const clinicApi = {
         body: JSON.stringify(data)
       });
       return await res.json();
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       return { ok: false, message: String(e) };
     }
   },
@@ -2733,7 +3176,7 @@ export const clinicApi = {
           localStorage.setItem('dentos_created_clinics_auth', JSON.stringify(updated));
         }
       }
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error(e);
     }
   },
@@ -2744,8 +3187,8 @@ export const clinicApi = {
     const params = new URLSearchParams();
     if (cid) params.append('clinic', String(cid));
     const q = params.toString() ? `?${params.toString()}` : '';
-    const fallback = (cid === 1) ? mockTechnicians : [];
-    return safeFetch<DentalTechnician[]>(`${API_BASE}/technicians/${q}`, fallback);
+    // Texniklar platforma darajasidagi resurs — superadmin (clinic yo'q) ham ko'rsin.
+    return safeFetch<DentalTechnician[]>(`${API_BASE}/technicians/${q}`, mockTechnicians);
   },
 
   async getAvailableTechnicians(): Promise<DentalTechnician[]> {
@@ -2755,7 +3198,7 @@ export const clinicApi = {
   async toggleTechnicianLink(techId: number, action: 'link' | 'unlink'): Promise<{ ok: boolean; linked_technicians?: number[] }> {
     const cid = getActiveClinicId();
     try {
-      const res = await fetch(`${API_BASE}/technicians/toggle_link/`, {
+      const res = await apiFetch(`${API_BASE}/technicians/toggle_link/`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -2764,7 +3207,7 @@ export const clinicApi = {
         body: JSON.stringify({ technician_id: techId, action })
       });
       if (res.ok) return await res.json();
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error('toggleTechnicianLink error:', e);
     }
     return { ok: false };
@@ -2773,13 +3216,13 @@ export const clinicApi = {
   async createTechnician(data: Partial<DentalTechnician>): Promise<DentalTechnician> {
     bustApiCache();
     try {
-      const res = await fetch(`${API_BASE}/technicians/`, {
+      const res = await apiFetch(`${API_BASE}/technicians/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
       if (res.ok) return await res.json();
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error(e);
     }
     return {
@@ -2799,13 +3242,13 @@ export const clinicApi = {
   async updateTechnician(id: number, data: Partial<DentalTechnician>): Promise<DentalTechnician> {
     bustApiCache();
     try {
-      const res = await fetch(`${API_BASE}/technicians/${id}/`, {
+      const res = await apiFetch(`${API_BASE}/technicians/${id}/`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
       if (res.ok) return await res.json();
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error(e);
     }
     return { id, name: data.name || '', lab_name: data.lab_name || '', phone: data.phone || '', username: data.username || '', is_active: true, linked_clinics: [], price_list: [] } as DentalTechnician;
@@ -2813,31 +3256,31 @@ export const clinicApi = {
 
   async technicianLogin(credentials: { username: string; password: string }): Promise<{ success: boolean; technician?: DentalTechnician; error?: string }> {
     try {
-      const res = await fetch(`${API_BASE}/technicians/login/`, {
+      const res = await apiFetch(`${API_BASE}/technicians/login/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(credentials)
       });
       const data = await res.json();
       return data.ok ? { success: true, technician: data.technician } : { success: false, error: data.message };
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       return { success: false, error: 'Сервер недоступен' };
     }
   },
 
   async updateTechnicianPriceList(id: number, priceList: TechnicianPriceItem[]): Promise<DentalTechnician> {
     try {
-      const res = await fetch(`${API_BASE}/technicians/${id}/update_price_list/`, {
+      const res = await apiFetch(`${API_BASE}/technicians/${id}/update_price_list/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ price_list: priceList })
       });
       if (res.ok) {
         // update_price_list faqat {ok, price_list} qaytaradi — to'liq texnik obyektni qайta olamiz
-        const full = await fetch(`${API_BASE}/technicians/${id}/`);
+        const full = await apiFetch(`${API_BASE}/technicians/${id}/`);
         if (full.ok) return await full.json();
       }
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error(e);
     }
     return this.updateTechnician(id, { price_list: priceList });
@@ -2847,7 +3290,7 @@ export const clinicApi = {
   async getPlatformSettings(): Promise<PlatformSetting> {
     return safeFetch<PlatformSetting>(`${API_BASE}/platform-settings/current/`, {
       id: 1,
-      clinic_name: '32Desk Premium Clinic',
+      clinic_name: 'Premium Clinic',
       plan_tier: 'Enterprise Max',
       storage_quota_gb: 50,
       storage_used_gb: 4.8,
@@ -2870,13 +3313,13 @@ export const clinicApi = {
     try {
       const current = await this.getPlatformSettings();
       const targetId = current?.id || 1;
-      const res = await fetch(`${API_BASE}/platform-settings/${targetId}/`, {
+      const res = await apiFetch(`${API_BASE}/platform-settings/${targetId}/`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
       if (res.ok) return await res.json();
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error(e);
     }
     return { ...((await this.getPlatformSettings()) || {}), ...data } as PlatformSetting;
@@ -2908,18 +3351,18 @@ export const clinicApi = {
     // va ro'yxatda ko'rinmaydi. Shuning uchun xatoni yuqoriga uzatamiz.
     let res: Response;
     try {
-      res = await fetch(`${API_BASE}/clinics/`, {
+      res = await apiFetch(`${API_BASE}/clinics/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       });
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       throw new Error('Serverga ulanib bo‘lmadi. Backend ishlab turganiga ishonch hosil qiling va qayta urinib ko‘ring.');
     }
 
     if (!res.ok) {
       let msg = `Klinika yaratishda xatolik (HTTP ${res.status})`;
-      try { const err = await res.json(); msg = err.detail || err.message || JSON.stringify(err); } catch {}
+      try { const err = await res.json(); msg = err.detail || err.message || JSON.stringify(err); } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
       throw new Error(msg);
     }
 
@@ -2934,6 +3377,29 @@ export const clinicApi = {
     };
     created.credentials = creds;
     this.saveCreatedClinicAuth(creds);
+
+    // YANGI KLINIKA — standart naryad katalogini (DEFAULT_NARYAD_CATALOG, ~87 ta xizmat,
+    // narx 0, lekin FOIZ bilan) AVTOMATIK yuklaymiz. Bu eski xatti-harakatni tiklaydi:
+    // klinika ochilganda naryadlar tayyor turadi (narxini direktor keyin yozadi).
+    // Superadmin X-Clinic-ID bilan yangi klinikaga yozadi (access.py superadmin'ga ruxsat beradi).
+    // bulk_import IDEMPOTENT — takror chaqirilса dublikat yaratmaydi. Best-effort: xato bo'lsa
+    // klinika baribir yaratilgan, direktor naryadlar sahifasida "Standart ro'yxat" bilan import qiladi.
+    try {
+      if (created?.id && Number(created.id) !== 1) {
+        await apiFetch(`${API_BASE}/service-catalog/bulk_import/`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'X-Clinic-ID': String(created.id) },
+          body: JSON.stringify({
+            items: DEFAULT_NARYAD_CATALOG.map((d) => ({
+              name: d.name, category: d.category, base_price: 0,
+              default_percent: d.default_percent, description: d.description || '',
+            })),
+          }),
+        }, false);
+        bustApiCache();
+      }
+    } catch { /* seed best-effort — pastda "Standart ro'yxat" tugmasi zaxira yo'l */ }
+
     return created;
   },
 
@@ -2945,7 +3411,7 @@ export const clinicApi = {
       const filtered = list.filter((c: any) => c.email?.toLowerCase() !== creds.email?.toLowerCase());
       filtered.unshift(creds);
       localStorage.setItem('dentos_created_clinics_auth', JSON.stringify(filtered));
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error(e);
     }
   },
@@ -2953,13 +3419,13 @@ export const clinicApi = {
   async updateClinic(id: number, data: Partial<ClinicTenant>): Promise<ClinicTenant> {
     bustApiCache();
     try {
-      const res = await fetch(`${API_BASE}/clinics/${id}/`, {
+      const res = await apiFetch(`${API_BASE}/clinics/${id}/`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
       if (res.ok) return await res.json();
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error(e);
     }
     return { id, ...data } as ClinicTenant;
@@ -2968,9 +3434,10 @@ export const clinicApi = {
   async deleteClinic(id: number): Promise<boolean> {
     bustApiCache();
     try {
-      const res = await fetch(`${API_BASE}/clinics/${id}/`, { method: 'DELETE' });
+      const res = await apiFetch(`${API_BASE}/clinics/${id}/`, { method: 'DELETE' });
+      if (res.ok) bustApiCache();
       return res.ok;
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error(e);
       return false;
     }
@@ -2987,7 +3454,7 @@ export const clinicApi = {
   ): Promise<{ ok: boolean; message?: string; director_email?: string; director_password?: string }> {
     bustApiCache();
     try {
-      const res = await fetch(`${API_BASE}/clinics/${clinicId}/set_director_credentials/`, {
+      const res = await apiFetch(`${API_BASE}/clinics/${clinicId}/set_director_credentials/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
@@ -3015,12 +3482,12 @@ export const clinicApi = {
                 localStorage.setItem('dentos_created_clinics_auth', JSON.stringify(updated));
               }
             }
-          } catch {}
+          } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
         }
         return resData;
       }
       return { ok: false, message: resData.message || `Xatolik (HTTP ${res.status})` };
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       return { ok: false, message: 'Serverga ulanib bo‘lmadi' };
     }
   },
@@ -3028,13 +3495,13 @@ export const clinicApi = {
   async linkTechnicianToClinic(clinicId: number, technicianId: number, action: 'link' | 'unlink'): Promise<{ ok: boolean; clinic?: ClinicTenant }> {
     bustApiCache();
     try {
-      const res = await fetch(`${API_BASE}/clinics/${clinicId}/link_technician/`, {
+      const res = await apiFetch(`${API_BASE}/clinics/${clinicId}/link_technician/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ technician_id: technicianId, action })
       });
       if (res.ok) return await res.json();
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error(e);
     }
     return { ok: false };
@@ -3070,7 +3537,7 @@ export const clinicApi = {
     // Aks holda filial "yaratilgandek" ko'rinadi-yu, ro'yxat yangilanganda YO'QOLADI.
     let res: Response;
     try {
-      res = await fetch(`${API_BASE}/branches/`, {
+      res = await apiFetch(`${API_BASE}/branches/`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -3078,12 +3545,12 @@ export const clinicApi = {
         },
         body: JSON.stringify(payload)
       });
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       throw new Error('Serverga ulanib bo‘lmadi. Filial saqlanmadi — qayta urinib ko‘ring.');
     }
     if (!res.ok) {
       let msg = `Filial saqlashda xatolik (HTTP ${res.status})`;
-      try { const err = await res.json(); msg = err.detail || err.message || JSON.stringify(err); } catch {}
+      try { const err = await res.json(); msg = err.detail || err.message || JSON.stringify(err); } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
       throw new Error(msg);
     }
     return await res.json();
@@ -3092,13 +3559,13 @@ export const clinicApi = {
   async updateBranch(id: number, data: Partial<Branch>): Promise<Branch> {
     bustApiCache();
     try {
-      const res = await fetch(`${API_BASE}/branches/${id}/`, {
+      const res = await apiFetch(`${API_BASE}/branches/${id}/`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
       if (res.ok) return await res.json();
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error(e);
     }
     return { id, ...data } as Branch;
@@ -3107,9 +3574,10 @@ export const clinicApi = {
   async deleteBranch(id: number): Promise<boolean> {
     bustApiCache();
     try {
-      const res = await fetch(`${API_BASE}/branches/${id}/`, { method: 'DELETE' });
+      const res = await apiFetch(`${API_BASE}/branches/${id}/`, { method: 'DELETE' });
+      if (res.ok) bustApiCache();
       return res.ok;
-    } catch (e) {
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
       console.error(e);
       return false;
     }
@@ -3245,42 +3713,5 @@ const DEFAULT_DOCTOR_NARYADS: DoctorNaryadAssignment[] = [
   { id: 'dna-17', doctor_id: 5, naryad_id: 'nar-13', name: 'Отбеливание зубов Beyond Polus', category: 'Гигиена', custom_price: 2600000, commission_percent: 40 }
 ];
 
-export const DEFAULT_TREATMENT_PLANS: TreatmentPlanStage[] = [
-  {
-    id: 1,
-    title: 'Этап 1: Профессиональная гигиена и санация',
-    description: 'Швейцарский протокол GBT, снятие зубных отложений, полировка, обучение гигиене.',
-    cost: 800000,
-    status: 'Выполнено',
-    doctor: 'Феруза Шоанварова',
-    procedures: [
-      { id: 'p-1', title: 'Проф. гигиена полости рта EMS (GBT протокол)', teeth: '18-48', quantity: 1, price: 500000, doctor: 'Феруза Шоанварова' },
-      { id: 'p-2', title: 'Глубокое фторирование эмали (обе челюсти)', teeth: '18-48', quantity: 1, price: 300000, doctor: 'Феруза Шоанварова' }
-    ]
-  },
-  {
-    id: 2,
-    title: 'Этап 2: Терапевтическое лечение',
-    description: 'Лечение кариеса и пульпита зубов 16, 26 с применением коффердама и оптики.',
-    cost: 1400000,
-    status: 'В процессе',
-    doctor: 'Сардор Мирахмедов',
-    procedures: [
-      { id: 'p-3', title: 'Эндодонтическое лечение 3-канального зуба', teeth: '26', quantity: 1, price: 750000, doctor: 'Сардор Мирахмедов' },
-      { id: 'p-4', title: 'Лечение среднего кариеса + световая пломба Estelite', teeth: '16', quantity: 1, price: 650000, doctor: 'Сардор Мирахмедов' }
-    ]
-  },
-  {
-    id: 3,
-    title: 'Этап 3: Ортопедия и протезирование',
-    description: 'Установка циркониевых коронок Prettau с винтовой фиксацией.',
-    cost: 4800000,
-    status: 'Запланировано',
-    doctor: 'Мирислом Абдуллаев',
-    procedures: [
-      { id: 'p-5', title: 'Циркониевая коронка цельноанатомическая Prettau (CAD/CAM)', teeth: '16', quantity: 1, price: 2400000, doctor: 'Мирислом Абдуллаев' },
-      { id: 'p-6', title: 'Циркониевая коронка цельноанатомическая Prettau (CAD/CAM)', teeth: '26', quantity: 1, price: 2400000, doctor: 'Мирислом Абдуллаев' }
-    ]
-  }
-];
+export const DEFAULT_TREATMENT_PLANS: TreatmentPlanStage[] = [];
 

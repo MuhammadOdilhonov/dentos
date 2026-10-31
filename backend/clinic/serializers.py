@@ -1,11 +1,42 @@
+from .tenant_serializers import TenantModelSerializer
 from rest_framework import serializers
 from .models import (
     Employee, Patient, Appointment, FinancialTransaction, ClinicTask,
     WarehouseItem, DentalLabOrder, DentalTechnician, PlatformSetting, ClinicTenant,
-    PlatformUser, Workplace, Specialty, Branch
+    PlatformUser, Workplace, Specialty, Branch, PatientMedia, PhotoProtocol,
+    ServiceCatalogItem, DoctorNaryadRate
 )
 
-class BranchSerializer(serializers.ModelSerializer):
+
+class PatientMediaSerializer(TenantModelSerializer):
+    file_url = serializers.SerializerMethodField()
+    patient_name = serializers.CharField(source='patient.full_name', read_only=True)
+
+    class Meta:
+        model = PatientMedia
+        fields = ['id', 'clinic', 'patient', 'patient_name', 'kind', 'file', 'file_url',
+                  'file_name', 'file_size', 'file_type', 'meta', 'uploaded_at']
+        read_only_fields = ['uploaded_at', 'file_size', 'file_type', 'file_name']
+
+    def get_file_url(self, obj):
+        if not obj.file:
+            return None
+        # NISBIY (same-origin) URL qaytaramiz — absolute EMAS. Absolute URL proksi orqasida
+        # backend hostini (masalan 127.0.0.1:8000 / backend.dentos.cc) oladi; brauzerning
+        # httpOnly `dentos_session` cookie'si esa ilova origini (localhost:3000 / dentos.cc)
+        # ga bog'langan va boshqa hostga YUBORILMAYDI → download 401 ("Kirish talab qilinadi").
+        # Nisbiy URL ilova origini orqali (/api proksi) so'raladi → cookie yuboriladi, xususiy
+        # media autentifikatsiyasi saqlanadi (fayl public qilinmaydi).
+        return f'/api/patient-media/{obj.pk}/download/'
+
+
+class PhotoProtocolSerializer(TenantModelSerializer):
+    class Meta:
+        model = PhotoProtocol
+        fields = ['id', 'clinic', 'patient', 'doc', 'updated_at']
+        read_only_fields = ['updated_at']
+
+class BranchSerializer(TenantModelSerializer):
     doctors_count = serializers.SerializerMethodField()
     chairs_count = serializers.SerializerMethodField()
 
@@ -19,31 +50,106 @@ class BranchSerializer(serializers.ModelSerializer):
     def get_chairs_count(self, obj):
         return obj.workplaces.filter(is_active=True).count()
 
-class WorkplaceSerializer(serializers.ModelSerializer):
+class WorkplaceSerializer(TenantModelSerializer):
     branch_name = serializers.CharField(source='branch.name', read_only=True)
 
     class Meta:
         model = Workplace
         fields = '__all__'
 
-class SpecialtySerializer(serializers.ModelSerializer):
+class SpecialtySerializer(TenantModelSerializer):
     class Meta:
         model = Specialty
         fields = '__all__'
 
-class EmployeeSerializer(serializers.ModelSerializer):
+class ServiceCatalogItemSerializer(TenantModelSerializer):
+    class Meta:
+        model = ServiceCatalogItem
+        fields = ['id', 'clinic', 'name', 'category', 'base_price', 'default_percent', 'description', 'created_at']
+        read_only_fields = ['created_at']
+
+    def validate_base_price(self, value):
+        if value is None or value < 0:
+            raise serializers.ValidationError('Narx manfiy bo‘lmasligi kerak.')
+        return value
+
+    def validate_default_percent(self, value):
+        if value is not None and (value < 0 or value > 100):
+            raise serializers.ValidationError('Foiz 0 dan 100 gacha bo‘lishi kerak.')
+        return value
+
+class DoctorNaryadRateSerializer(TenantModelSerializer):
+    # Frontend shakliga moslash: doctor_id (int) va naryad_id (service id, string).
+    doctor_id = serializers.IntegerField()
+    naryad_id = serializers.CharField(source='service_id')
+    name = serializers.CharField(source='service.name', read_only=True)
+    category = serializers.CharField(source='service.category', read_only=True)
+
+    class Meta:
+        model = DoctorNaryadRate
+        fields = ['id', 'doctor_id', 'naryad_id', 'name', 'category', 'custom_price',
+                  'commission_percent', 'is_custom_price', 'notes', 'clinic']
+        read_only_fields = ['clinic']
+
+    def validate_custom_price(self, value):
+        if value is None or value < 0:
+            raise serializers.ValidationError('Narx manfiy bo‘lmasligi kerak.')
+        return value
+
+    def validate_commission_percent(self, value):
+        if value is None or value < 0 or value > 100:
+            raise serializers.ValidationError('Foiz 0 dan 100 gacha bo‘lishi kerak.')
+        return value
+
+    def validate_naryad_id(self, value):
+        # ORM so'rovidan OLDIN ID formatini tekshiramiz — aks holda raqam bo'lmagan
+        # qiymat (eski "nar-*", bo'sh, yaroqsiz) integer PK filtriga tushib 500 berardi.
+        try:
+            parsed = int(str(value).strip())
+        except (TypeError, ValueError):
+            raise serializers.ValidationError('Xizmat ID butun son bo‘lishi kerak (eski "nar-*" ID qo‘llab-quvvatlanmaydi).')
+        if parsed <= 0:
+            raise serializers.ValidationError('Xizmat ID noto‘g‘ri.')
+        return parsed  # source='service_id' — int sifatida saqlanadi
+
+    def validate(self, attrs):
+        from .views import get_clinic_id
+        from .models import Employee, ServiceCatalogItem
+        request = self.context.get('request')
+        cid = get_clinic_id(request) if request else None
+        # UPDATE'da (doctor,service) JUFTLIGINI o'zgartirishga ruxsat bermaymiz —
+        # bu identifikator; almashtirilsa unique cheklovni buzib 500 berardi. Yangi
+        # juftlik uchun yangi biriktirma yaratiladi.
+        if self.instance is not None:
+            if 'doctor_id' in attrs and attrs['doctor_id'] != self.instance.doctor_id:
+                raise serializers.ValidationError({'doctor_id': 'Biriktirmada shifokorni o‘zgartirib bo‘lmaydi; yangi biriktirma yarating.'})
+            if 'service_id' in attrs and attrs['service_id'] != self.instance.service_id:
+                raise serializers.ValidationError({'naryad_id': 'Biriktirmada xizmatni o‘zgartirib bo‘lmaydi; yangi biriktirma yarating.'})
+        doctor_id = attrs.get('doctor_id', getattr(self.instance, 'doctor_id', None))
+        service_id = attrs.get('service_id', getattr(self.instance, 'service_id', None))
+        # Bog'langan shifokor va xizmat AYNAN shu klinikaga tegishli bo'lishi shart.
+        if cid:
+            if doctor_id is not None and not Employee.objects.filter(pk=doctor_id, clinic_id=cid).exists():
+                raise serializers.ValidationError({'doctor_id': 'Shifokor shu klinikaga tegishli emas.'})
+            if service_id is not None and not ServiceCatalogItem.objects.filter(pk=service_id, clinic_id=cid).exists():
+                raise serializers.ValidationError({'naryad_id': 'Xizmat topilmadi yoki shu klinikaga tegishli emas.'})
+        elif not (request and request.user.is_superuser):
+            raise serializers.ValidationError('Klinika kerak.')
+        return attrs
+
+class EmployeeSerializer(TenantModelSerializer):
     branch_name = serializers.CharField(source='branch.name', read_only=True)
 
     class Meta:
         model = Employee
         fields = '__all__'
 
-class PatientSerializer(serializers.ModelSerializer):
+class PatientSerializer(TenantModelSerializer):
     class Meta:
         model = Patient
         fields = '__all__'
 
-class AppointmentSerializer(serializers.ModelSerializer):
+class AppointmentSerializer(TenantModelSerializer):
     patient_name = serializers.CharField(source='patient.full_name', read_only=True)
     patient_phone = serializers.CharField(source='patient.phone', read_only=True)
     patient_service_lang = serializers.CharField(source='patient.service_lang', read_only=True)
@@ -58,7 +164,7 @@ class AppointmentSerializer(serializers.ModelSerializer):
         model = Appointment
         fields = '__all__'
 
-class FinancialTransactionSerializer(serializers.ModelSerializer):
+class FinancialTransactionSerializer(TenantModelSerializer):
     patient_name = serializers.CharField(source='patient.full_name', read_only=True)
     doctor_name = serializers.CharField(source='doctor.full_name', read_only=True)
     technician_name = serializers.CharField(source='technician.name', read_only=True)
@@ -68,7 +174,7 @@ class FinancialTransactionSerializer(serializers.ModelSerializer):
         model = FinancialTransaction
         fields = '__all__'
 
-class ClinicTaskSerializer(serializers.ModelSerializer):
+class ClinicTaskSerializer(TenantModelSerializer):
     assignee_name = serializers.SerializerMethodField()
     patient_name = serializers.CharField(source='patient.full_name', read_only=True)
     branch_name = serializers.SerializerMethodField()
@@ -93,12 +199,12 @@ class ClinicTaskSerializer(serializers.ModelSerializer):
             return obj.creator.full_name
         return obj.creator_name or ''
 
-class WarehouseItemSerializer(serializers.ModelSerializer):
+class WarehouseItemSerializer(TenantModelSerializer):
     class Meta:
         model = WarehouseItem
         fields = '__all__'
 
-class DentalLabOrderSerializer(serializers.ModelSerializer):
+class DentalLabOrderSerializer(TenantModelSerializer):
     patient_name = serializers.CharField(source='patient.full_name', read_only=True)
     patient_phone = serializers.CharField(source='patient.phone', read_only=True)
     doctor_name = serializers.CharField(source='doctor.full_name', read_only=True)
@@ -127,35 +233,23 @@ class DentalLabOrderSerializer(serializers.ModelSerializer):
             return obj.doctor.branch.name
         return obj.destination_branch_name or 'Toshkent Markaziy filiali'
 
-class DentalTechnicianSerializer(serializers.ModelSerializer):
+class DentalTechnicianSerializer(TenantModelSerializer):
     class Meta:
         model = DentalTechnician
         fields = '__all__'
 
-class PlatformSettingSerializer(serializers.ModelSerializer):
+class PlatformSettingSerializer(TenantModelSerializer):
     class Meta:
         model = PlatformSetting
         fields = '__all__'
 
 def compute_storage_used_gb(clinic_id):
-    """Klinikaning REAL ma'lumotlari bo'yicha ishlatilgan xotirani (GB) hisoblaydi.
-
-    Fayllar (rentgen/skan/foto) brauzer localStorage'da bo'lgani uchun backend ularni
-    o'lchay olmaydi — shuning uchun yozuvlar soniga qarab real-ga yaqin TAXMIN beramiz.
-    Bo'sh klinika = 0 GB, ma'lumot qo'shilgani sari o'sadi, o'chirilsa kamayadi.
-    """
-    from .models import Patient, Appointment, DentalLabOrder, Employee, WarehouseItem
-    patients = Patient.objects.filter(clinic_id=clinic_id).count()
-    appts = Appointment.objects.filter(clinic_id=clinic_id).count()
-    labs = DentalLabOrder.objects.filter(clinic_id=clinic_id).count()
-    emps = Employee.objects.filter(clinic_id=clinic_id).count()
-    warehouse = WarehouseItem.objects.filter(clinic_id=clinic_id).count()
-    # Taxminiy o'lchamlar (GB): bemor kartasi + rasm/rentgen, qabul yozuvi, lab buyurtma, xodim profili
-    gb = (patients * 0.08) + (appts * 0.012) + (labs * 0.05) + (emps * 0.025) + (warehouse * 0.002)
-    return round(gb, 2)
+    from django.db.models import Sum
+    total = PatientMedia.objects.filter(clinic_id=clinic_id).aggregate(total=Sum('file_size'))['total'] or 0
+    return round(total / (1024 ** 3), 6)
 
 
-class ClinicTenantSerializer(serializers.ModelSerializer):
+class ClinicTenantSerializer(TenantModelSerializer):
     doctors_count = serializers.SerializerMethodField()
     patients_count = serializers.SerializerMethodField()
     storage_used_gb = serializers.SerializerMethodField()
@@ -174,7 +268,7 @@ class ClinicTenantSerializer(serializers.ModelSerializer):
         # Har doim REAL ma'lumot bo'yicha hisoblab qaytaramiz (bazadagi eski qiymatni emas)
         return compute_storage_used_gb(obj.id)
 
-class PlatformUserSerializer(serializers.ModelSerializer):
+class PlatformUserSerializer(TenantModelSerializer):
     role_label = serializers.SerializerMethodField()
     clinic_name = serializers.SerializerMethodField()
     branch_name = serializers.CharField(source='branch.name', read_only=True)

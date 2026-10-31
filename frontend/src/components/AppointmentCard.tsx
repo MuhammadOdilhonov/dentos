@@ -34,23 +34,21 @@ export const APPOINTMENT_STATUS_MAP: Record<
     icon: React.ElementType;
     color: string;
     bg: string;
-    labelUz: string;
-    labelRu: string;
-    labelEn: string;
+    labelKey: string;
   }
 > = {
-  new: { icon: Circle, color: '#3B82F6', bg: 'bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-400/40', labelUz: 'Yangi', labelRu: 'Новый', labelEn: 'New' },
-  confirmed: { icon: Check, color: '#06B6D4', bg: 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-400 border-cyan-400/40', labelUz: 'Tasdiqlangan', labelRu: 'Подтвержден', labelEn: 'Confirmed' },
-  unconfirmed: { icon: AlertCircle, color: '#F59E0B', bg: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-400/40', labelUz: 'Tasdiqlanmagan', labelRu: 'Не подтвержден', labelEn: 'Unconfirmed' },
-  late: { icon: Clock, color: '#F97316', bg: 'bg-orange-500/15 text-orange-600 dark:text-orange-400 border-orange-400/40', labelUz: 'Kechikdi', labelRu: 'Опоздал', labelEn: 'Late' },
-  arrived: { icon: ArrowDownCircle, color: '#EAB308', bg: 'bg-yellow-500/15 text-yellow-600 dark:text-yellow-400 border-yellow-400/40', labelUz: 'Keldi', labelRu: 'Прибыл', labelEn: 'Arrived' },
-  in_progress: { icon: PlayCircle, color: '#10B981', bg: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-400/40', labelUz: 'Qabulda', labelRu: 'На приёме', labelEn: 'In Progress' },
-  waiting_bill: { icon: FileText, color: '#8B5CF6', bg: 'bg-purple-500/15 text-purple-600 dark:text-purple-400 border-purple-400/40', labelUz: 'Hisob kutmoqda', labelRu: 'Ожидает счёт', labelEn: 'Waiting for Bill' },
-  cancelled: { icon: XCircle, color: '#EF4444', bg: 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-400/40', labelUz: 'Bekor qilingan', labelRu: 'Отменён', labelEn: 'Cancelled' },
-  no_show: { icon: EyeOff, color: '#64748B', bg: 'bg-slate-500/15 text-slate-600 dark:text-slate-400 border-slate-400/40', labelUz: 'Kelmadi', labelRu: 'Не явился', labelEn: 'No Show' },
-  completed: { icon: CheckCircle2, color: '#0D9488', bg: 'bg-teal-500/15 text-teal-600 dark:text-teal-400 border-teal-400/40', labelUz: 'Yakunlangan', labelRu: 'Завершён', labelEn: 'Completed' },
-  debt: { icon: AlertTriangle, color: '#D97706', bg: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-400/40', labelUz: 'Qarz', labelRu: 'Долг', labelEn: 'Debt' },
-  reserved: { icon: Circle, color: '#3B82F6', bg: 'bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-400/40', labelUz: 'Band qilingan', labelRu: 'Забронирован', labelEn: 'Reserved' }
+  new: { icon: Circle, color: '#3B82F6', bg: 'bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-400/40', labelKey: 'aptst_new' },
+  confirmed: { icon: Check, color: '#06B6D4', bg: 'bg-cyan-500/15 text-cyan-600 dark:text-cyan-400 border-cyan-400/40', labelKey: 'aptst_confirmed' },
+  unconfirmed: { icon: AlertCircle, color: '#F59E0B', bg: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-400/40', labelKey: 'aptst_unconfirmed' },
+  late: { icon: Clock, color: '#F97316', bg: 'bg-orange-500/15 text-orange-600 dark:text-orange-400 border-orange-400/40', labelKey: 'aptst_late' },
+  arrived: { icon: ArrowDownCircle, color: '#EAB308', bg: 'bg-yellow-500/15 text-yellow-600 dark:text-yellow-400 border-yellow-400/40', labelKey: 'aptst_arrived' },
+  in_progress: { icon: PlayCircle, color: '#10B981', bg: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-400/40', labelKey: 'aptst_in_progress' },
+  waiting_bill: { icon: FileText, color: '#8B5CF6', bg: 'bg-purple-500/15 text-purple-600 dark:text-purple-400 border-purple-400/40', labelKey: 'aptst_waiting_bill' },
+  cancelled: { icon: XCircle, color: '#EF4444', bg: 'bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-400/40', labelKey: 'aptst_cancelled' },
+  no_show: { icon: EyeOff, color: '#64748B', bg: 'bg-slate-500/15 text-slate-600 dark:text-slate-400 border-slate-400/40', labelKey: 'aptst_no_show' },
+  completed: { icon: CheckCircle2, color: '#0D9488', bg: 'bg-teal-500/15 text-teal-600 dark:text-teal-400 border-teal-400/40', labelKey: 'aptst_completed' },
+  debt: { icon: AlertTriangle, color: '#D97706', bg: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-400/40', labelKey: 'aptst_debt' },
+  reserved: { icon: Circle, color: '#3B82F6', bg: 'bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-400/40', labelKey: 'aptst_reserved' }
 };
 
 export default function AppointmentCard({ appointment, onClick, style, doctorColor }: AppointmentCardProps) {
@@ -73,8 +71,7 @@ export default function AppointmentCard({ appointment, onClick, style, doctorCol
   // Status mapping
   const statusCfg = APPOINTMENT_STATUS_MAP[appointment.status] || APPOINTMENT_STATUS_MAP.new;
   const StatusIcon = statusCfg.icon;
-  const statusLabel =
-    language === 'ru' ? statusCfg.labelRu : language === 'en' ? statusCfg.labelEn : statusCfg.labelUz;
+  const statusLabel = tk(statusCfg.labelKey);
 
   // Time format
   const startTimeStr = new Date(appointment.start_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -97,11 +94,11 @@ export default function AppointmentCard({ appointment, onClick, style, doctorCol
   const isZeroPrice = price === 0;
 
   // Localized texts
-  const tPaid = language === 'ru' ? 'Оплачено' : language === 'en' ? 'Paid' : 'To‘landi';
-  const tDebt = language === 'ru' ? 'Долг' : language === 'en' ? 'Debt' : 'Qarz';
-  const tUnpaid = language === 'ru' ? 'Не оплачено' : language === 'en' ? 'Unpaid' : 'To‘lanmagan';
-  const tTotal = language === 'ru' ? 'Всего' : language === 'en' ? 'Total' : 'Jami';
-  const tConsultation = language === 'ru' ? 'Консультация' : language === 'en' ? 'Consultation' : 'Konsultatsiya';
+  const tPaid = tk('apt_paid');
+  const tDebt = tk('aptst_debt');
+  const tUnpaid = tk('apt_unpaid');
+  const tTotal = tk('total_2');
+  const tConsultation = tk('consultation');
 
   // Patient initials
   const nameParts = appointment.patient_name.trim().split(' ').filter(Boolean);

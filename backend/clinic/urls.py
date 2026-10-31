@@ -1,4 +1,5 @@
 from django.urls import path, include
+from django.conf import settings
 from rest_framework.routers import DefaultRouter
 from .views import (
     EmployeeViewSet, PatientViewSet, AppointmentViewSet,
@@ -7,18 +8,23 @@ from .views import (
     DentalTechnicianViewSet, PlatformSettingViewSet, ClinicTenantViewSet,
     WorkplaceViewSet, SpecialtyViewSet, BranchViewSet,
     global_search, dashboard_stats, pulse_monitor, auth_login, update_profile, serve_dental_media_sample,
-    request_login_code, verify_login_code
+    request_login_code, verify_login_code, monthly_plan,
+    PatientMediaViewSet, photo_protocol, patient_media_presence, ServiceCatalogItemViewSet,
+    DoctorNaryadRateViewSet
 )
 from . import telegram_auth
 from . import whatsapp_api
 from . import reminders
 from . import ai_agent
+from . import telegram_login
 
 # Avto-eslatma rejalashtiruvchisini ishga tushiramiz (30 daqiqada tekshiradi)
-reminders.start_scheduler()
+if getattr(settings, 'START_BACKGROUND_SERVICES', True):
+    reminders.start_scheduler()
 
 # Ulangan Telegram sessiyalarini TINGLASHGA ulaymiz (incoming AI avto-javob uchun)
-telegram_auth.start_listeners()
+if getattr(settings, 'START_BACKGROUND_SERVICES', True):
+    telegram_auth.start_listeners()
 
 router = DefaultRouter()
 router.register(r'branches', BranchViewSet)
@@ -34,8 +40,23 @@ router.register(r'lab-orders', DentalLabOrderViewSet)
 router.register(r'technicians', DentalTechnicianViewSet)
 router.register(r'platform-settings', PlatformSettingViewSet)
 router.register(r'clinics', ClinicTenantViewSet)
+router.register(r'patient-media', PatientMediaViewSet)
+router.register(r'service-catalog', ServiceCatalogItemViewSet)
+router.register(r'doctor-naryads', DoctorNaryadRateViewSet)
+
+from .patient_records import patient_record
+from .health import health, logout, me
 
 urlpatterns = [
+    path('health/', health),
+    path('auth/logout/', logout),
+    path('auth/me/', me),
+    path('patient-records/<int:patient_id>/', patient_record),
+    path('auth/telegram-bot/', telegram_login.bot_info),
+    path('auth/telegram/request/', telegram_login.request_code),
+    path('auth/telegram/verify/', telegram_login.verify_code),
+    # MUHIM: router'dan OLDIN — aks holda /patient-media/<pk> bilan to'qnashadi
+    path('patient-media/presence/', patient_media_presence, name='patient_media_presence'),
     path('', include(router.urls)),
     path('auth/login/', auth_login, name='auth_login'),
     path('auth/request-code/', request_login_code, name='request_login_code'),
@@ -43,6 +64,8 @@ urlpatterns = [
     path('auth/update-profile/', update_profile, name='update_profile'),
     path('search/', global_search, name='global_search'),
     path('dashboard/stats/', dashboard_stats, name='dashboard_stats'),
+    path('monthly-plan/', monthly_plan, name='monthly_plan'),
+    path('photo-protocol/', photo_protocol, name='photo_protocol'),
     path('pulse/', pulse_monitor, name='pulse_monitor'),
     # Telegram akkaunt ulash (real, Telethon)
     path('telegram/send-code/', telegram_auth.send_code),
@@ -72,3 +95,4 @@ urlpatterns = [
     # Dental Media Sample Loader (local test files)
     path('media-sample/<str:sample_type>/', serve_dental_media_sample, name='serve_dental_media_sample'),
 ]
+

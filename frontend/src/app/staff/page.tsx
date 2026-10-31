@@ -90,6 +90,12 @@ export default function StaffPage() {
     await refreshBranches();
   };
 
+  const handleDeleteEmployee = async (id: number) => {
+    await clinicApi.deleteEmployee(id, user?.clinicId || undefined);
+    await loadStaff();
+    await refreshBranches();
+  };
+
   // Translations
   const txt = {
     uz: {
@@ -452,6 +458,7 @@ export default function StaffPage() {
         isOpen={isFullModalOpen}
         onClose={() => setIsFullModalOpen(false)}
         onSave={handleSaveEmployee}
+        onDelete={handleDeleteEmployee}
         employeeToEdit={selectedEmployee}
         workplaces={workplaces}
         specialties={specialties}

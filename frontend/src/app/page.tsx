@@ -307,11 +307,7 @@ export default function LandingHomePage() {
 
   const DentalLogo = () => (
     <div className="flex items-center gap-2.5">
-      <div className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-700 to-blue-500 flex items-center justify-center shadow-md shadow-blue-700/25">
-        <svg viewBox="0 0 24 24" className="w-5 h-5 text-white" fill="currentColor">
-          <path d="M12 2C8.8 2 7 3.5 5.6 3.5c-1 0-2.1-.6-2.6-.3-.6.4-.5 1.7-.3 3.4.2 1.4.7 2.3.9 4.2.3 2.8 1 6.7 2 8.9.5 1.1 1 1.8 1.7 1.8.8 0 1-.9 1.2-2.2.2-1.3.5-2.8 1.5-2.8s1.3 1.5 1.5 2.8c.2 1.3.4 2.2 1.2 2.2.7 0 1.2-.7 1.7-1.8 1-2.2 1.7-6.1 2-8.9.2-1.9.7-2.8.9-4.2.2-1.7.3-3-.3-3.4-.5-.3-1.6.3-2.6.3C17 3.5 15.2 2 12 2z"/>
-        </svg>
-      </div>
+      <img src="/logo.png" alt="DentOS" className="w-9 h-9 object-contain" />
       <span className="text-xl font-black tracking-tight text-slate-900 dark:text-white">dentOS</span>
     </div>
   );

@@ -1,21 +1,37 @@
+from django.conf import settings
+from .access import login_response
 from rest_framework import viewsets, status
 from rest_framework.decorators import action, api_view
 from rest_framework.response import Response
 from django.utils import timezone
 from django.db.models import Sum, Q, Count
+from decimal import Decimal
 import datetime
+from django.contrib.auth.hashers import check_password, identify_hasher
+
+def _password_matches(raw, stored):
+    try:
+        identify_hasher(stored)
+    except ValueError:
+        import secrets
+        return secrets.compare_digest(str(raw), str(stored))
+    return check_password(raw, stored)
+
 
 from .models import (
     Employee, Patient, Appointment, FinancialTransaction, ClinicTask,
     WarehouseItem, DentalLabOrder, DentalTechnician, PlatformSetting, ClinicTenant,
-    PlatformUser, Workplace, Specialty, Branch
+    PlatformUser, Workplace, Specialty, Branch, PatientMedia, PhotoProtocol,
+    ServiceCatalogItem, DoctorNaryadRate
 )
 from .serializers import (
     EmployeeSerializer, PatientSerializer, AppointmentSerializer,
     FinancialTransactionSerializer, ClinicTaskSerializer,
     WarehouseItemSerializer, DentalLabOrderSerializer,
     DentalTechnicianSerializer, PlatformSettingSerializer, ClinicTenantSerializer,
-    PlatformUserSerializer, WorkplaceSerializer, SpecialtySerializer, BranchSerializer
+    PlatformUserSerializer, WorkplaceSerializer, SpecialtySerializer, BranchSerializer,
+    PatientMediaSerializer, PhotoProtocolSerializer, ServiceCatalogItemSerializer,
+    DoctorNaryadRateSerializer
 )
 
 
@@ -45,16 +61,15 @@ def auth_login(request):
     password = (request.data.get('password') or '').strip()
 
     u = PlatformUser.objects.filter(Q(username__iexact=username) | Q(username__iexact=username.lower()), is_active=True).first()
-    if u and u.password == password:
+    if u and _password_matches(password, u.password):
         # Sync branch with Employee table if needed
         if u.role in ('doctor', 'admin', 'kassa', 'deputy_director'):
             emp = None
             if u.username:
-                emp = Employee.objects.filter(username__iexact=u.username).first()
+                emp = Employee.objects.filter(username__iexact=u.username, clinic_id=u.clinic_id).first()
             if not emp and u.full_name:
-                emp = Employee.objects.filter(full_name__iexact=u.full_name).first()
-            if not emp and u.role == 'doctor':
-                emp = Employee.objects.filter(Q(id=1) | Q(role='doctor')).first()
+                emp = Employee.objects.filter(full_name__iexact=u.full_name, clinic_id=u.clinic_id).first()
+
 
             if emp and emp.branch and u.branch_id != emp.branch_id:
                 u.branch = emp.branch
@@ -63,14 +78,14 @@ def auth_login(request):
         # Klinika modul-gate ma'lumoti: bloklangan modullar login paytida yuboriladi,
         # frontend shu bo'yicha sidebar/sahifalarni butunlay yopadi (superadmin har doim ochiq).
         user_data['enabled_modules'] = _clinic_modules_payload(u.clinic)
-        return Response({'ok': True, 'user': user_data})
+        return login_response(u, {'ok': True, 'user': user_data})
 
-    tech = DentalTechnician.objects.filter(Q(username__iexact=username) | Q(username__iexact=username.lower()), password=password, is_active=True).first()
-    if tech:
+    tech = DentalTechnician.objects.filter(Q(username__iexact=username) | Q(username__iexact=username.lower()), is_active=True).first()
+    if tech and _password_matches(password, tech.password):
         clinic_name = (tech.linked_clinics or ['Dental Lab'])[0]
         parts = [p for p in tech.name.split() if p]
         initials = (parts[0][0] + parts[1][0]).upper() if len(parts) >= 2 else tech.name[:2].upper()
-        return Response({'ok': True, 'user': {
+        return login_response(tech, {'ok': True, 'user': {
             'id': tech.id,
             'username': tech.username,
             'full_name': tech.name,
@@ -82,6 +97,25 @@ def auth_login(request):
             'is_active': True,
         }})
 
+    # Login formasi "Telefon raqami yoki Email" deydi — shu va'dani backend ham bajaradi.
+    # FAQAT akkauntning O'Z telefoni bo'yicha va AYNAN BITTA faol moslik bo'lsa kiritamiz.
+    # Noaniq (0 yoki >1 moslik) bo'lsa — boshqa akkauntni TAXMIN QILMAYMIZ, klinikalararo
+    # yoki klinika-telefoni fallback YO'Q; oddiy "login yoki parol noto'g'ri" qaytadi.
+    from .telegram_login import normalize_phone, account_payload
+    phone = normalize_phone(username)
+    if phone:
+        matches = {}
+        for pu in PlatformUser.objects.filter(is_active=True).exclude(phone=''):
+            if normalize_phone(pu.phone) == phone:
+                matches[('platform', pu.pk)] = pu
+        for t in DentalTechnician.objects.filter(is_active=True).exclude(phone=''):
+            if normalize_phone(t.phone) == phone:
+                matches[('technician', t.pk)] = t
+        if len(matches) == 1:
+            acct = next(iter(matches.values()))
+            if _password_matches(password, acct.password):
+                return login_response(acct, {'ok': True, 'user': account_payload(acct)})
+
     return Response({'ok': False, 'message': 'Login yoki parol noto‘g‘ri'}, status=status.HTTP_400_BAD_REQUEST)
 
 
@@ -92,125 +126,32 @@ def update_profile(request):
     Gmail/username, parol, F.I.O, telefon raqam.
     Sozlamalar bo'limidan direktor yoki boshqa xodim o'zgartiradi.
     """
-    user_id = request.data.get('user_id')
-    current_username = (request.data.get('current_username') or '').strip()
-    new_username = (request.data.get('username') or request.data.get('email') or '').strip()
-    new_password = (request.data.get('password') or '').strip()
-    new_name = (request.data.get('full_name') or request.data.get('name') or '').strip()
-    new_phone = (request.data.get('phone') or '').strip()
-    clinic_id = request.data.get('clinic_id') or get_clinic_id(request)
-    role = (request.data.get('role') or '').strip()
-
-    try:
-        clinic_id = int(clinic_id) if clinic_id else None
-    except (ValueError, TypeError):
-        clinic_id = None
-
-    u = None
-    # 1. user_id bo'yicha (agar clinic_id berilgan bo'lsa — faqat shu klinikaga tegishli bo'lsa qabul qilamiz)
-    if user_id:
+    account = getattr(request.user, 'account', None)
+    if not isinstance(account, PlatformUser):
+        return Response({'detail': 'Ruxsat yo‘q.'}, status=403)
+    from django.contrib.auth.hashers import make_password
+    from django.contrib.auth.password_validation import validate_password
+    from django.core.exceptions import ValidationError
+    new_password = request.data.get('password', '')
+    if new_password:
+        if not _password_matches(request.data.get('current_password', ''), account.password):
+            return Response({'detail': 'Joriy parol noto‘g‘ri.'}, status=400)
         try:
-            cand = PlatformUser.objects.filter(id=int(user_id)).first()
-            if cand and (not clinic_id or cand.clinic_id == clinic_id or cand.role == 'superadmin'):
-                u = cand
-        except (ValueError, TypeError):
-            pass
-    # 2. joriy login bo'yicha
-    if not u and current_username:
-        u = PlatformUser.objects.filter(username__iexact=current_username).first()
-    # 3. yangi login bo'yicha (o'zgartirilmagan bo'lsa ham)
-    if not u and new_username:
-        u = PlatformUser.objects.filter(username__iexact=new_username).first()
-    # 4. klinika + rol bo'yicha (direktor uchun ishonchli yo'l)
-    if not u and clinic_id:
-        if role in ('director', '') or not role:
-            u = PlatformUser.objects.filter(clinic_id=clinic_id, role='director').first()
-        if not u and role:
-            u = PlatformUser.objects.filter(clinic_id=clinic_id, role=role).first()
-        if not u:
-            u = PlatformUser.objects.filter(clinic_id=clinic_id).first()
-
-    # Employee jadvalidan ham qidiramiz (sinxronlash uchun)
-    emp = None
-    if user_id:
-        try:
-            emp = Employee.objects.filter(id=int(user_id)).first()
-            if emp and clinic_id and emp.clinic_id and emp.clinic_id != clinic_id:
-                emp = None
-        except (ValueError, TypeError):
-            pass
-    if not emp and current_username:
-        emp = Employee.objects.filter(username__iexact=current_username).first()
-
-    # PlatformUser topilmasa — avtomatik yaratamiz (klinika bo'lsa bog'laymiz, bo'lmasa ham yaratamiz)
-    if not u:
-        clinic = ClinicTenant.objects.filter(id=clinic_id).first() if clinic_id else None
-        fallback_username = (new_username or current_username
-                             or (f"director.clinic{clinic_id}@gmail.com" if clinic_id else None))
-        if fallback_username:
-            u = PlatformUser.objects.create(
-                username=fallback_username,
-                password=new_password or '123456',
-                full_name=new_name or (clinic.director_name if clinic else None) or 'Klinika Rahbari',
-                role=role or 'director',
-                clinic=clinic,
-                is_active=True
-            )
-
-    if not u and not emp:
-        return Response({'ok': False, 'message': 'Foydalanuvchi topilmadi'}, status=status.HTTP_404_NOT_FOUND)
-
-    # Joriy parol kiritilgan bo'lsa — tekshiramiz (parol o'zgartirishda)
-    current_password = (request.data.get('current_password') or '').strip()
-    if new_password and current_password and u and u.password:
-        if u.password != current_password:
-            return Response({'ok': False, 'message': 'Joriy parol noto‘g‘ri'}, status=status.HTTP_400_BAD_REQUEST)
-
-    if u:
-        if new_username and new_username.lower() != u.username.lower():
-            exists = PlatformUser.objects.filter(username__iexact=new_username).exclude(id=u.id).exists()
-            if exists:
-                return Response({'ok': False, 'message': 'Ushbu Gmail / Login allaqachon band. Boshqa kiriting.'}, status=status.HTTP_400_BAD_REQUEST)
-            u.username = new_username
-
-        if new_password:
-            u.password = new_password
-
-        if new_name:
-            u.full_name = new_name
-            if u.role == 'director' and u.clinic:
-                u.clinic.director_name = new_name
-                if new_phone:
-                    u.clinic.phone = new_phone
-                u.clinic.save(update_fields=['director_name', 'phone'] if new_phone else ['director_name'])
-
-        u.save()
-
-    # Sync Employee if exists
-    if emp or (u and u.username):
-        target_emp = emp or Employee.objects.filter(username__iexact=u.username).first()
-        if target_emp:
-            if new_name:
-                target_emp.full_name = new_name
-            if new_password:
-                target_emp.password = new_password
-            if new_username:
-                target_emp.username = new_username
-            if new_phone:
-                target_emp.phone = new_phone
-            target_emp.save()
-
-    return Response({
-        'ok': True,
-        'message': 'Profil va kirish ma’lumotlari muvaffaqiyatli saqlandi',
-        'user': PlatformUserSerializer(u).data if u else {
-            'id': emp.id,
-            'username': emp.username,
-            'full_name': emp.full_name,
-            'role': emp.role,
-            'clinic': emp.clinic_id
-        }
-    })
+            validate_password(new_password)
+        except ValidationError as exc:
+            return Response({'detail': exc.messages}, status=400)
+        account.password = make_password(new_password)
+    username = str(request.data.get('username') or request.data.get('email') or account.username).strip()
+    if PlatformUser.objects.filter(username__iexact=username).exclude(pk=account.pk).exists():
+        return Response({'detail': 'Login band.'}, status=400)
+    old_username = account.username
+    account.username = username
+    account.full_name = request.data.get('full_name') or request.data.get('name') or account.full_name
+    account.phone = request.data.get('phone') or account.phone
+    account.save()
+    Employee.objects.filter(username=old_username, clinic_id=account.clinic_id).update(
+        username=username, full_name=account.full_name, phone=account.phone, password=account.password)
+    return login_response(account, {'ok': True, 'user': PlatformUserSerializer(account).data})
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -245,67 +186,12 @@ def _find_user_by_phone(phone_digits):
 
 @api_view(['POST'])
 def request_login_code(request):
-    import random
-    phone = _norm_phone(request.data.get('phone'))
-    method = (request.data.get('method') or 'sms').strip().lower()
-    if len(phone) < 7:
-        return Response({'ok': False, 'message': 'Telefon raqamini to‘g‘ri kiriting'}, status=status.HTTP_400_BAD_REQUEST)
-
-    user = _find_user_by_phone(phone)
-    if not user:
-        return Response({'ok': False, 'message': 'Bu raqam tizimda topilmadi. Administrator bilan bog‘laning.'}, status=status.HTTP_404_NOT_FOUND)
-
-    code = f"{random.randint(0, 999999):06d}"
-    _OTP_STORE[phone] = {'code': code, 'exp': timezone.now() + datetime.timedelta(minutes=5), 'method': method}
-
-    sent = False
-    dev_code = None
-    msg_text = f"dentOS tizimiga kirish kodi: {code}. Hech kimga bermang. (5 daqiqa amal qiladi)"
-    try:
-        if method == 'telegram':
-            # Ulangan klinika Telegram sessiyasi orqali yuborishga urinish
-            from . import telegram_auth as _tg
-            res = _tg._send_to(_tg._first_session(), '+' + phone, msg_text, '') if hasattr(_tg, '_first_session') else None
-            sent = bool(res)
-        else:
-            from . import sms_service
-            res = sms_service.send_sms('+' + phone, msg_text)
-            sent = bool(res and res.get('ok'))
-    except Exception as e:
-        print('request_login_code send error:', e)
-        sent = False
-
-    # DEBUG (lokal/test) yoki yuborilmagan bo'lsa — kodni javobda qaytaramiz (frontend ko'rsatadi).
-    # Productionda (DEBUG=False + real SMS/Telegram) kod sirli qoladi.
-    from django.conf import settings as _settings
-    if not sent or getattr(_settings, 'DEBUG', False):
-        dev_code = code
-
-    return Response({'ok': True, 'sent': sent, 'method': method, 'dev_code': dev_code,
-                     'message': 'Kod yuborildi' if sent else 'Test rejimi: kod ekranda ko‘rsatiladi'})
+    return Response({'ok': False, 'message': 'Telegram orqali kirish bo‘limidan foydalaning.'}, status=410)
 
 
 @api_view(['POST'])
 def verify_login_code(request):
-    phone = _norm_phone(request.data.get('phone'))
-    code = str(request.data.get('code') or '').strip()
-    entry = _OTP_STORE.get(phone)
-    if not entry:
-        return Response({'ok': False, 'message': 'Avval kod so‘rang'}, status=status.HTTP_400_BAD_REQUEST)
-    if timezone.now() > entry['exp']:
-        _OTP_STORE.pop(phone, None)
-        return Response({'ok': False, 'message': 'Kod muddati tugadi. Qayta so‘rang.'}, status=status.HTTP_400_BAD_REQUEST)
-    if code != entry['code']:
-        return Response({'ok': False, 'message': 'Kod noto‘g‘ri'}, status=status.HTTP_400_BAD_REQUEST)
-
-    _OTP_STORE.pop(phone, None)
-    user = _find_user_by_phone(phone)
-    if not user:
-        return Response({'ok': False, 'message': 'Foydalanuvchi topilmadi'}, status=status.HTTP_404_NOT_FOUND)
-
-    user_data = PlatformUserSerializer(user).data
-    user_data['enabled_modules'] = _clinic_modules_payload(user.clinic)
-    return Response({'ok': True, 'user': user_data})
+    return Response({'ok': False, 'message': 'Telegram orqali yangi kod so‘rang.'}, status=410)
 
 
 def get_clinic_id(request):
@@ -322,7 +208,27 @@ def get_clinic_id(request):
     return None
 
 
-class EmployeeViewSet(viewsets.ModelViewSet):
+class TenantViewSet(viewsets.ModelViewSet):
+    def get_queryset(self):
+        qs = super().get_queryset()
+        if not settings.ENFORCE_API_AUTH:
+            return qs
+        user = self.request.user
+        if user.is_superuser:
+            return qs
+        if getattr(user, 'kind', None) == 'technician':
+            if qs.model is DentalTechnician:
+                return qs.filter(pk=user.pk)
+            if qs.model is DentalLabOrder:
+                return qs.filter(technician_id=user.pk)
+            return qs.none()
+        if qs.model is ClinicTenant:
+            return qs.filter(pk=user.clinic_id)
+        if any(f.name == 'clinic' for f in qs.model._meta.fields):
+            return qs.filter(clinic_id=user.clinic_id)
+        return qs
+
+class EmployeeViewSet(TenantViewSet):
     queryset = Employee.objects.all().order_by('id')
     serializer_class = EmployeeSerializer
 
@@ -402,6 +308,7 @@ class EmployeeViewSet(viewsets.ModelViewSet):
             u.role = emp.role
             u.clinic = emp.clinic
             u.branch = emp.branch
+            u.phone = emp.phone or u.phone
             u.is_active = emp.is_active and emp.can_login
             u.save()
         else:
@@ -412,10 +319,11 @@ class EmployeeViewSet(viewsets.ModelViewSet):
                 role=emp.role,
                 clinic=emp.clinic,
                 branch=emp.branch,
+                phone=emp.phone or '',
                 is_active=emp.is_active and emp.can_login
             )
 
-class BranchViewSet(viewsets.ModelViewSet):
+class BranchViewSet(TenantViewSet):
     queryset = Branch.objects.all().order_by('id')
     serializer_class = BranchSerializer
 
@@ -440,7 +348,7 @@ class BranchViewSet(viewsets.ModelViewSet):
         else:
             serializer.save()
 
-class WorkplaceViewSet(viewsets.ModelViewSet):
+class WorkplaceViewSet(TenantViewSet):
     queryset = Workplace.objects.filter(is_active=True).order_by('id')
     serializer_class = WorkplaceSerializer
 
@@ -463,7 +371,7 @@ class WorkplaceViewSet(viewsets.ModelViewSet):
         else:
             serializer.save()
 
-class SpecialtyViewSet(viewsets.ModelViewSet):
+class SpecialtyViewSet(TenantViewSet):
     queryset = Specialty.objects.filter(is_active=True).order_by('id')
     serializer_class = SpecialtySerializer
 
@@ -481,7 +389,120 @@ class SpecialtyViewSet(viewsets.ModelViewSet):
         else:
             serializer.save()
 
-class PatientViewSet(viewsets.ModelViewSet):
+class ServiceCatalogItemViewSet(TenantViewSet):
+    """Klinika xizmatlar/naryad narx katalogi — BAZADA, klinika bo'yicha scoping."""
+    queryset = ServiceCatalogItem.objects.all()
+    serializer_class = ServiceCatalogItemSerializer
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        clinic_id = get_clinic_id(self.request)
+        if clinic_id:
+            qs = qs.filter(clinic_id=clinic_id)
+        elif not self.request.user.is_superuser:
+            return qs.none()
+        category = self.request.query_params.get('category')
+        if category:
+            qs = qs.filter(category=category)
+        return qs
+
+    def perform_create(self, serializer):
+        clinic_id = get_clinic_id(self.request)
+        if clinic_id and not serializer.validated_data.get('clinic'):
+            serializer.save(clinic_id=clinic_id)
+        else:
+            serializer.save()
+
+    @action(detail=False, methods=['post'])
+    def bulk_import(self, request):
+        """Nazoratli import — ATOMAR va IDEMPOTENT.
+
+        Body: {items: [{name, category, base_price, default_percent, description}, ...]}
+        Hammasi bitta tranzaksiyada; nomi allaqachon mavjud xizmat O'TKAZIB YUBORILADI
+        (takroriy so'rov dublikat yaratmaydi). O'rtada xato bo'lsa — hech narsa yozilmaydi.
+        """
+        from django.db import transaction
+        from rest_framework.exceptions import ValidationError as DRFValidationError
+        clinic_id = get_clinic_id(request)
+        if not clinic_id:
+            return Response({'detail': 'Klinika kerak.'}, status=400)
+        items = request.data.get('items')
+        if not isinstance(items, list) or not items:
+            return Response({'detail': 'items ro‘yxati kerak.'}, status=400)
+        created, skipped = 0, 0
+        try:
+            with transaction.atomic():
+                existing = {n.lower().strip() for n in ServiceCatalogItem.objects.filter(
+                    clinic_id=clinic_id).values_list('name', flat=True)}
+                for it in items:
+                    name = str(it.get('name', '')).strip()
+                    if not name:
+                        raise ValueError('Xizmat nomi bo‘sh.')
+                    if name.lower() in existing:
+                        skipped += 1
+                        continue
+                    ser = ServiceCatalogItemSerializer(data={
+                        'name': name, 'category': it.get('category', ''),
+                        'base_price': it.get('base_price', 0),
+                        'default_percent': it.get('default_percent'),
+                        'description': it.get('description', '')},
+                        context={'request': request})
+                    ser.is_valid(raise_exception=True)
+                    ser.save(clinic_id=clinic_id)
+                    existing.add(name.lower())
+                    created += 1
+        except DRFValidationError:
+            raise
+        except Exception as exc:
+            return Response({'detail': f'Import bekor qilindi: {exc}'}, status=400)
+        return Response({'created': created, 'skipped': skipped}, status=200)
+
+class DoctorNaryadRateViewSet(TenantViewSet):
+    """Shifokorga xos naryad narx/foizi — BAZADA, klinika bo'yicha scoping."""
+    queryset = DoctorNaryadRate.objects.all().select_related('service', 'doctor')
+    serializer_class = DoctorNaryadRateSerializer
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        clinic_id = get_clinic_id(self.request)
+        if clinic_id:
+            qs = qs.filter(clinic_id=clinic_id)
+        elif not self.request.user.is_superuser:
+            return qs.none()
+        doctor_id = self.request.query_params.get('doctor')
+        if doctor_id:
+            qs = qs.filter(doctor_id=doctor_id)
+        return qs
+
+    def perform_create(self, serializer):
+        # Upsert: shu klinika+shifokor+xizmat uchun yozuv bo'lsa — yangilaymiz
+        # (unique cheklovni buzmaslik + frontend "assign" idempotent bo'lishi uchun).
+        # PARALLEL ikki "assign" bir vaqtda kelsa ham 500/dublikat bo'lmasligi uchun
+        # IntegrityError'ni ushlab, yutqazgan so'rovni UPDATE'ga aylantiramiz.
+        from django.db import transaction, IntegrityError
+        clinic_id = get_clinic_id(self.request)
+        data = serializer.validated_data
+        if not clinic_id:
+            serializer.save()
+            return
+        doctor_id = data.get('doctor_id')
+        service_id = data.get('service_id')
+        defaults = {k: data[k] for k in ('custom_price', 'commission_percent', 'is_custom_price', 'notes') if k in data}
+        try:
+            with transaction.atomic():
+                obj, _created = DoctorNaryadRate.objects.update_or_create(
+                    clinic_id=clinic_id, doctor_id=doctor_id, service_id=service_id,
+                    defaults=defaults)
+        except IntegrityError:
+            # Parallel create poygasi — yutqazgan so'rov mavjud yozuvni yangilaydi.
+            obj = DoctorNaryadRate.objects.get(
+                clinic_id=clinic_id, doctor_id=doctor_id, service_id=service_id)
+            for k, v in defaults.items():
+                setattr(obj, k, v)
+            obj.save(update_fields=list(defaults.keys()) or None)
+        serializer.instance = obj
+
+class PatientViewSet(TenantViewSet):
     queryset = Patient.objects.all().order_by('-created_at')
     serializer_class = PatientSerializer
 
@@ -508,7 +529,7 @@ class PatientViewSet(viewsets.ModelViewSet):
         else:
             serializer.save()
 
-class AppointmentViewSet(viewsets.ModelViewSet):
+class AppointmentViewSet(TenantViewSet):
     queryset = Appointment.objects.all().select_related('patient', 'doctor').order_by('start_time')
     serializer_class = AppointmentSerializer
 
@@ -605,7 +626,6 @@ class AppointmentViewSet(viewsets.ModelViewSet):
 
     def destroy(self, request, *args, **kwargs):
         apt = self.get_object()
-        import datetime
         today = datetime.date.today()
         apt_date = apt.start_time.date()
 
@@ -654,33 +674,36 @@ class AppointmentViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'])
     def record_payment(self, request, pk=None):
-        apt = self.get_object()
-        amount = float(request.data.get('amount', 0))
-        payment_method = request.data.get('payment_method', 'Наличные')
-        if amount > 0:
+        import uuid
+        from django.db import transaction
+        try:
+            amount = Decimal(str(request.data.get('amount', '0')))
+            request_id = uuid.UUID(str(request.data.get('request_id')))
+            if not amount.is_finite() or amount <= 0 or amount > Decimal('9999999999.99'):
+                raise ValueError()
+        except Exception:
+            return Response({'detail': 'Musbat summa va noyob request_id kerak.'}, status=400)
+        with transaction.atomic():
+            apt = self.get_queryset().select_for_update().get(pk=self.get_object().pk)
+            previous = FinancialTransaction.objects.filter(request_id=request_id).first()
+            if previous:
+                if previous.appointment_id != apt.pk or previous.amount != amount:
+                    return Response({'detail': 'request_id boshqa to‘lovga tegishli.'}, status=409)
+                return Response(AppointmentSerializer(apt).data)
             apt.paid_amount += amount
             if apt.paid_amount >= apt.price and apt.status == 'debt':
-                apt.status = 'completed'
-                apt.color_code = '#64748B'
+                apt.status, apt.color_code = 'completed', '#64748B'
             apt.save()
-
             FinancialTransaction.objects.create(
-                clinic=apt.clinic,
-                appointment=apt,
-                branch=apt.branch,
-                patient=apt.patient,
-                doctor=apt.doctor,
-                amount=amount,
-                type='income',
-                category='Оплата приема',
-                payment_method=payment_method,
+                request_id=request_id, clinic=apt.clinic, appointment=apt, branch=apt.branch,
+                patient=apt.patient, doctor=apt.doctor, amount=amount, type='income',
+                category='Оплата приема', payment_method=request.data.get('payment_method', 'Наличные'),
                 cash_register=request.data.get('cash_register', 'cash'),
-                operator_name=request.data.get('operator_name', 'Kassir'),
-                notes=f"Оплата приема #{apt.id} ({apt.treatment_notes})"
-            )
+                operator_name=getattr(getattr(request.user, 'account', None), 'full_name', '') or 'Kassir',
+                notes=f'Оплата приема #{apt.id}')
         return Response(AppointmentSerializer(apt).data)
 
-class FinancialTransactionViewSet(viewsets.ModelViewSet):
+class FinancialTransactionViewSet(TenantViewSet):
     queryset = FinancialTransaction.objects.all().select_related('patient', 'appointment', 'doctor', 'technician').order_by('-date')
     serializer_class = FinancialTransactionSerializer
 
@@ -715,7 +738,7 @@ class FinancialTransactionViewSet(viewsets.ModelViewSet):
         else:
             serializer.save()
 
-class ClinicTaskViewSet(viewsets.ModelViewSet):
+class ClinicTaskViewSet(TenantViewSet):
     queryset = ClinicTask.objects.all().select_related('assignee', 'patient', 'branch', 'creator').order_by('-created_at')
     serializer_class = ClinicTaskSerializer
 
@@ -747,7 +770,7 @@ class ClinicTaskViewSet(viewsets.ModelViewSet):
         else:
             serializer.save()
 
-class WarehouseItemViewSet(viewsets.ModelViewSet):
+class WarehouseItemViewSet(TenantViewSet):
     queryset = WarehouseItem.objects.all().order_by('name')
     serializer_class = WarehouseItemSerializer
 
@@ -767,7 +790,7 @@ class WarehouseItemViewSet(viewsets.ModelViewSet):
         else:
             serializer.save()
 
-class DentalLabOrderViewSet(viewsets.ModelViewSet):
+class DentalLabOrderViewSet(TenantViewSet):
     queryset = DentalLabOrder.objects.all().select_related('patient', 'doctor').order_by('-created_at')
     serializer_class = DentalLabOrderSerializer
 
@@ -938,7 +961,7 @@ def pulse_monitor(request):
         'occupancy_rate': 0 if not appointments.exists() else 78,
     })
 
-class DentalTechnicianViewSet(viewsets.ModelViewSet):
+class DentalTechnicianViewSet(TenantViewSet):
     queryset = DentalTechnician.objects.all().order_by('-created_at')
     serializer_class = DentalTechnicianSerializer
 
@@ -961,7 +984,7 @@ class DentalTechnicianViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def available(self, request):
         """Klinikaga ulanishi mumkin bo'lgan barcha faol laboratoriya texniklari"""
-        techs = DentalTechnician.objects.filter(is_active=True).order_by('name')
+        techs = self.get_queryset().filter(is_active=True).order_by('name')
         return Response(DentalTechnicianSerializer(techs, many=True).data)
 
     @action(detail=False, methods=['post'])
@@ -1000,10 +1023,10 @@ class DentalTechnicianViewSet(viewsets.ModelViewSet):
     def login(self, request):
         username = (request.data.get('username') or '').strip()
         password = (request.data.get('password') or '').strip()
-        tech = DentalTechnician.objects.filter(username=username, password=password, is_active=True).first()
-        if not tech:
+        tech = DentalTechnician.objects.filter(username=username, is_active=True).first()
+        if not tech or not _password_matches(password, tech.password):
             return Response({'ok': False, 'message': 'Login yoki parol noto‘g‘ri yoki hisob faol emas'}, status=status.HTTP_400_BAD_REQUEST)
-        return Response({
+        return login_response(tech, {
             'ok': True,
             'technician': DentalTechnicianSerializer(tech).data
         })
@@ -1018,14 +1041,14 @@ class DentalTechnicianViewSet(viewsets.ModelViewSet):
             return Response({'ok': True, 'price_list': tech.price_list})
         return Response({'ok': False, 'message': 'Noto‘g‘ri format'}, status=status.HTTP_400_BAD_REQUEST)
 
-class PlatformSettingViewSet(viewsets.ModelViewSet):
+class PlatformSettingViewSet(TenantViewSet):
     queryset = PlatformSetting.objects.all()
     serializer_class = PlatformSettingSerializer
 
     @action(detail=False, methods=['get', 'post'])
     def current(self, request):
         obj, _ = PlatformSetting.objects.get_or_create(id=1, defaults={
-            'clinic_name': '32Desk Stomatologiya Klinikasi',
+            'clinic_name': 'Dentos Stomatologiya Klinikasi',
             'plan_tier': 'Pro',
             'storage_quota_gb': 50.0,
             'storage_used_gb': 4.8,
@@ -1055,29 +1078,39 @@ class PlatformSettingViewSet(viewsets.ModelViewSet):
             obj.save()
         return Response(PlatformSettingSerializer(obj).data)
 
-class ClinicTenantViewSet(viewsets.ModelViewSet):
+class ClinicTenantViewSet(TenantViewSet):
     queryset = ClinicTenant.objects.all().order_by('-created_at')
     serializer_class = ClinicTenantSerializer
+
+    def perform_update(self, serializer):
+        instance = serializer.instance
+        # Demo klinika (id=1) — xotira kvotasi 1 GB da QOTIB qoladi, oshirib bo'lmaydi
+        if instance and instance.id == 1:
+            serializer.save(storage_quota_gb=1)
+        else:
+            serializer.save()
 
     def create(self, request, *args, **kwargs):
         import re, random, string
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        clinic = serializer.save()
-
         # Extract or auto-generate director credentials (gmail & password)
         director_email = (request.data.get('director_email') or request.data.get('email') or '').strip().lower()
         director_password = (request.data.get('director_password') or request.data.get('password') or '').strip()
-        director_name = clinic.director_name or 'Klinika Rahbari'
+        director_name = serializer.validated_data.get('director_name') or 'Klinika Rahbari'
 
         if not director_email:
-            slug = re.sub(r'[^a-zA-Z0-9]', '', clinic.name.lower())[:10] or 'clinic'
+            slug = re.sub(r'[^a-zA-Z0-9]', '', str(serializer.validated_data.get('name', '')).lower())[:10] or 'clinic'
             director_email = f"director.{slug}@gmail.com"
 
         if not director_password:
             chars = string.ascii_letters + string.digits
             director_password = ''.join(random.choice(chars) for _ in range(8))
 
+        if PlatformUser.objects.filter(username__iexact=director_email).exists():
+            return Response({'detail': 'Login band.'}, status=400)
+        from django.contrib.auth.hashers import make_password
+        clinic = serializer.save()
         # Create or update PlatformUser for this director
         user, _ = PlatformUser.objects.get_or_create(
             username=director_email,
@@ -1089,7 +1122,7 @@ class ClinicTenantViewSet(viewsets.ModelViewSet):
                 'is_active': True
             }
         )
-        user.password = director_password
+        user.password = make_password(director_password)
         user.full_name = director_name
         user.clinic = clinic
         user.role = 'director'
@@ -1127,7 +1160,7 @@ class ClinicTenantViewSet(viewsets.ModelViewSet):
         clinic_data = ClinicTenantSerializer(clinic).data
         clinic_data['director_email'] = director_user.username if director_user else ''
         # Superadmin direktor parolini ko'rishi/boshqarishi uchun qaytaramiz
-        clinic_data['director_password'] = director_user.password if director_user else ''
+        clinic_data['director_password'] = ''
 
         return Response({
             'clinic': clinic_data,
@@ -1185,7 +1218,7 @@ class ClinicTenantViewSet(viewsets.ModelViewSet):
             'ok': True,
             'message': 'Direktor kirish ma’lumotlari yangilandi',
             'director_email': director.username,
-            'director_password': director.password,
+            'director_password': '',
         })
 
     @action(detail=True, methods=['post'])
@@ -1249,4 +1282,239 @@ def serve_dental_media_sample(request, sample_type):
     response = FileResponse(open(path, 'rb'), content_type='application/zip')
     response['Content-Disposition'] = f'inline; filename="{filename}"'
     return response
+
+
+@api_view(['GET', 'POST'])
+def monthly_plan(request):
+    """Klinikaning oylik moliyaviy rejasi — BAZADA (localStorage emas).
+
+    GET  ?clinic=<id>&month=YYYY-MM  -> {exists, single_clinic_plan, branch_plans, acknowledged}
+         month berilmasa server joriy oyni oladi.
+    POST body: {clinic, month?, single_clinic_plan, branch_plans, acknowledged}
+    """
+    from .models import ClinicMonthlyPlan
+
+    clinic_id = get_clinic_id(request) or request.data.get('clinic') or request.query_params.get('clinic')
+    try:
+        clinic_id = int(clinic_id) if clinic_id else None
+    except (ValueError, TypeError):
+        clinic_id = None
+    if not clinic_id:
+        return Response({'ok': False, 'error': 'clinic kerak'}, status=400)
+
+    def _current_month():
+        return timezone.now().strftime('%Y-%m')
+
+    if request.method == 'GET':
+        month = request.query_params.get('month') or _current_month()
+        plan = ClinicMonthlyPlan.objects.filter(clinic_id=clinic_id, month=month).first()
+        if not plan:
+            return Response({
+                'exists': False, 'month': month,
+                'single_clinic_plan': 0, 'branch_plans': {}, 'acknowledged': False,
+            })
+        return Response({
+            'exists': True, 'month': plan.month,
+            'single_clinic_plan': float(plan.single_clinic_plan),
+            'branch_plans': plan.branch_plans or {},
+            'acknowledged': plan.acknowledged,
+        })
+
+    # POST — upsert
+    month = request.data.get('month') or _current_month()
+    single = request.data.get('single_clinic_plan', 0) or 0
+    branch_plans = request.data.get('branch_plans') or {}
+    acknowledged = bool(request.data.get('acknowledged', True))
+    try:
+        single = Decimal(str(single))
+    except Exception:
+        single = Decimal('0')
+    # branch_plans kalitlarini stringga keltiramiz (JSON uchun)
+    if isinstance(branch_plans, dict):
+        branch_plans = {str(k): float(v or 0) for k, v in branch_plans.items()}
+    else:
+        branch_plans = {}
+
+    plan, _created = ClinicMonthlyPlan.objects.update_or_create(
+        clinic_id=clinic_id, month=month,
+        defaults={
+            'single_clinic_plan': single,
+            'branch_plans': branch_plans,
+            'acknowledged': acknowledged,
+        },
+    )
+    return Response({
+        'ok': True, 'exists': True, 'month': plan.month,
+        'single_clinic_plan': float(plan.single_clinic_plan),
+        'branch_plans': plan.branch_plans or {},
+        'acknowledged': plan.acknowledged,
+    })
+
+
+class PatientMediaViewSet(TenantViewSet):
+    """Bemor media fayllari (foto/rentgen/skan) — BAZADA. Klinika bo'yicha scoping."""
+    queryset = PatientMedia.objects.all().order_by('-uploaded_at')
+    serializer_class = PatientMediaSerializer
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        clinic_id = get_clinic_id(self.request)
+        if clinic_id:
+            qs = qs.filter(clinic_id=clinic_id)
+        elif not self.request.user.is_superuser:
+            return qs.none()
+        patient_id = self.request.query_params.get('patient')
+        if patient_id:
+            qs = qs.filter(patient_id=patient_id)
+        kind = self.request.query_params.get('kind')
+        if kind:
+            qs = qs.filter(kind=kind)
+        return qs
+
+    def perform_create(self, serializer):
+        from rest_framework.exceptions import ValidationError
+        from django.db import transaction
+        clinic_id = get_clinic_id(self.request)
+        f = self.request.FILES.get('file')
+        if not f:
+            raise ValidationError({'file': 'Fayl kerak.'})
+        if f.size > settings.MAX_PATIENT_FILE_BYTES:
+            raise ValidationError({'file': 'Fayl ruxsat etilgan hajmdan katta.'})
+        from pathlib import PurePath
+        suffix = PurePath(f.name).suffix.lower()
+        if suffix not in {'.jpg', '.jpeg', '.png', '.webp', '.dcm', '.dicom', '.zip', '.stl', '.ply', '.obj', '.pdf'}:
+            raise ValidationError({'file': 'Fayl turi ruxsat etilmagan.'})
+        with transaction.atomic():
+            clinic = ClinicTenant.objects.select_for_update().get(pk=clinic_id)
+            total = PatientMedia.objects.filter(clinic_id=clinic_id).aggregate(n=Sum('file_size'))['n'] or 0
+            if total + f.size > float(clinic.storage_quota_gb) * 1024 ** 3:
+                raise ValidationError({'file': 'Klinika xotira limiti tugadi.'})
+            serializer.save(clinic=clinic, file_name=f.name, file_size=f.size,
+                            file_type=getattr(f, 'content_type', '') or 'application/octet-stream')
+
+    @action(detail=True, methods=['get'])
+    def download(self, request, pk=None):
+        from django.http import FileResponse
+        media = self.get_object()
+        if not media.file:
+            return Response(status=404)
+        # Proxy through the authenticated backend: no B2 credential or permanent public URL.
+        response = FileResponse(media.file.open('rb'), content_type=media.file_type or 'application/octet-stream',
+                                as_attachment=False, filename=media.file_name)
+        response['Cache-Control'] = 'private, no-store'
+        response['X-Content-Type-Options'] = 'nosniff'
+        return response
+
+    def update(self, request, *args, **kwargs):
+        return Response({'detail': 'Faylni o‘zgartirish uchun yangi fayl yuklang.'}, status=405)
+
+    def perform_destroy(self, instance):
+        # Do not silently delete retained B2 object versions. Orphan cleanup is a separate audited task.
+        instance.delete()
+
+
+@api_view(['GET', 'POST'])
+def photo_protocol(request):
+    """Bemor foto-protokol hujjati (slaydlar JSON) — BAZADA.
+
+    GET  ?clinic=<id>&patient=<id> -> {exists, doc}
+    POST body: {clinic?, patient, doc}
+    """
+    clinic_id = get_clinic_id(request) or request.data.get('clinic') or request.query_params.get('clinic')
+    try:
+        clinic_id = int(clinic_id) if clinic_id else None
+    except (ValueError, TypeError):
+        clinic_id = None
+    patient_id = request.data.get('patient') or request.query_params.get('patient')
+    try:
+        patient_id = int(patient_id) if patient_id else None
+    except (ValueError, TypeError):
+        patient_id = None
+    if not patient_id:
+        return Response({'ok': False, 'error': 'patient kerak'}, status=400)
+
+    from django.shortcuts import get_object_or_404
+    get_object_or_404(Patient, pk=patient_id, clinic_id=clinic_id)
+    if request.method == 'GET':
+        pp = PhotoProtocol.objects.filter(patient_id=patient_id, clinic_id=clinic_id).first()
+        if not pp:
+            return Response({'exists': False, 'doc': []})
+        return Response({'exists': True, 'doc': pp.doc or []})
+
+    doc = request.data.get('doc')
+    if doc is None:
+        doc = []
+    from .photo_assets import persist_images
+    doc = persist_images(doc, patient_id, clinic_id)
+    pp, _created = PhotoProtocol.objects.update_or_create(
+        patient_id=patient_id,
+        defaults={'doc': doc, 'clinic_id': clinic_id},
+    )
+    return Response({'ok': True, 'exists': True, 'doc': pp.doc or []})
+
+
+@api_view(['GET'])
+def patient_media_presence(request):
+    """Klinika bo'yicha har bemorda foto/rentgen/skan bor-yo'qligi + umumiy hisob.
+
+    GET ?clinic=<id> -> {
+        map: {"<pid>": {foto,rentgen,skan}}, totals: {foto,rentgen,skan,patients_with_media}
+    }
+    Yashil ptichka (frontend) va admin umumiy hisobi uchun yagona manba.
+    """
+    clinic_id = get_clinic_id(request) or request.query_params.get('clinic')
+    try:
+        clinic_id = int(clinic_id) if clinic_id else None
+    except (ValueError, TypeError):
+        clinic_id = None
+
+    if not clinic_id and not request.user.is_superuser:
+        return Response({'detail': 'Klinika kerak.'}, status=400)
+    media_qs = PatientMedia.objects.all()
+    proto_qs = PhotoProtocol.objects.all()
+    if clinic_id:
+        media_qs = media_qs.filter(clinic_id=clinic_id)
+        proto_qs = proto_qs.filter(clinic_id=clinic_id)
+
+    presence = {}
+
+    def _slot(pid):
+        return presence.setdefault(str(pid), {'foto': False, 'rentgen': False, 'skan': False})
+
+    for pid, kind in media_qs.values_list('patient_id', 'kind'):
+        slot = _slot(pid)
+        if kind in slot:
+            slot[kind] = True
+
+    # Foto-protokolda rasm bo'lsa — foto mavjud deb belgilaymiz
+    for pid, doc in proto_qs.values_list('patient_id', 'doc'):
+        if _doc_has_image(doc):
+            _slot(pid)['foto'] = True
+
+    totals = {
+        'foto': sum(1 for v in presence.values() if v['foto']),
+        'rentgen': sum(1 for v in presence.values() if v['rentgen']),
+        'skan': sum(1 for v in presence.values() if v['skan']),
+        'patients_with_media': len(presence),
+        'files_total': media_qs.count(),
+    }
+    return Response({'map': presence, 'totals': totals})
+
+
+def _doc_has_image(doc):
+    """Foto-protokol hujjatida (turli eski/yangi formatlarda) rasm bor-yo'qligi."""
+    if not isinstance(doc, list):
+        return False
+    for b in doc:
+        if not isinstance(b, dict):
+            continue
+        if (b.get('kind') == 'image' and b.get('url')) or (b.get('type') == 'image' and b.get('src')):
+            return True
+        els = b.get('elements')
+        if isinstance(els, list) and any(
+            isinstance(e, dict) and e.get('type') == 'image' and (e.get('src') or e.get('url')) for e in els
+        ):
+            return True
+    return False
+
 

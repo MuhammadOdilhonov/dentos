@@ -7,6 +7,7 @@ import { clinicApi } from '../../lib/api';
 import { CLINIC_MODULES } from '../../lib/modules';
 import { PlatformSetting, DentalTechnician, ClinicTenant, ClinicDossierData } from '../../lib/types';
 import { useI18n } from '../../lib/i18n';
+import PhoneInput from '../../components/PhoneInput';
 import {
   ShieldCheck,
   HardDrive,
@@ -57,15 +58,17 @@ const PLAN_STYLE: Record<string, string> = {
 
 const uz = (n: number) => n.toLocaleString('ru-RU');
 
-// Xotirani eng mos birlikda ko'rsatadi: GB / MB / KB (qiymat GB da keladi)
+// Xotirani eng mos birlikda ko'rsatadi: TB / GB / MB / KB / B (qiymat GB da keladi)
 const fmtStorage = (gb: number | string): string => {
   const v = Number(gb) || 0;
+  if (v >= 1024) return `${Number((v / 1024).toFixed(2))} TB`;
   if (v >= 1) return `${Number(v.toFixed(2))} GB`;
   const mb = v * 1024;
   if (mb >= 1) return `${Number(mb.toFixed(mb < 10 ? 1 : 0))} MB`;
   const kb = mb * 1024;
-  if (kb >= 1) return `${Math.round(kb)} KB`;
-  return `0 KB`;
+  if (kb >= 1) return `${Number(kb.toFixed(kb < 10 ? 1 : 0))} KB`;
+  const b = kb * 1024;
+  return `${Math.round(b)} B`;
 };
 
 function SuperAdminPageContent() {
@@ -221,12 +224,49 @@ function SuperAdminPageContent() {
   const handleEnterClinic = async (clinicId: number) => {
     setActiveClinicId(clinicId);
     setDossierTab('asosiy');
+    let dossier: ClinicDossierData | null = null;
     try {
-      const dossier = await clinicApi.getClinicDossier(clinicId);
-      setClinicDossier(dossier);
+      dossier = await clinicApi.getClinicDossier(clinicId);
     } catch (e) {
       console.error(e);
     }
+    // Backend dossier bermasa (null) — klinika yozuvidan dossier yig'amiz,
+    // shunda "Kirish" tugmasi baribir ishlaydi (soxta ma'lumotsiz, bo'sh ro'yxatlar bilan).
+    if (!dossier) {
+      const clinic = clinics.find(c => c.id === clinicId);
+      if (clinic) {
+        // Klinikaning REAL (demo uchun namuna) xodim/bemorlarini yuklaymiz
+        const [emps, pats, allTechs, apts, tasks, labs] = await Promise.all([
+          clinicApi.getEmployees(undefined, clinicId).catch(() => []),
+          clinicApi.getPatients(undefined, clinicId).catch(() => []),
+          clinicApi.getAvailableTechnicians().catch(() => technicians),
+          clinicApi.getAppointments(undefined, undefined, clinicId).catch(() => []),
+          clinicApi.getTasks(clinicId).catch(() => []),
+          clinicApi.getLabOrders(clinicId).catch(() => [])
+        ]);
+        const availableTechs = (allTechs && allTechs.length) ? allTechs : technicians;
+        // Klinika ma'lumotining REAL hajmini (bayt) hisoblaymiz — nech B/KB/MB ekani ko'rinadi
+        const dataStr = JSON.stringify({ emps, pats, apts, tasks, labs });
+        const usedBytes = typeof Blob !== 'undefined' ? new Blob([dataStr]).size : dataStr.length;
+        const q = Number(clinic.storage_quota_gb) || 50;
+        const u = Number(clinic.storage_used_gb) || (usedBytes / (1024 ** 3));
+        dossier = {
+          clinic,
+          employees: emps,
+          patients: pats,
+          storage: {
+            quota_gb: q,
+            used_gb: u,
+            free_gb: Math.max(0, q - u),
+            usage_percent: q ? Math.min(100, Number(((u / q) * 100).toFixed(2))) : 0,
+            breakdown: { dicom_kt_gb: 0, photos_gb: 0, backups_gb: 0 }
+          },
+          linked_technicians: availableTechs.filter(t => (clinic.linked_technicians || []).includes(t.id)),
+          all_available_technicians: availableTechs
+        };
+      }
+    }
+    setClinicDossier(dossier);
   };
 
   const handleExitClinic = () => {
@@ -276,8 +316,9 @@ function SuperAdminPageContent() {
         linked_technicians: [],
         status: 'active'
       });
-      // Har bir yangi klinika uchun 80+ xizmatli naryad bazasi 0 so'm narx bilan avto yaratiladi
-      clinicApi.initClinicWithZeroPrices(created.id);
+      // Yangi klinika katalogi BO'SH boshlanadi (bazada). Direktor naryadlar
+      // sahifasida qo'lda qo'shadi yoki standart ro'yxatni import qiladi — serverga
+      // avtomatik soxta narx yozilmaydi.
       setClinics([created, ...clinics]);
       setIsNewClinicModalOpen(false);
 
@@ -461,7 +502,7 @@ function SuperAdminPageContent() {
   };
 
   const handleCopyCredentials = (tech: DentalTechnician) => {
-    const text = `32Desk — Zubnoy texnik kirishi\nSayt: ${window.location.origin}/technician\nLogin: ${tech.username}\nParol: ${tech.password || '123456'}`;
+    const text = `Zubnoy texnik kirishi\nSayt: ${window.location.origin}/technician\nLogin: ${tech.username}\nParol: ${tech.password || '123456'}`;
     navigator.clipboard.writeText(text);
     setCopiedId(tech.id);
     showToast(tr('superadmin.toastCredsCopied'));
@@ -1130,7 +1171,7 @@ function SuperAdminPageContent() {
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {d.employees.map(doc => (
                 <div key={doc.id} className="flex items-start gap-4 p-4 rounded-xl border border-slate-200 dark:border-slate-800">
-                  <img src={doc.avatar || 'https://images.unsplash.com/photo-1622253692010-333f2da6031d?w=150&q=80'} alt={doc.full_name} className="w-12 h-12 rounded-xl object-cover flex-shrink-0" />
+                  <img src={doc.avatar || ''} alt={doc.full_name} className="w-12 h-12 rounded-xl object-cover flex-shrink-0 bg-slate-100 dark:bg-slate-800" />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between gap-2">
                       <h4 className="font-semibold text-slate-900 dark:text-white truncate">{doc.full_name}</h4>
@@ -1207,7 +1248,11 @@ function SuperAdminPageContent() {
               </div>
               <div className="pt-5 border-t border-slate-100 dark:border-slate-800 space-y-3">
                 <label className={LABEL}>Ajratilgan kvota: <strong className="text-blue-600">{d.storage.quota_gb} GB</strong></label>
-                <input type="range" min={20} max={300} step={10} value={d.storage.quota_gb} onChange={e => handleUpdateClinicStorage(Number(e.target.value))} className="w-full accent-blue-600 cursor-pointer" />
+                {d.clinic.id === 1 ? (
+                  <p className="text-xs text-slate-400">🔒 Demo klinika — kvota 1 GB da qulflangan, oshirib bo'lmaydi.</p>
+                ) : (
+                  <input type="range" min={1} max={300} step={1} value={d.storage.quota_gb} onChange={e => handleUpdateClinicStorage(Number(e.target.value))} className="w-full accent-blue-600 cursor-pointer" />
+                )}
               </div>
             </div>
           )}
@@ -1488,7 +1533,7 @@ function SuperAdminPageContent() {
             </div>
             <div className="space-y-1">
               <label className={LABEL}>{tr('superadmin.phone')}</label>
-              <input value={clinicForm.phone} onChange={e => setClinicForm({ ...clinicForm, phone: e.target.value })} className={INPUT} />
+              <PhoneInput value={clinicForm.phone} onChange={v => setClinicForm({ ...clinicForm, phone: v })} className="w-full rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700 text-sm text-slate-800 dark:text-slate-100" />
             </div>
           </div>
 
@@ -1889,7 +1934,7 @@ function SuperAdminPageContent() {
             </div>
             <div className="space-y-1">
               <label className={LABEL}>{tr('superadmin.phone')}</label>
-              <input value={techForm.phone} onChange={e => setTechForm({ ...techForm, phone: e.target.value })} className={INPUT} />
+              <PhoneInput value={techForm.phone} onChange={v => setTechForm({ ...techForm, phone: v })} className="w-full rounded-xl bg-slate-50 dark:bg-slate-900/60 border border-slate-200 dark:border-slate-700 text-sm text-slate-800 dark:text-slate-100" />
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">

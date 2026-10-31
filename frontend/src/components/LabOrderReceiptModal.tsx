@@ -1,5 +1,8 @@
 import React, { useEffect, useState, useRef } from 'react';
-import QRCode from 'qrcode';
+// MUHIM: `qrcode` FAQAT klientда, kerak bo'lganda dinamik yuklanadi (pastdagi useEffect).
+// Yuqorida statik import qilinsa — u server bundle'ga tortiladi va Next dev ba'zan
+// `vendor-chunks/qrcode.js` ni topolmay BUTUN sahifaga 500 beradi (bemor sahifasi
+// shu modalni import qilgani uchun). Dinamik import bu muammoni butunlay yo'qotadi.
 import {
   Printer,
   X,
@@ -46,17 +49,22 @@ export default function LabOrderReceiptModal({
     const baseUrl = typeof window !== 'undefined' ? window.location.origin : '';
     const qrPayload = `${baseUrl}/technician?order=${encodeURIComponent(orderNum)}`;
 
-    QRCode.toDataURL(qrPayload, {
-      width: 320,
-      margin: 1,
-      color: {
-        dark: '#0f172a',
-        light: '#ffffff'
-      },
-      errorCorrectionLevel: 'H'
-    })
-      .then(url => setQrDataUrl(url))
-      .catch(err => console.error('QR generation error:', err));
+    let cancelled = false;
+    (async () => {
+      try {
+        const QRCode = (await import('qrcode')).default;
+        const url = await QRCode.toDataURL(qrPayload, {
+          width: 320,
+          margin: 1,
+          color: { dark: '#0f172a', light: '#ffffff' },
+          errorCorrectionLevel: 'H'
+        });
+        if (!cancelled) setQrDataUrl(url);
+      } catch (err) {
+        console.error('QR generation error:', err);
+      }
+    })();
+    return () => { cancelled = true; };
   }, [isOpen, orderNum]);
 
   if (!isOpen) return null;
@@ -112,7 +120,7 @@ export default function LabOrderReceiptModal({
             {/* 0. BRANCH HEADER: Location icon & originating branch name */}
             <div className="w-full flex items-center justify-center gap-1.5 py-1.5 px-3 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 text-slate-800 dark:text-slate-100 text-xs font-black">
               <MapPin className="w-4 h-4 shrink-0 text-rose-500" />
-              <span>{order.branch_name || '32Desk Toshkent Markaziy'}</span>
+              <span>{order.branch_name || 'Toshkent Markaziy'}</span>
               {order.destination_branch_name && order.destination_branch_name !== order.branch_name && (
                 <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">➔ {order.destination_branch_name}</span>
               )}

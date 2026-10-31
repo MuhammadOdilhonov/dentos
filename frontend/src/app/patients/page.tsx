@@ -5,9 +5,21 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { clinicApi } from '../../lib/api';
 import { Patient, Appointment } from '../../lib/types';
 import NewPatientModal from '../../components/NewPatientModal';
-import KeynoteDentalPhotoProtocol from '../../components/KeynoteDentalPhotoProtocol';
+import dynamic from 'next/dynamic';
+// Og'ir komponent (Three.js, DICOM, STL) — faqat kerak bo'lganda yuklanadi (tez ochilish uchun).
+const KeynoteDentalPhotoProtocol = dynamic(() => import('../../components/KeynoteDentalPhotoProtocol'), {
+  ssr: false,
+  loading: () => (
+    <div className="py-24 flex flex-col items-center justify-center gap-3 text-slate-400">
+      <div className="w-6 h-6 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+      <span className="text-sm font-semibold">Fotoprotokol yuklanmoqda…</span>
+    </div>
+  ),
+});
 import { useI18n } from '../../lib/i18n';
+import { PhotoProtocolFirstPage } from '../../components/PhotoProtocolStudio';
 import {
+  Check,
   Search,
   UserPlus,
   Phone,
@@ -40,7 +52,7 @@ const PAGE_SIZE = 12; // 10-20 oralig'ida har bir sahifa yuklanadi
 function PatientsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
-  const { t, language, tr } = useI18n();
+  const { t, language, tr, tk } = useI18n();
 
   // Active Tab from query param
   const activeTab = (searchParams.get('tab') as TabType) || 'list';
@@ -62,6 +74,9 @@ function PatientsContent() {
   const [isLoadingMore, setIsLoadingMore] = useState<boolean>(false);
   const sentinelRef = useRef<HTMLDivElement>(null);
 
+  // Media presence (yashil ptichka) BAZADAN — re-render uchun hisoblagich
+  const [mediaPresenceTick, setMediaPresenceTick] = useState(0);
+
   // Load data
   useEffect(() => {
     async function fetchData() {
@@ -74,6 +89,16 @@ function PatientsContent() {
     }
     fetchData();
   }, []);
+
+  // Foto/rentgen/skan tabida — har bemorda media bor-yo'qligini BAZADAN olamiz
+  // (brauzerga bog'liq emas, admin ham ko'radi). Kelgach yashil ptichka chiqadi.
+  useEffect(() => {
+    if (activeTab === 'foto' || activeTab === 'rentgen' || activeTab === 'skan') {
+      clinicApi.fetchMediaPresence().then((res) => {
+        if (res) setMediaPresenceTick((n) => n + 1);
+      });
+    }
+  }, [activeTab]);
 
   // Sync selected patient from URL parameter
   useEffect(() => {
@@ -219,7 +244,7 @@ function PatientsContent() {
 
     observer.observe(sentinel);
     return () => observer.disconnect();
-  }, [visibleCount, filteredList.length]);
+  }, [visibleCount, filteredList.length, viewMode, activeTab]);
 
   // Handle Tab Switch
   const switchTab = (newTab: TabType) => {
@@ -266,49 +291,63 @@ function PatientsContent() {
   // Currently visible items for infinite scroll
   const displayedPatients = filteredList.slice(0, visibleCount);
 
+  // Infinite-scroll sentinel — ham card, ham jadval ko'rinishida ishlatiladi (bitta ref).
+  const loadMoreSentinel = (
+    <div ref={sentinelRef} className="py-8 flex flex-col items-center justify-center space-y-3">
+      {visibleCount < filteredList.length ? (
+        <div className="flex flex-col items-center space-y-2">
+          <div className="flex items-center space-x-2 text-xs font-bold text-blue-600 dark:text-sky-400">
+            <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
+            <span>{tk('pt_loading_more')} ({displayedPatients.length} / {filteredList.length})</span>
+          </div>
+          <button
+            onClick={() => setVisibleCount((prev) => Math.min(prev + PAGE_SIZE, filteredList.length))}
+            className="px-4 py-2 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition"
+          >
+            {tk('pt_show_more')}
+          </button>
+        </div>
+      ) : (
+        <div className="text-center text-xs font-medium text-slate-400 py-2">
+          {tk('pt_all_loaded').replace('{n}', String(filteredList.length))}
+        </div>
+      )}
+    </div>
+  );
+
   // Status Filter tabs for 'list' mode
   const filterTabs = [
     {
       id: 'all' as StatusFilterType,
-      labelUz: 'Barchasi',
-      labelRu: 'Все',
-      labelEn: 'All',
+      labelKey: 'pt_tab_all',
       color: 'bg-slate-400',
       activeClass: 'bg-slate-800 text-white dark:bg-slate-100 dark:text-slate-900 shadow-sm',
       count: counts.all
     },
     {
       id: 'debt' as StatusFilterType,
-      labelUz: 'Qarzdorlar',
-      labelRu: 'Должники',
-      labelEn: 'In Debt',
+      labelKey: 'pt_tab_debt',
       color: 'bg-rose-500',
       activeClass: 'bg-rose-600 text-white shadow-sm shadow-rose-500/25',
       count: counts.debt
     },
     {
       id: 'stale_appointments' as StatusFilterType,
-      labelUz: 'Yopilmagan qabullar (>1 kun)',
-      labelRu: 'Незакрытые записи (>1 дн)',
-      labelEn: 'Unclosed (>1d)',
+      labelKey: 'pt_tab_stale',
       color: 'bg-amber-500',
       activeClass: 'bg-amber-600 text-white shadow-sm shadow-amber-500/25',
       count: counts.stale
     },
     {
       id: 'incomplete_profile' as StatusFilterType,
-      labelUz: 'Ma’lumot to‘liq emas',
-      labelRu: 'Неполные данные',
-      labelEn: 'Incomplete',
+      labelKey: 'pt_tab_incomplete',
       color: 'bg-purple-500',
       activeClass: 'bg-purple-600 text-white shadow-sm shadow-purple-500/25',
       count: counts.incomplete
     },
     {
       id: 'good' as StatusFilterType,
-      labelUz: 'Faol / Joyida',
-      labelRu: 'В норме / Активные',
-      labelEn: 'Active / Good',
+      labelKey: 'pt_tab_good',
       color: 'bg-emerald-500',
       activeClass: 'bg-emerald-600 text-white shadow-sm shadow-emerald-500/25',
       count: counts.good
@@ -327,17 +366,17 @@ function PatientsContent() {
               {activeTab === 'foto' ? (
                 <>
                   <Camera className="w-7 h-7 text-indigo-600" />
-                  <span>{language === 'ru' ? 'Фотопротокол пациентов (Keynote 5:3)' : language === 'en' ? 'Patient Photo Protocols (Keynote 5:3)' : 'Bemorlar Fotoprotokoli (Keynote 5:3)'}</span>
+                  <span>{tk('pt_foto_title')}</span>
                 </>
               ) : activeTab === 'rentgen' ? (
                 <>
                   <Activity className="w-7 h-7 text-emerald-600" />
-                  <span>{language === 'ru' ? 'Рентген и 3D КТ архивы пациентов' : language === 'en' ? 'Patient X-Ray & 3D CBCT Archives' : 'Bemorlar Rentgen & 3D KT Arxivlari'}</span>
+                  <span>{tk('pt_rentgen_title')}</span>
                 </>
               ) : activeTab === 'skan' ? (
                 <>
                   <Box className="w-7 h-7 text-violet-600" />
-                  <span>{language === 'ru' ? '3D Сканы челюстей пациентов (STL)' : language === 'en' ? 'Patient 3D Intraoral Scans (STL)' : 'Bemorlar 3D Jag‘ Skanerlari (STL)'}</span>
+                  <span>{tk('pt_skan_title')}</span>
                 </>
               ) : (
                 <>
@@ -347,33 +386,27 @@ function PatientsContent() {
               )}
             </h1>
             <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800">
-              {filteredList.length} {language === 'ru' ? 'пациентов' : language === 'en' ? 'patients' : 'nafar bemor'}
+              {filteredList.length} {tk('pt_cnt_patients')}
             </span>
+            {activeTab !== 'list' && (() => {
+              const totals = clinicApi.getMediaTotals();
+              const n = totals ? (activeTab === 'foto' ? totals.foto : activeTab === 'rentgen' ? totals.rentgen : totals.skan) : 0;
+              return (
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800 inline-flex items-center gap-1" title={tk('pt_media_has')}>
+                  <Check className="w-3 h-3" strokeWidth={4} />
+                  {n}
+                </span>
+              );
+            })()}
           </div>
           <p className="text-xs text-slate-500 dark:text-slate-400 font-medium mt-1">
             {activeTab === 'foto'
-              ? (language === 'ru'
-                  ? 'Выберите карту пациента и формируйте фотопротоколы в Keynote 5:3 с удобным перемещением и масштабированием'
-                  : language === 'en'
-                  ? 'Select a patient chart and build photo protocols in Keynote 5:3 with smooth drag-and-drop scaling'
-                  : 'Bemor kartasini tanlang va Keynote 5:3 albom formatida fotoprotokol yarating, rasmlarni erkin surib, kattalashtirib tahrirlang')
+              ? tk('pt_foto_sub')
               : activeTab === 'rentgen'
-              ? (language === 'ru'
-                  ? 'Выберите пациента для анализа срезов 3D КТ томографии, архивов Planmeca Romexis и рентген-снимков'
-                  : language === 'en'
-                  ? 'Select a patient chart to analyze 3D CBCT slices, Planmeca Romexis ZIP packages, and X-ray images'
-                  : 'Bemor kartasini tanlang va 3D KT tomografiya kesimlari, Planmeca Romexis ZIP arxivlari va rentgenlarni tahlil qiling')
+              ? tk('pt_rentgen_sub')
               : activeTab === 'skan'
-              ? (language === 'ru'
-                  ? 'Выберите пациента и просматривайте 3D STL модели интраоральных сканеров 3Shape / Medit в 360°'
-                  : language === 'en'
-                  ? 'Select a patient chart to view 3Shape / Medit 3D intraoral STL mesh models in 360°'
-                  : 'Bemor kartasini tanlang va 3Shape / Medit 3D intraoral skaner STL modellarini 360° tomosha qiling')
-              : (language === 'ru'
-                  ? 'Амбулаторные карты пациентов, индикаторы состояния и расчеты'
-                  : language === 'en'
-                  ? 'Patient ambulatory charts, status indicators, and billing'
-                  : 'Bemorlar ambulator kartasi, holat indikatorlari va hisob-kitoblar')}
+              ? tk('pt_skan_sub')
+              : tk('pt_list_sub')}
           </p>
         </div>
 
@@ -388,10 +421,10 @@ function PatientsContent() {
                     ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-white shadow-xs'
                     : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
                 }`}
-                title={language === 'ru' ? 'Таблица' : language === 'en' ? 'Table' : 'Jadval'}
+                title={tk('pt_view_table')}
               >
                 <List className="w-4 h-4" />
-                <span className="text-[11px] font-bold hidden sm:inline">{language === 'ru' ? 'Таблица' : language === 'en' ? 'Table' : 'Jadval'}</span>
+                <span className="text-[11px] font-bold hidden sm:inline">{tk('pt_view_table')}</span>
               </button>
               <button
                 onClick={() => setViewMode('cards')}
@@ -400,10 +433,10 @@ function PatientsContent() {
                     ? 'bg-white dark:bg-slate-700 text-blue-600 dark:text-white shadow-xs'
                     : 'text-slate-500 hover:text-slate-800 dark:hover:text-slate-200'
                 }`}
-                title={language === 'ru' ? 'Карточки' : language === 'en' ? 'Cards' : 'Kartalar'}
+                title={tk('pt_view_cards')}
               >
                 <LayoutGrid className="w-4 h-4" />
-                <span className="text-[11px] font-bold hidden sm:inline">{language === 'ru' ? 'Карточки' : language === 'en' ? 'Cards' : 'Kartalar'}</span>
+                <span className="text-[11px] font-bold hidden sm:inline">{tk('pt_view_cards')}</span>
               </button>
             </div>
           )}
@@ -429,13 +462,7 @@ function PatientsContent() {
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder={
-              language === 'ru'
-                ? 'Поиск по имени, номеру телефона или карте пациента...'
-                : language === 'en'
-                ? 'Search patient by name, phone, or chart ID...'
-                : 'Bemor ismini, telefonini yoki karta raqamini qidiring...'
-            }
+            placeholder={tk('pt_search_ph')}
             className="w-full pl-11 pr-10 py-2.5 bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-medium text-slate-900 dark:text-white placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500/30 focus:border-blue-500 transition"
           />
           {search && (
@@ -452,7 +479,7 @@ function PatientsContent() {
         {activeTab === 'list' && (
           <div className="flex items-center gap-2 flex-wrap pt-1 border-t border-slate-100 dark:border-slate-800">
             <span className="text-xs font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mr-1">
-              {language === 'ru' ? 'По статусу:' : language === 'en' ? 'By status:' : 'Holat bo‘yicha:'}
+              {tk('pt_by_status')}
             </span>
             {filterTabs.map((tab) => {
               const isActive = statusFilter === tab.id;
@@ -467,7 +494,7 @@ function PatientsContent() {
                   }`}
                 >
                   <span className={`w-2 h-2 rounded-full ${tab.color}`} />
-                  <span>{language === 'ru' ? tab.labelRu : language === 'en' ? tab.labelEn : tab.labelUz}</span>
+                  <span>{tk(tab.labelKey)}</span>
                   <span className={`px-1.5 py-0.2 rounded-md text-[10px] ${isActive ? 'bg-black/20 text-white' : 'bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300'}`}>
                     {tab.count}
                   </span>
@@ -491,9 +518,9 @@ function PatientsContent() {
                   ? (nameParts[0][0] + nameParts[1][0]).toUpperCase()
                   : (nameParts[0]?.slice(0, 2) || 'BM').toUpperCase();
 
-              // Special sample markers for test patients
-              const isSampleRentgen = p.id === 19 || p.full_name.includes('Одилхонова');
-              const isSampleScan = p.id === 20 || p.full_name.includes('Nasarullaev');
+              // Foto/rentgen/skan tabларида: shu bemorda media bor-yo'qligi (rangli nuqta uchun)
+              const media = activeTab !== 'list' ? clinicApi.getPatientMediaPresence(p.id) : null;
+              const hasThisMedia = activeTab === 'foto' ? media?.foto : activeTab === 'rentgen' ? media?.rentgen : activeTab === 'skan' ? media?.skan : false;
 
               return (
                 <div
@@ -505,11 +532,11 @@ function PatientsContent() {
                   <div>
                     <div className="flex items-start justify-between gap-3 mb-3">
                       <div className="flex items-center gap-3 min-w-0">
+                        {/* Foto tabида avatar KO'RSATILMAYDI — ism bir qatorda, rasm ko'proq joy oladi */}
+                        {activeTab !== 'foto' && (
                         <div
                           className={`w-11 h-11 rounded-2xl font-black text-xs flex items-center justify-center shrink-0 shadow-md ${
-                            activeTab === 'foto'
-                              ? 'bg-gradient-to-tr from-indigo-600 to-sky-400 text-white'
-                              : activeTab === 'rentgen'
+                            activeTab === 'rentgen'
                               ? 'bg-gradient-to-tr from-emerald-600 to-teal-400 text-white'
                               : activeTab === 'skan'
                               ? 'bg-gradient-to-tr from-violet-600 to-indigo-400 text-white'
@@ -520,13 +547,15 @@ function PatientsContent() {
                         >
                           {initials}
                         </div>
+                        )}
                         <div className="min-w-0">
-                          <h4 className="font-bold text-sm text-slate-900 dark:text-white truncate group-hover:text-blue-600 dark:group-hover:text-sky-400 transition">
-                            {p.full_name}
-                          </h4>
-                          <span className="text-[11px] font-mono text-slate-400">
-                            Karta #{p.id}
-                          </span>
+                          {/* Ism + karta raqami — bir qatorda */}
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <h4 className="font-bold text-sm text-slate-900 dark:text-white truncate group-hover:text-blue-600 dark:group-hover:text-sky-400 transition">
+                              {p.full_name}
+                            </h4>
+                            <span className="text-[11px] font-mono text-slate-400 shrink-0">#{p.id}</span>
+                          </div>
                         </div>
                       </div>
 
@@ -535,21 +564,30 @@ function PatientsContent() {
                       </span>
                     </div>
 
+                    {/* Foto tabида: foto-protokol BIRINCHI SAHIFASI (matn+rasm) — IndexedDB/localStorage'dan
+                        o'zi yuklaydi va mazmun bo'lsagina ko'rsatadi (studioda kiritilgandan keyin ham ko'rinadi) */}
+                    {activeTab === 'foto' && <PhotoProtocolFirstPage patientId={p.id} />}
+
                     {/* Middle Info: Phone & Mode-specific badge */}
-                    <div className="space-y-2 text-xs text-slate-500 dark:text-slate-400">
+                    <div className="space-y-1.5 text-xs text-slate-500 dark:text-slate-400">
+                      {activeTab !== 'foto' && (
                       <div className="flex items-center space-x-1.5">
                         <Phone className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                        <span>{p.phone || (language === 'ru' ? 'Нет телефона' : language === 'en' ? 'No phone' : 'Telefon yo‘q')}</span>
+                        <span>{p.phone || tk('pt_no_phone')}</span>
                       </div>
+                      )}
 
                       {/* MODE SPECIFIC BADGES */}
                       {activeTab === 'foto' && (
-                        <div className="p-2 rounded-xl bg-indigo-50/80 dark:bg-indigo-950/40 border border-indigo-100 dark:border-indigo-900/60 flex items-center justify-between text-[11px]">
-                          <div className="flex items-center space-x-1.5 text-indigo-700 dark:text-indigo-300 font-semibold">
-                            <Camera className="w-3.5 h-3.5 text-indigo-500 shrink-0" />
-                            <span>{language === 'ru' ? 'Фотопротокол Keynote' : language === 'en' ? 'Keynote Photo Protocol' : 'Keynote Fotoprotokol'}</span>
+                        <div className="flex items-center justify-between text-[10px]">
+                          <div className="flex items-center space-x-1 text-indigo-600 dark:text-indigo-300 font-bold">
+                            <Camera className="w-3 h-3 text-indigo-500 shrink-0" />
+                            <span>{tk('pt_badge_foto')}</span>
                           </div>
-                          <span className="text-[10px] text-indigo-500 font-bold">{language === 'ru' ? 'Открыть →' : language === 'en' ? 'Open →' : 'Ochish →'}</span>
+                          <span className="flex items-center gap-1">
+                            <span title={hasThisMedia ? tk('pt_media_has') : tk('pt_media_none')} className={`inline-flex items-center justify-center w-3.5 h-3.5 rounded-full shrink-0 ring-2 ring-white dark:ring-slate-900 ${hasThisMedia ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`}>{hasThisMedia && <Check className="w-2 h-2 text-white" strokeWidth={4} />}</span>
+                            <span className="text-[9px] text-indigo-500 font-bold">{tk('pt_open_arrow')}</span>
+                          </span>
                         </div>
                       )}
 
@@ -557,9 +595,12 @@ function PatientsContent() {
                         <div className="p-2 rounded-xl bg-emerald-50/80 dark:bg-emerald-950/40 border border-emerald-100 dark:border-emerald-900/60 flex items-center justify-between text-[11px]">
                           <div className="flex items-center space-x-1.5 text-emerald-700 dark:text-emerald-300 font-semibold">
                             <Activity className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                            <span>{isSampleRentgen ? '⚡ Rentgen & 3D KT' : (language === 'ru' ? 'Рентген и КТ' : language === 'en' ? 'X-Ray & CT' : 'Rentgen & KT')}</span>
+                            <span>{tk('pt_rentgen_short')}</span>
                           </div>
-                          <span className="text-[10px] text-emerald-600 font-bold">{language === 'ru' ? 'Анализ →' : language === 'en' ? 'Analyze →' : 'Tahlil →'}</span>
+                          <span className="flex items-center gap-1.5">
+                            <span title={hasThisMedia ? tk('pt_media_has') : tk('pt_media_none')} className={`inline-flex items-center justify-center w-4 h-4 rounded-full shrink-0 ring-2 ring-white dark:ring-slate-900 shadow-sm ${hasThisMedia ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`}>{hasThisMedia && <Check className="w-2.5 h-2.5 text-white" strokeWidth={4} />}</span>
+                            <span className="text-[10px] text-emerald-600 font-bold">{tk('pt_analyze_arrow')}</span>
+                          </span>
                         </div>
                       )}
 
@@ -567,15 +608,18 @@ function PatientsContent() {
                         <div className="p-2 rounded-xl bg-violet-50/80 dark:bg-violet-950/40 border border-violet-100 dark:border-violet-900/60 flex items-center justify-between text-[11px]">
                           <div className="flex items-center space-x-1.5 text-violet-700 dark:text-violet-300 font-semibold">
                             <Box className="w-3.5 h-3.5 text-violet-500 shrink-0" />
-                            <span>{isSampleScan ? '⚡ 3D Intraoral Skan' : (language === 'ru' ? '3D Сканер' : language === 'en' ? '3D Scanner' : '3D Skaner')}</span>
+                            <span>{tk('pt_scanner')}</span>
                           </div>
-                          <span className="text-[10px] text-violet-600 font-bold">3D →</span>
+                          <span className="flex items-center gap-1.5">
+                            <span title={hasThisMedia ? tk('pt_media_has') : tk('pt_media_none')} className={`inline-flex items-center justify-center w-4 h-4 rounded-full shrink-0 ring-2 ring-white dark:ring-slate-900 shadow-sm ${hasThisMedia ? 'bg-emerald-500' : 'bg-slate-300 dark:bg-slate-600'}`}>{hasThisMedia && <Check className="w-2.5 h-2.5 text-white" strokeWidth={4} />}</span>
+                            <span className="text-[10px] text-violet-600 font-bold">3D →</span>
+                          </span>
                         </div>
                       )}
 
                       {activeTab === 'list' && (
                         <div className="flex items-center justify-between text-[11px] pt-1">
-                          <span className="text-slate-400">{language === 'ru' ? 'Баланс:' : language === 'en' ? 'Balance:' : 'Balans:'}</span>
+                          <span className="text-slate-400">{tk('pt_balance_label')}</span>
                           <span
                             className={`font-bold font-mono ${
                               p.balance < 0
@@ -600,16 +644,16 @@ function PatientsContent() {
                   <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800/80 flex items-center justify-between text-xs">
                     <span className="text-[11px] text-slate-400">
                       {activeTab === 'foto'
-                        ? (language === 'ru' ? 'Фотопротокол' : language === 'en' ? 'Photo Protocol' : 'Fotoprotokol')
+                        ? tk('pt_card_foto')
                         : activeTab === 'rentgen'
-                        ? (language === 'ru' ? '3D Рентген' : language === 'en' ? '3D X-Ray' : '3D Rentgen')
+                        ? tk('pt_card_rentgen')
                         : activeTab === 'skan'
-                        ? (language === 'ru' ? '3D Сканер' : language === 'en' ? '3D Scanner' : '3D Skaner')
-                        : (language === 'ru' ? 'Профиль пациента' : language === 'en' ? 'Patient Profile' : 'Bemor profili')}
+                        ? tk('pt_scanner')
+                        : tk('pt_card_profile')}
                     </span>
 
                     <span className="inline-flex items-center space-x-1 font-bold text-blue-600 dark:text-sky-400 group-hover:translate-x-1 transition-transform">
-                      <span>{activeTab === 'list' ? (language === 'ru' ? 'Открыть карту' : language === 'en' ? 'Open Chart' : 'Kartani ochish') : (language === 'ru' ? 'Открыть' : language === 'en' ? 'Open' : 'Ochish')}</span>
+                      <span>{activeTab === 'list' ? tk('pt_open_chart') : tk('pt_open')}</span>
                       <ArrowRight className="w-3.5 h-3.5" />
                     </span>
                   </div>
@@ -618,50 +662,27 @@ function PatientsContent() {
             })}
           </div>
 
-          {/* ───────────────────────────────────────────────────────── */}
-          {/* 5. INFINITE SCROLL SENTINEL & LOAD MORE                   */}
-          {/* ───────────────────────────────────────────────────────── */}
-          <div
-            ref={sentinelRef}
-            className="py-8 flex flex-col items-center justify-center space-y-3"
-          >
-            {visibleCount < filteredList.length ? (
-              <div className="flex flex-col items-center space-y-2">
-                <div className="flex items-center space-x-2 text-xs font-bold text-blue-600 dark:text-sky-400">
-                  <div className="w-4 h-4 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
-                  <span>{language === 'ru' ? 'Загрузка пациентов...' : language === 'en' ? 'Loading patients...' : 'Ko‘proq bemorlar yuklanmoqda...'} ({displayedPatients.length} / {filteredList.length})</span>
-                </div>
-                <button
-                  onClick={() => setVisibleCount((prev) => Math.min(prev + PAGE_SIZE, filteredList.length))}
-                  className="px-4 py-2 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition"
-                >
-                  {language === 'ru' ? 'Показать еще 12 пациентов' : language === 'en' ? 'Show 12 more patients' : 'Yana 12 ta bemorni ko‘rsatish'}
-                </button>
-              </div>
-            ) : (
-              <div className="text-center text-xs font-medium text-slate-400 py-2">
-                {language === 'ru' ? `✓ Все ${filteredList.length} пациентов загружены` : language === 'en' ? `✓ All ${filteredList.length} patients loaded` : `✓ Barcha ${filteredList.length} nafar bemor to‘liq yuklandi`}
-              </div>
-            )}
-          </div>
+          {/* Infinite scroll sentinel (card ko'rinishi) */}
+          {loadMoreSentinel}
         </div>
       ) : (
         /* ───────────────────────────────────────────────────────── */
         /* 6. TABLE VIEW (In 'list' mode if table is selected)       */
         /* ───────────────────────────────────────────────────────── */
+        <>
         <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse text-xs">
               <thead>
                 <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/50 dark:bg-slate-800/30 text-slate-500 dark:text-slate-400 font-bold uppercase tracking-wider text-[11px]">
-                  <th className="py-3 px-4 w-12 text-center">{language === 'ru' ? 'Статус' : language === 'en' ? 'Status' : 'Holat'}</th>
-                  <th className="py-3 px-4">{language === 'ru' ? 'Пациент' : language === 'en' ? 'Patient' : 'Bemor'}</th>
-                  <th className="py-3 px-4">{language === 'ru' ? 'Телефон' : language === 'en' ? 'Phone' : 'Telefon'}</th>
-                  <th className="py-3 px-4">{language === 'ru' ? 'Категория' : language === 'en' ? 'Category' : 'Kategoriya'}</th>
-                  <th className="py-3 px-4">{language === 'ru' ? 'Приемы' : language === 'en' ? 'Visits' : 'Qabullar'}</th>
-                  <th className="py-3 px-4">{language === 'ru' ? 'Баланс' : language === 'en' ? 'Balance' : 'Balans'}</th>
-                  <th className="py-3 px-4">{language === 'ru' ? 'Анамнез' : language === 'en' ? 'Medical Record' : 'Anamnez'}</th>
-                  <th className="py-3 px-4 text-right">{language === 'ru' ? 'Действие' : language === 'en' ? 'Action' : 'Amal'}</th>
+                  <th className="py-3 px-4 w-12 text-center">{tk('pt_col_status')}</th>
+                  <th className="py-3 px-4">{tk('pt_col_patient')}</th>
+                  <th className="py-3 px-4">{tk('pt_col_phone')}</th>
+                  <th className="py-3 px-4">{tk('pt_col_category')}</th>
+                  <th className="py-3 px-4">{tk('pt_col_visits')}</th>
+                  <th className="py-3 px-4">{tk('pt_col_balance')}</th>
+                  <th className="py-3 px-4">{tk('pt_col_anamnez')}</th>
+                  <th className="py-3 px-4 text-right">{tk('pt_col_action')}</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
@@ -699,20 +720,35 @@ function PatientsContent() {
                       </span>
                     </td>
                     <td className="py-3.5 px-4 text-slate-600 dark:text-slate-300">
-                      {totalApts} {language === 'ru' ? 'приемов' : language === 'en' ? 'visits' : 'ta'}
+                      {totalApts} {tk('pt_cnt_visits')}
                     </td>
                     <td className="py-3.5 px-4">
-                      {p.balance < 0 ? (
-                        <span className="font-bold text-rose-600 dark:text-rose-400 bg-rose-50 dark:bg-rose-950/60 px-2 py-0.5 rounded-lg border border-rose-200 dark:border-rose-800">
-                          {language === 'ru' ? 'Долг: ' : language === 'en' ? 'Debt: ' : 'Qarz: '}{Math.abs(p.balance).toLocaleString()} UZS
-                        </span>
-                      ) : p.balance > 0 ? (
-                        <span className="font-bold text-emerald-600 dark:text-emerald-400 bg-emerald-50 dark:bg-emerald-950/60 px-2 py-0.5 rounded-lg border border-emerald-200 dark:border-emerald-800">
-                          +{p.balance.toLocaleString()} UZS
-                        </span>
-                      ) : (
-                        <span className="text-slate-400 font-medium">0 UZS</span>
-                      )}
+                      {/* Qarz/balans — rangli nuqta; ustiga kelganda (hover) summa chiqadi */}
+                      {(() => {
+                        const amountText = p.balance < 0
+                          ? `${tk('pt_debt_label')}${Math.abs(p.balance).toLocaleString()} UZS`
+                          : p.balance > 0
+                          ? `+${p.balance.toLocaleString()} UZS`
+                          : '0 UZS';
+                        const dotCls = p.balance < 0
+                          ? 'bg-rose-500 ring-4 ring-rose-500/20'
+                          : p.balance > 0
+                          ? 'bg-emerald-500 ring-4 ring-emerald-500/20'
+                          : 'bg-slate-300 dark:bg-slate-600';
+                        const txtCls = p.balance < 0
+                          ? 'text-rose-600 dark:text-rose-400'
+                          : p.balance > 0
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-slate-500';
+                        return (
+                          <div className="relative inline-flex items-center group/bal" title={amountText}>
+                            <span className={`inline-block w-3 h-3 rounded-full ${dotCls}`} />
+                            <div className="pointer-events-none absolute left-6 top-1/2 -translate-y-1/2 z-20 hidden group-hover/bal:block whitespace-nowrap px-2.5 py-1 rounded-lg text-[11px] font-bold shadow-lg border bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700">
+                              <span className={txtCls}>{amountText}</span>
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </td>
                     <td className="py-3.5 px-4 text-slate-500 dark:text-slate-400 truncate max-w-xs">
                       {p.medical_history || p.notes || '—'}
@@ -725,7 +761,7 @@ function PatientsContent() {
                         }}
                         className="px-3 py-1 bg-slate-100 dark:bg-slate-800 group-hover:bg-blue-600 group-hover:text-white rounded-lg text-xs font-semibold text-slate-600 dark:text-slate-300 transition"
                       >
-                        {language === 'ru' ? 'Карта' : language === 'en' ? 'Chart' : 'Karta'}
+                        {tk('pt_chart')}
                       </button>
                     </td>
                   </tr>
@@ -734,6 +770,9 @@ function PatientsContent() {
             </table>
           </div>
         </div>
+        {/* Infinite scroll sentinel (jadval ko'rinishi) */}
+        {loadMoreSentinel}
+        </>
       )}
 
       {/* New Patient Modal */}

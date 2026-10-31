@@ -5,6 +5,7 @@ import { Employee, Patient, Appointment } from '../lib/types';
 import { clinicApi } from '../lib/api';
 import { useI18n } from '../lib/i18n';
 import NaryadModal, { NaryadCartItem } from './NaryadModal';
+import PhoneInput from './PhoneInput';
 import {
   X,
   User,
@@ -219,7 +220,7 @@ export default function NewAppointmentModal({
         name: s.name,
         price: s.price,
         quantity: s.quantity,
-        doctor: doctor?.full_name || 'Сардор Алимов'
+        doctor: doctor?.full_name || ''
       }));
       clinicApi.saveCheckoutDraft(patientId, draftItems);
       const patientItems = addedServices.map((s, idx) => ({
@@ -228,7 +229,7 @@ export default function NewAppointmentModal({
         name: s.name,
         unitPrice: s.price,
         teeth: s.teeth || [],
-        doctor: doctor?.full_name || 'Сардор Алимов',
+        doctor: doctor?.full_name || '',
         date: 'Bugun',
         price: s.price * s.quantity,
         isDebt: false,
@@ -244,7 +245,7 @@ export default function NewAppointmentModal({
       patient_phone: patientPhone,
       patient_service_lang: serviceLang,
       doctor: selectedDoctorId,
-      doctor_name: doctor?.full_name || 'Сардор Алимов',
+      doctor_name: doctor?.full_name || '',
       doctor_color: doctor?.color || '#0EA5E9',
       branch: branchId || doctor?.branch || appointmentToEdit?.branch || undefined,
       branch_name: branchName || doctor?.branch_name || appointmentToEdit?.branch_name || undefined,
@@ -373,12 +374,10 @@ export default function NewAppointmentModal({
                   {tk('k_42')}
                 </div>
                 <div className="grid grid-cols-2 gap-2">
-                  <input
-                    type="text"
+                  <PhoneInput
                     value={inlinePhone}
-                    onChange={(e) => setInlinePhone(e.target.value)}
-                    placeholder="Telefon"
-                    className="text-xs p-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg outline-none font-mono"
+                    onChange={setInlinePhone}
+                    className="text-xs bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg"
                   />
                   <select
                     value={inlineGender}

@@ -44,6 +44,8 @@ import { useAuth } from '../lib/auth';
 
 export default function DirectorDashboard() {
   const { user } = useAuth();
+  // Direktor o'rinbosari (deputy) oylik moliyaviy rejani FAQAT KO'RADI — yoza/tahrirlay olmaydi.
+  const isDeputy = user?.role === 'deputy_director';
   const { language, tr } = useI18n();
   const { currentBranchId, currentBranch } = useBranch();
   const [period, setPeriod] = useState<'today' | 'yesterday' | 'week' | 'month' | 'year'>('month');
@@ -62,9 +64,8 @@ export default function DirectorDashboard() {
 
   const rawCid = user?.clinicId;
   const cid = rawCid ?? 1;
-  // Faqat HAQIQIY demo klinika (id=1) uchun namuna ma'lumotlar ko'rsatiladi.
-  // clinicId null bo'lsa (noto'g'ri sozlangan direktor) demo ko'rsatilmaydi.
-  const isDemo = rawCid === 1;
+  // Soxta (demo) ma'lumot ko'rsatilmaydi — har bir klinika faqat o'z real ma'lumotini oladi.
+  const isDemo = false;
 
   // Per-branch monthly plans state (Branch ID -> Target UZS)
   const defaultBranchTargets = useMemo<Record<number, number>>(() => {
@@ -106,6 +107,31 @@ export default function DirectorDashboard() {
   const [isPlanModalOpen, setIsPlanModalOpen] = useState(false);
   const [inputBranchPlans, setInputBranchPlans] = useState<Record<number, number>>(branchPlans);
   const [inputSinglePlan, setInputSinglePlan] = useState<number>(singleClinicPlan);
+  // Reja backenddan yuklanmaguncha avto-modal ochilmaydi (cid race oldini oladi)
+  const [planLoaded, setPlanLoaded] = useState<boolean>(false);
+
+  // Oylik rejani BAZADAN yuklaymiz (localStorage emas). cid aniqlangach ishga tushadi.
+  useEffect(() => {
+    if (isDemo) { setPlanLoaded(true); return; }
+    if (!rawCid) return; // user hali yuklanmadi — kutamiz
+    let cancelled = false;
+    (async () => {
+      const plan = await clinicApi.getMonthlyPlan(undefined, cid);
+      if (cancelled) return;
+      if (plan) {
+        const bp: Record<number, number> = {};
+        Object.entries(plan.branch_plans || {}).forEach(([k, v]) => { bp[Number(k)] = Number(v) || 0; });
+        if (Object.keys(bp).length > 0) { setBranchPlans(bp); setInputBranchPlans(bp); }
+        if (Number(plan.single_clinic_plan) > 0) {
+          setSingleClinicPlan(Number(plan.single_clinic_plan));
+          setInputSinglePlan(Number(plan.single_clinic_plan));
+        }
+      }
+      setPlanLoaded(true);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rawCid, cid]);
 
   // Dynamically computed target:
   // If no branches exist, returns overall clinic plan target.
@@ -125,7 +151,16 @@ export default function DirectorDashboard() {
   const handleSavePlans = (newPlans: Record<number, number>, newSinglePlan: number) => {
     setBranchPlans(newPlans);
     setSingleClinicPlan(newSinglePlan);
+    // BAZAGA yozamiz (localStorage emas) — logout/boshqa qurilmada ham saqlanadi.
+    const branchPlansStr: Record<string, number> = {};
+    Object.entries(newPlans).forEach(([k, v]) => { branchPlansStr[String(k)] = Number(v) || 0; });
+    clinicApi.saveMonthlyPlan({
+      single_clinic_plan: Number(newSinglePlan) || 0,
+      branch_plans: branchPlansStr,
+      acknowledged: true,
+    }, cid).catch(() => {});
     if (typeof window !== 'undefined') {
+      // localStorage faqat tezkor kesh sifatida (backend asosiy manba)
       const branchKey = isDemo ? '32desk_branch_plans_current' : `32desk_branch_plans_clinic_${cid}`;
       const planKey = isDemo ? '32desk_monthly_plan_current' : `32desk_monthly_plan_clinic_${cid}`;
       localStorage.setItem(branchKey, JSON.stringify(newPlans));
@@ -133,9 +168,6 @@ export default function DirectorDashboard() {
         ? Object.values(newPlans).reduce((acc, v) => acc + (Number(v) || 0), 0)
         : newSinglePlan;
       localStorage.setItem(planKey, total.toString());
-    }
-    // Shu oy uchun reja belgilandi deb belgilab qo'yamiz (avto-modal qayta chiqmasin)
-    if (typeof window !== 'undefined') {
       const monthKey = new Date().toISOString().slice(0, 7); // YYYY-MM
       localStorage.setItem(`32desk_plan_ack_${cid}_${monthKey}`, '1');
     }
@@ -145,23 +177,20 @@ export default function DirectorDashboard() {
   // Oy boshida (yoki reja hali belgilanmagan bo'lsa) oylik moliyaviy reja modalini avtomatik ochamiz
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const now = new Date();
-    const monthKey = now.toISOString().slice(0, 7);
-    const ackKey = `32desk_plan_ack_${cid}_${monthKey}`;
-    const alreadyAcked = localStorage.getItem(ackKey) === '1';
-    if (alreadyAcked) return;
-    // Joriy oy uchun reja qiymati bormi?
+    if (isDeputy) return; // deputy rejani tahrirlamaydi — modal avto-ochilmaydi
+    if (!planLoaded) return; // BAZADAN reja yuklanmaguncha kutamiz (aks holda bekorga ochiladi)
+    // Joriy oy uchun reja qiymati bormi? (backenddan state'ga yuklangan)
     const hasPlan = branches.length > 0
       ? Object.values(branchPlans).some((v) => Number(v) > 0)
       : Number(singleClinicPlan) > 0;
-    // Oyning dastlabki 5 kuni ichida bo'lsa YOKI reja umuman belgilanmagan bo'lsa — ochamiz
-    if (now.getDate() <= 5 || !hasPlan) {
+    // Reja umuman belgilanmagan bo'lsa — kiritish uchun ochamiz.
+    if (!hasPlan) {
       setInputBranchPlans(branchPlans);
       setInputSinglePlan(singleClinicPlan);
       setIsPlanModalOpen(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loading, cid]);
+  }, [planLoaded, branchPlans, singleClinicPlan, branches.length]);
 
   // Multi-language text dictionary for dashboard
   const txt = {
@@ -677,18 +706,7 @@ export default function DirectorDashboard() {
       activeWorkplaces = workplaces.filter((w) => w.branch === currentBranchId);
     }
 
-    const isDemoClinic = !user?.clinicId || user?.clinicId === 1;
-    if ((!activeWorkplaces || activeWorkplaces.length === 0) && isDemoClinic) {
-      const fallbackList: WorkplaceItem[] = [
-        { id: 1, name: '1-kreslo (Xirurgiya / Implantatsiya)', branch: 1, branch_name: 'Toshkent Markaziy', defaultDoc: 'Sardor Alimov', color: '#0EA5E9' },
-        { id: 2, name: '2-kreslo (Ortopediya / Protezlash)', branch: 1, branch_name: 'Toshkent Markaziy', defaultDoc: 'Server Usmanov', color: '#3B82F6' },
-        { id: 3, name: '3-kreslo (Ortodontiya / Breketlar)', branch: 2, branch_name: 'Chilonzor', defaultDoc: 'Ozod Rasulov', color: '#8B5CF6' },
-        { id: 4, name: '4-kreslo (Terapiya / Endodontiya)', branch: 2, branch_name: 'Chilonzor', defaultDoc: 'Malvina Abdullaeva', color: '#EC4899' },
-        { id: 5, name: '5-kreslo (Bolalar stomatologiyasi)', branch: 3, branch_name: 'Yunusobod', defaultDoc: 'Dildora Karimova', color: '#F59E0B' },
-        { id: 6, name: '6-kreslo (Estetik restavratsiya)', branch: 3, branch_name: 'Yunusobod', defaultDoc: 'Jasur Shodiev', color: '#10B981' }
-      ];
-      activeWorkplaces = currentBranchId ? fallbackList.filter(w => w.branch === currentBranchId) : fallbackList;
-    } else if (!activeWorkplaces) {
+    if (!activeWorkplaces) {
       activeWorkplaces = [];
     }
 
@@ -789,6 +807,8 @@ export default function DirectorDashboard() {
     const totalSrvRevenue = Object.values(categories).reduce((s, c) => s + (Number(c.revenue) || 0), 0) || totalRevenue || 1;
 
     return Object.entries(categories)
+      // Faqat REAL faoliyat bo'lgan xizmatlar — qabul/tushum yo'q bo'lsa ko'rsatilmaydi (soxta ro'yxat yo'q)
+      .filter(([, srv]) => (srv.count || 0) > 0 || (srv.revenue || 0) > 0)
       .map(([key, srv]) => {
         const catLabel =
           key === 'implant'
@@ -807,7 +827,7 @@ export default function DirectorDashboard() {
         return {
           category: catLabel,
           name: srv.name,
-          count: Math.max(srv.count, Math.round((Number(srv.revenue) || 0) / 1000000) || 1),
+          count: srv.count || Math.round((Number(srv.revenue) || 0) / 1000000),
           revenue: Number(srv.revenue) || 0,
           percent: Number(percent) || 0
         };
@@ -915,7 +935,7 @@ export default function DirectorDashboard() {
   // Export to CSV Function
   const handleExportCSV = () => {
     const csvRows = [
-      ['32Desk Director Executive Report', `Period: ${period.toUpperCase()}`, `Date: ${new Date().toLocaleDateString()}`],
+      ['Director Executive Report', `Period: ${period.toUpperCase()}`, `Date: ${new Date().toLocaleDateString()}`],
       [],
       ['KPI', 'Qiymat', 'Qo‘shimcha'],
       ['Umumiy tushum', `${formatMoney(totalRevenue)} UZS`, `${periodIncomes.length} ta kirim`],
@@ -1208,6 +1228,7 @@ export default function DirectorDashboard() {
             <h3 className="text-sm font-bold text-slate-900 dark:text-white">
               {l.monthlyPlanTitle} {branches.length > 0 ? (currentBranch ? `(${currentBranch.name})` : '(Umumiy barcha filiallar)') : '(Klinika rejasi)'}
             </h3>
+            {!isDeputy && (
             <button
               onClick={() => {
                 setInputBranchPlans({ ...branchPlans });
@@ -1222,6 +1243,7 @@ export default function DirectorDashboard() {
                 {monthlyPlanStats.target > 0 ? "Rejani tahrirlash" : "Rejani kiritish"}
               </span>
             </button>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-2 sm:gap-3 text-xs font-bold">
             {monthlyPlanStats.target > 0 ? (
@@ -1241,6 +1263,11 @@ export default function DirectorDashboard() {
                   {monthlyPlanStats.daysLeft} {l.daysRemaining}
                 </span>
               </>
+            ) : isDeputy ? (
+              <span className="text-slate-500 dark:text-slate-400 font-semibold flex items-center gap-1.5">
+                <AlertCircle className="w-4 h-4 shrink-0" />
+                <span>Oylik moliyaviy reja hali belgilanmagan (rejani direktor kiritadi)</span>
+              </span>
             ) : (
               <button
                 onClick={() => {
@@ -1641,6 +1668,9 @@ export default function DirectorDashboard() {
               </div>
             </div>
           ))}
+          {popularServices.length === 0 && (
+            <p className="text-xs text-slate-400 text-center py-4 col-span-full">{l.noData}</p>
+          )}
         </div>
       </div>
 

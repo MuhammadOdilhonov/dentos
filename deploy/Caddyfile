@@ -1,0 +1,35 @@
+{
+    email {$ACME_EMAIL}
+}
+{$BACKEND_DOMAIN} {
+    encode zstd gzip
+    request_body {
+        max_size 520MB
+    }
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy same-origin
+        X-Frame-Options DENY
+        -Server
+    }
+    reverse_proxy api:8000
+}
+{$DOMAIN} {
+    encode zstd gzip
+    request_body {
+        max_size 520MB
+    }
+    header {
+        X-Content-Type-Options nosniff
+        Referrer-Policy same-origin
+        X-Frame-Options DENY
+        -Server
+    }
+    @backend path /api/* /admin/* /static/*
+    handle @backend {
+        reverse_proxy api:8000
+    }
+    handle {
+        reverse_proxy frontend:3000
+    }
+}

@@ -61,9 +61,10 @@ import {
   Square
 } from 'lucide-react';
 import { Patient } from '../lib/types';
-import { clinicApi } from '../lib/api';
+import { clinicApi, isDemoClinic } from '../lib/api';
 import { dentalMediaStore, StoredMediaItem } from '../lib/dentalMediaStore';
 import { useI18n } from '../lib/i18n';
+import PhotoProtocolStudio, { photoStudioHasImages } from './PhotoProtocolStudio';
 import DiagnocatDentalRadiologyViewer from './DiagnocatDentalRadiologyViewer';
 import DentalFileUploadModal from './DentalFileUploadModal';
 
@@ -1156,6 +1157,9 @@ export default function KeynoteDentalPhotoProtocol({
   // 2. Active Tab: 'rentgen' | 'foto' | 'skan'
   const [activeTab, setActiveTab] = useState<'rentgen' | 'foto' | 'skan'>(initialTab);
 
+  // Fayl bor-yo'qligi indikatori (Рентген/Фото/Скан tablarida yashil ✓ ko'rsatish uchun).
+  const [mediaHas, setMediaHas] = useState<{ rentgen: boolean; foto: boolean; skan: boolean }>({ rentgen: false, foto: false, skan: false });
+
   useEffect(() => {
     if (initialTab) {
       setActiveTab(initialTab);
@@ -1278,7 +1282,7 @@ export default function KeynoteDentalPhotoProtocol({
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } else {
-      window.open('http://127.0.0.1:8000/api/media-sample/rentgen/', '_blank');
+      window.open('/api/media-sample/rentgen/', '_blank');
     }
   };
 
@@ -1293,7 +1297,7 @@ export default function KeynoteDentalPhotoProtocol({
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } else {
-      window.open('http://127.0.0.1:8000/api/media-sample/scan/', '_blank');
+      window.open('/api/media-sample/scan/', '_blank');
     }
   };
 
@@ -1358,6 +1362,7 @@ export default function KeynoteDentalPhotoProtocol({
 
   // Upload Rentgen file (supports both standard images and ZIP like "Одилхонова Муслимахон.zip")
   const handleUploadRentgenFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    // Demo: yuklash ishlaydi, lekin saqlanmaydi (store darajasida demo uchun skip).
     const file = e.target.files?.[0];
     if (!file || !currentPatient) return;
 
@@ -1447,6 +1452,30 @@ export default function KeynoteDentalPhotoProtocol({
   const [scanIsWireframe, setScanIsWireframe] = useState(false);
   const [scanActiveFileName, setScanActiveFileName] = useState<string>('');
   const [scanErrorMsg, setScanErrorMsg] = useState<string | null>(null);
+  // A→B bemor almashuvida eski (uzoq davom etgan) skan ishlovining natijasi YANGI
+  // bemorga render/yozilmasligi uchun eng oxirgi bemor id sini kuzatamiz.
+  const latestScanPatientIdRef = useRef<number | undefined>(currentPatient?.id);
+  useEffect(() => { latestScanPatientIdRef.current = currentPatient?.id; }, [currentPatient?.id]);
+
+  // Tab indikatorlari: har bo'limda (Рентген/Фото/Скан) fayl bor-yo'qligini aniqlaydi.
+  useEffect(() => {
+    if (!currentPatient) { setMediaHas({ rentgen: false, foto: false, skan: false }); return; }
+    let cancelled = false;
+    const id = currentPatient.id;
+    const rentgen = xrays.length > 0;
+    const scan3d = clinicApi.getPatient3DScan(id);
+    const skan = !!(activeStoredScan && activeStoredScan.file) || scanMeshes.length > 0 || !!(scan3d && scan3d.hasScan);
+    // Foto: eski localStorage hujjat bloklari (tez, sinxron)
+    const legacyDoc = clinicApi.getPatientPhotoDoc(id) || [];
+    const legacyFoto = Array.isArray(legacyDoc) && legacyDoc.some((b: any) =>
+      (b?.kind === 'image' && b?.url) || (b?.type === 'image' && b?.src) ||
+      (Array.isArray(b?.elements) && b.elements.some((e: any) => e?.type === 'image' && e?.src))
+    );
+    setMediaHas({ rentgen, foto: legacyFoto, skan });
+    // Foto: yangi studio hujjati (IndexedDB) — asinxron tekshiriladi
+    photoStudioHasImages(id).then((has) => { if (!cancelled && has) setMediaHas((m) => ({ ...m, foto: true })); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [currentPatient, xrays, activeStoredScan, scanMeshes]);
 
   // Three.js instances ref for the embedded 3D viewer
   const threeScanRef = useRef<{
@@ -1524,12 +1553,16 @@ export default function KeynoteDentalPhotoProtocol({
     window.addEventListener('resize', handleResize);
 
     // If current patient already has a stored scan in IndexedDB, auto-load it!
+    // persist=false — bu FAQAT ko'rsatish; qayta yozib fayl soni/kvotani oshirmaymiz.
     if (currentPatient) {
       dentalMediaStore.getScan(currentPatient.id).then((stored) => {
         if (stored && stored.file) {
-          process3DScanFile(stored.file, stored.fileName);
+          process3DScanFile(stored.file, stored.fileName, false);
+        } else if (isDemoClinic() && clinicApi.getPatient3DScan(currentPatient.id).hasScan) {
+          // Demo: saqlangan fayl yo'q, lekin namuna skan belgilangan — namunani avto-yuklaymiz
+          loadSampleScanZip();
         }
-      });
+      }).catch((err) => { console.error('Saqlangan skan yuklanmadi:', err); });
     }
 
     return () => {
@@ -1638,7 +1671,11 @@ export default function KeynoteDentalPhotoProtocol({
   };
 
   // Process 3D Scan file (ZIP containing STL or single STL)
-  const process3DScanFile = async (file: File | Blob, explicitName?: string) => {
+  // persist=true FAQAT yangi fayl yuklanganda (yoki namuna) kerak. Saqlangan skanni
+  // KO'RSATISH uchun chaqirilsa persist=false — aks holda oddiy ochish/tab/reload har
+  // safar faylni QAYTA yozib, fayl soni va xotira kvotasini oshiradi.
+  const process3DScanFile = async (file: File | Blob, explicitName?: string, persist: boolean = true) => {
+    const startPatientId = currentPatient?.id;
     const fileName = explicitName || (file as File).name || '3d_scan.zip';
     setScanActiveFileName(fileName);
     setScanErrorMsg(null);
@@ -1647,6 +1684,8 @@ export default function KeynoteDentalPhotoProtocol({
 
     try {
       const arrayBuffer = await file.arrayBuffer();
+      // Bemor almashgan bo'lsa — eski faylni yangi bemor sahnasiga render/yozmaymiz.
+      if (latestScanPatientIdRef.current !== startPatientId) return;
 
       if (fileName.toLowerCase().endsWith('.zip') || (file as File).type?.includes('zip')) {
         setScanStatusProgress('ZIP arxiv dekompressiya qilinmoqda (STL modellar)...');
@@ -1673,10 +1712,12 @@ export default function KeynoteDentalPhotoProtocol({
         }
 
         setScanStatusProgress(`${stlFiles.length} ta STL modeli 3D sahnada render qilinmoqda...`);
+        if (latestScanPatientIdRef.current !== startPatientId) return;
         await loadScanStlBuffers(stlFiles);
 
-        // Save into IndexedDB and clinicApi
-        if (currentPatient) {
+        // Save into IndexedDB and clinicApi — FAQAT yangi yuklash (persist) va bemor
+        // hali ham o'sha bo'lsa. Saqlangan skanni ko'rsatishda (persist=false) YOZMAYMIZ.
+        if (persist && currentPatient && latestScanPatientIdRef.current === startPatientId) {
           await dentalMediaStore.saveScan(currentPatient.id, file, fileName, stlFiles.map((s) => s.name));
           clinicApi.savePatient3DScan(currentPatient.id, {
             hasScan: true,
@@ -1686,8 +1727,9 @@ export default function KeynoteDentalPhotoProtocol({
           });
         }
       } else if (fileName.toLowerCase().endsWith('.stl')) {
+        if (latestScanPatientIdRef.current !== startPatientId) return;
         await loadScanStlBuffers([{ name: fileName, buffer: arrayBuffer, size: file.size }]);
-        if (currentPatient) {
+        if (persist && currentPatient && latestScanPatientIdRef.current === startPatientId) {
           await dentalMediaStore.saveScan(currentPatient.id, file, fileName, [fileName]);
           clinicApi.savePatient3DScan(currentPatient.id, {
             hasScan: true,
@@ -1710,7 +1752,7 @@ export default function KeynoteDentalPhotoProtocol({
     setScanLoading(true);
     setScanStatusProgress('160926-Nasarullaev Shaxruh loyihasi yuklanmoqda (57 MB STL)...');
     try {
-      const res = await fetch('http://127.0.0.1:8000/api/media-sample/scan/');
+      const res = await fetch('/api/media-sample/scan/');
       if (!res.ok) throw new Error('Namuna faylini yuklab bo‘lmadi');
       const blob = await res.blob();
       await process3DScanFile(blob, '160926-Nasarullaev Shaxruh проект.zip');
@@ -1829,6 +1871,21 @@ export default function KeynoteDentalPhotoProtocol({
     // Zero fake teeth photos, zero dummy text!
     setSlides([{ id: 'slide_1', elements: [] }]);
     setActiveSlideIndex(0);
+  }, [currentPatient?.id]);
+
+  // BAZADAN foto-protokol hujjatini yuklaymiz (admin/boshqa qurilma ham ko'rsin).
+  // Backend doc mavjud bo'lsa — u asosiy manba (localStorage ustidan).
+  useEffect(() => {
+    if (!currentPatient) return;
+    let cancelled = false;
+    clinicApi.fetchPatientPhotoDoc(currentPatient.id).then((backendDoc) => {
+      if (cancelled || !backendDoc) return;
+      if (Array.isArray(backendDoc) && backendDoc.length > 0 && (backendDoc[0] as any).elements !== undefined) {
+        setSlides(backendDoc as KeynoteSlide[]);
+        setActiveSlideIndex(0);
+      }
+    });
+    return () => { cancelled = true; };
   }, [currentPatient?.id]);
 
   // Debounced Auto-Save with Cloud Status Indicator
@@ -1953,6 +2010,7 @@ export default function KeynoteDentalPhotoProtocol({
   };
 
   const handleUploadPhotos = (e: React.ChangeEvent<HTMLInputElement>) => {
+    // Demo: yuklash ishlaydi, lekin saqlanmaydi (store darajasida demo uchun skip).
     const files = e.target.files;
     if (!files || files.length === 0) return;
 
@@ -2115,6 +2173,7 @@ export default function KeynoteDentalPhotoProtocol({
     e.preventDefault();
 
     const startX = e.clientX;
+    const startY = e.clientY;
     const currentEl = slides[activeSlideIndex]?.elements.find((el) => el.id === elementId);
     if (!currentEl || !slideContainerRef.current) return;
 
@@ -2122,8 +2181,11 @@ export default function KeynoteDentalPhotoProtocol({
     const initW = currentEl.width;
 
     const onMouseMove = (ev: MouseEvent) => {
-      const dx = ((ev.clientX - startX) / rect.width) * 100;
-      const nextW = Math.max(15, Math.min(100, Math.round(initW + dx)));
+      // Keynote uslubi: burchakni diagonal (gorizontal + vertikal) tortganda ham ishlaydi
+      const dxPct = ((ev.clientX - startX) / rect.width) * 100;
+      const dyPct = ((ev.clientY - startY) / rect.height) * 100;
+      const delta = (dxPct + dyPct) / 2;
+      const nextW = Math.max(10, Math.min(100, Math.round(initW + delta)));
 
       setSlides((prev) =>
         prev.map((s, idx) => {
@@ -2194,28 +2256,14 @@ export default function KeynoteDentalPhotoProtocol({
               <span>{t.back}</span>
             </button>
           )}
-          <span className="text-xs font-black text-blue-600 dark:text-sky-400 uppercase tracking-wider font-mono">
+          <span className="flex items-center gap-1.5 text-xs font-black text-blue-600 dark:text-sky-400 uppercase tracking-wider font-mono">
+            <img src="/logo.png" alt="" className="w-5 h-5 object-contain" />
             DentOS
           </span>
         </div>
 
         {/* 3 Mode Tabs [Rentgen] [Foto] [Skan] + Cloud Save Status */}
         <div className="flex flex-wrap items-center gap-3">
-          {/* Cloud Auto-Save Status Indicator */}
-          <div className="flex items-center space-x-2">
-            {saveStatus === 'saving' ? (
-              <div className="flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-bold bg-amber-500/10 text-amber-500 border border-amber-500/20 animate-pulse">
-                <Cloud className="w-3.5 h-3.5 animate-bounce text-amber-500" />
-                <span>{t.savingToCloud}</span>
-              </div>
-            ) : (
-              <div className="flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-500/10 text-emerald-500 border border-emerald-500/20">
-                <Check className="w-3.5 h-3.5 text-emerald-500 stroke-[3]" />
-                <span>{t.savedToCloud}</span>
-              </div>
-            )}
-          </div>
-
           <div className="flex items-center bg-slate-100 dark:bg-[#0F172A] p-1 rounded-xl border border-slate-200 dark:border-slate-800">
             <button
               onClick={() => setActiveTab('rentgen')}
@@ -2227,6 +2275,7 @@ export default function KeynoteDentalPhotoProtocol({
             >
               <Activity className="w-3.5 h-3.5" />
               <span>{t.tabRentgen}</span>
+              {mediaHas.rentgen && <Check className={`w-3.5 h-3.5 ${activeTab === 'rentgen' ? 'text-white' : 'text-emerald-500'}`} strokeWidth={3} />}
             </button>
             <button
               onClick={() => setActiveTab('foto')}
@@ -2238,6 +2287,7 @@ export default function KeynoteDentalPhotoProtocol({
             >
               <Camera className="w-3.5 h-3.5" />
               <span>{t.tabFoto}</span>
+              {mediaHas.foto && <Check className={`w-3.5 h-3.5 ${activeTab === 'foto' ? 'text-white' : 'text-emerald-500'}`} strokeWidth={3} />}
             </button>
             <button
               onClick={() => setActiveTab('skan')}
@@ -2249,6 +2299,7 @@ export default function KeynoteDentalPhotoProtocol({
             >
               <Box className="w-3.5 h-3.5" />
               <span>{t.tabSkan}</span>
+              {mediaHas.skan && <Check className={`w-3.5 h-3.5 ${activeTab === 'skan' ? 'text-white' : 'text-emerald-500'}`} strokeWidth={3} />}
             </button>
           </div>
         </div>
@@ -2759,693 +2810,7 @@ export default function KeynoteDentalPhotoProtocol({
       {/* ========================================================= */}
       {/* 5. TAB 3: FOTO PROTOKOL (APPLE KEYNOTE STUDIO 4:3)         */}
       {/* ========================================================= */}
-      {activeTab === 'foto' && (
-        <div className="space-y-4">
-          {/* Studio Top Ribbon Toolbar */}
-          <div className="bg-white dark:bg-[#1E293B] p-3 rounded-2xl border border-slate-200 dark:border-[#334155] shadow-xs flex flex-wrap items-center justify-between gap-3 sticky top-4 z-20">
-            {/* Left: Insertion tools */}
-            <div className="flex flex-wrap items-center gap-2">
-              {/* Upload Photo Button */}
-              <label className="px-3.5 py-1.5 rounded-xl text-xs font-bold bg-blue-600 text-white hover:bg-blue-700 transition flex items-center space-x-1.5 cursor-pointer shadow-xs">
-                <Upload className="w-3.5 h-3.5" />
-                <span>{t.fotoUploadBtn}</span>
-                <input
-                  type="file"
-                  multiple
-                  accept="image/*"
-                  onChange={handleUploadPhotos}
-                  className="hidden"
-                />
-              </label>
-
-              {/* Add Text */}
-              <button
-                onClick={addTextElement}
-                className="px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-100 dark:bg-[#0F172A] hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200 transition flex items-center space-x-1.5 shadow-2xs"
-                title={t.addTextTooltip}
-              >
-                <Type className="w-3.5 h-3.5 text-blue-500" />
-                <span>{t.fotoTextBtn}</span>
-              </button>
-
-              {/* Add Heading */}
-              <button
-                onClick={addHeadingElement}
-                className="px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-100 dark:bg-[#0F172A] hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200 transition flex items-center space-x-1.5 shadow-2xs"
-                title={t.addHeadingTooltip}
-              >
-                <Heading1 className="w-3.5 h-3.5 text-indigo-500" />
-                <span>{t.fotoHeadingBtn}</span>
-              </button>
-
-              {/* Add Clinical Badge */}
-              <button
-                onClick={() => addBadgeElement('Tashxis', 'blue')}
-                className="px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-100 dark:bg-[#0F172A] hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-800 dark:text-slate-200 transition flex items-center space-x-1.5 shadow-2xs"
-                title={t.addBadgeTooltip}
-              >
-                <Tag className="w-3.5 h-3.5 text-emerald-500" />
-                <span>{t.fotoBadgeBtn}</span>
-              </button>
-
-              {/* Add Slide */}
-              <button
-                onClick={addSlide}
-                className="px-3 py-1.5 rounded-xl text-xs font-bold bg-emerald-50 dark:bg-emerald-950/60 hover:bg-emerald-100 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 transition flex items-center space-x-1.5 shadow-2xs"
-                title={t.addSlideTooltip}
-              >
-                <Plus className="w-3.5 h-3.5" />
-                <span>{t.fotoSlideBtn}</span>
-              </button>
-            </div>
-
-            {/* Right: Slide Counter, Auto-Save Status, Print */}
-            <div className="flex items-center space-x-3">
-              {/* Cloud Save Status */}
-              <div className="flex items-center space-x-1.5 px-3 py-1 rounded-full text-xs font-bold transition">
-                {saveStatus === 'saving' ? (
-                  <div className="flex items-center space-x-1.5 text-amber-500 animate-pulse bg-amber-500/10 px-2.5 py-0.5 rounded-full border border-amber-500/20">
-                    <Cloud className="w-3.5 h-3.5 animate-bounce" />
-                    <span>{t.savingToCloud}</span>
-                  </div>
-                ) : (
-                  <div className="flex items-center space-x-1.5 text-emerald-600 dark:text-emerald-400 bg-emerald-500/10 px-2.5 py-0.5 rounded-full border border-emerald-500/20">
-                    <Check className="w-3.5 h-3.5 stroke-[3]" />
-                    <span>{t.savedToCloud}</span>
-                  </div>
-                )}
-              </div>
-
-              <span className="text-[11px] font-mono font-bold text-slate-500 dark:text-slate-400 bg-slate-100 dark:bg-slate-800 px-2 py-1 rounded-lg">
-                5:3 format • {activeSlideIndex + 1} / {slides.length}
-              </span>
-
-              <button
-                onClick={() => window.print()}
-                className="px-3 py-1.5 rounded-xl text-xs font-bold bg-slate-100 dark:bg-[#0F172A] hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 transition flex items-center space-x-1.5 shadow-2xs"
-                title={t.printTooltip}
-              >
-                <Printer className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">{t.fotoPrintBtn}</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Keynote Presentation Workspace: Left Slide Thumbnails + Center 5:3 Canvas */}
-          <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
-            {/* LEFT: SLIDE NAVIGATOR (Thumbnails) */}
-            <div className="lg:col-span-3 bg-white dark:bg-[#1E293B] p-3 rounded-2xl border border-slate-200 dark:border-[#334155] shadow-xs space-y-3">
-              <div className="flex items-center justify-between pb-2 border-b border-slate-100 dark:border-slate-800">
-                <span className="text-xs font-black uppercase tracking-wider text-slate-500 dark:text-slate-400 flex items-center gap-1.5">
-                  <Layers className="w-3.5 h-3.5 text-blue-500" />
-                  <span>{t.fotoSlidesTitle} ({slides.length})</span>
-                </span>
-                <button
-                  onClick={addSlide}
-                  className="p-1 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-blue-600 dark:text-sky-400 transition"
-                  title={t.addSlideTooltip}
-                >
-                  <Plus className="w-4 h-4" />
-                </button>
-              </div>
-
-              <div className="space-y-2.5 max-h-[620px] overflow-y-auto pr-1">
-                {slides.map((slide, sIdx) => {
-                  const isActive = sIdx === activeSlideIndex;
-                  return (
-                    <div
-                      key={slide.id}
-                      onClick={() => {
-                        setActiveSlideIndex(sIdx);
-                        setSelectedElementId(null);
-                      }}
-                      className={`group relative p-2 rounded-xl border transition cursor-pointer ${
-                        isActive
-                          ? 'bg-blue-50/60 dark:bg-blue-950/40 border-blue-500 ring-2 ring-blue-500/20 shadow-xs'
-                          : 'bg-slate-50 dark:bg-slate-900/60 border-slate-200 dark:border-slate-800 hover:border-slate-300 dark:hover:border-slate-700'
-                      }`}
-                    >
-                      {/* Thumbnail Header */}
-                      <div className="flex items-center justify-between mb-1.5">
-                        <span className="text-[11px] font-black font-mono text-slate-500 dark:text-slate-400">
-                          #{sIdx + 1}
-                        </span>
-
-                        <div className="flex items-center space-x-1 opacity-0 group-hover:opacity-100 transition">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              duplicateSlide(sIdx);
-                            }}
-                            className="p-1 rounded hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-500 hover:text-slate-800 dark:hover:text-slate-200 transition"
-                            title={t.duplicateSlideTooltip}
-                          >
-                            <Copy className="w-3 h-3" />
-                          </button>
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              deleteSlide(sIdx);
-                            }}
-                            className="p-1 rounded hover:bg-rose-100 dark:hover:bg-rose-950 text-slate-500 hover:text-rose-600 transition"
-                            title={t.deleteSlideTooltip}
-                          >
-                            <Trash2 className="w-3 h-3" />
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* 5:3 Miniature Preview */}
-                      <div className="aspect-[5/3] w-full bg-white dark:bg-slate-950 rounded-lg border border-slate-200 dark:border-slate-800 overflow-hidden relative p-1 shadow-2xs">
-                        {slide.elements.length === 0 ? (
-                          <div className="w-full h-full flex items-center justify-center text-[10px] text-slate-300 dark:text-slate-700 font-mono">{t.emptyLabel}</div>
-                        ) : (
-                          slide.elements.slice(0, 4).map((el, elIdx) => (
-                            <div
-                              key={elIdx}
-                              className="absolute rounded bg-slate-300 dark:bg-slate-700 opacity-60"
-                              style={{
-                                left: `${el.x}%`,
-                                top: `${el.y}%`,
-                                width: `${Math.min(30, el.width)}%`,
-                                height: '20%'
-                              }}
-                            />
-                          ))
-                        )}
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            {/* CENTER: 4:3 KEYNOTE SLIDE CANVAS */}
-            <div className="lg:col-span-9 flex flex-col items-center">
-              {/* Slide 4:3 Canvas */}
-              <div
-                ref={slideContainerRef}
-                onClick={(e) => {
-                  if (e.target === slideContainerRef.current) {
-                    setSelectedElementId(null);
-                  }
-                }}
-                className="relative w-full aspect-[5/3] max-w-5xl bg-white dark:bg-[#0F172A] rounded-2xl shadow-2xl border border-slate-300 dark:border-slate-700 overflow-hidden select-none transition-all"
-                style={{
-                  aspectRatio: '5 / 3' // Pure 4:3 horizontal landscape
-                }}
-              >
-                {/* Subtle Slide Header Watermark / Meta */}
-                <div className="absolute top-3 left-4 right-4 flex items-center justify-between text-[11px] text-slate-400 select-none pointer-events-none z-0">
-                  <div className="flex items-center space-x-2">
-                    <span className="font-black text-blue-600">DentOS KEYNOTE PROTOCOL</span>
-                    <span>•</span>
-                    <span className="font-semibold">{currentPatient?.full_name || 'Bemor'}</span>
-                  </div>
-                  <span className="font-mono text-[10px] bg-slate-100 dark:bg-slate-800 px-2 py-0.5 rounded">
-                    {t.slideLabel} {activeSlideIndex + 1}
-                  </span>
-                </div>
-
-                {/* If slide has NO elements: CLEAN EMPTY STATE (No fake teeth, no dummy text) */}
-                {(!slides[activeSlideIndex] || slides[activeSlideIndex].elements.length === 0) && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center p-8 text-center pointer-events-auto">
-                    <div className="w-16 h-16 rounded-2xl bg-blue-50 dark:bg-blue-950/60 border border-blue-200 dark:border-blue-800/80 flex items-center justify-center text-blue-500 mb-3 shadow-inner">
-                      <Camera className="w-8 h-8 stroke-[1.5]" />
-                    </div>
-                    <h3 className="text-base font-bold text-slate-800 dark:text-slate-200">
-                      {t.fotoEmptySlideTitle}
-                    </h3>
-                    <p className="text-xs text-slate-500 dark:text-slate-400 mt-1 max-w-sm leading-relaxed">
-                      {t.fotoEmptySlideDesc}
-                    </p>
-                    <div className="mt-4 flex items-center space-x-2">
-                      <label className="px-4 py-2 rounded-xl text-xs font-bold bg-blue-600 hover:bg-blue-700 text-white transition flex items-center space-x-1.5 cursor-pointer shadow-md shadow-blue-500/20">
-                        <Upload className="w-4 h-4" />
-                        <span>{t.fotoUploadBtn}</span>
-                        <input
-                          type="file"
-                          multiple
-                          accept="image/*"
-                          onChange={handleUploadPhotos}
-                          className="hidden"
-                        />
-                      </label>
-                      <button
-                        onClick={addTextElement}
-                        className="px-3.5 py-2 rounded-xl text-xs font-bold bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 transition"
-                      >
-                        + {t.fotoTextBtn}
-                      </button>
-                    </div>
-                  </div>
-                )}
-
-                {/* SLIDE ELEMENTS */}
-                {slides[activeSlideIndex]?.elements.map((el) => {
-                  const isSelected = selectedElementId === el.id;
-
-                  return (
-                    <div
-                      key={el.id}
-                      onMouseDown={(e) => handleElementMouseDown(e, el.id)}
-                      className={`absolute group cursor-move transition-shadow ${
-                        isSelected
-                          ? 'ring-2 ring-blue-500 shadow-xl z-20'
-                          : 'hover:ring-1 hover:ring-blue-300 dark:hover:ring-blue-700 z-10'
-                      }`}
-                      style={{
-                        left: `${el.x}%`,
-                        top: `${el.y}%`,
-                        width: `${el.width}%`,
-                        touchAction: 'none'
-                      }}
-                    >
-                      {/* Floating Control Ribbon when Element is Selected */}
-                      {isSelected && (
-                        <div
-                          onMouseDown={(e) => e.stopPropagation()}
-                          className="absolute -top-11 left-0 flex items-center space-x-1 p-1 bg-slate-900/95 text-white rounded-xl shadow-2xl border border-slate-700 text-xs z-30 animate-in fade-in zoom-in-95 duration-100"
-                        >
-                          {/* Image Specific Controls: Crop & Rotate */}
-                          {el.type === 'image' && (
-                            <>
-                              <button
-                                onClick={() => startCropping(el)}
-                                className="px-2 py-1 rounded-lg hover:bg-slate-800 text-sky-400 font-bold flex items-center space-x-1 transition"
-                                title={t.cropAction}
-                              >
-                                <Scissors className="w-3.5 h-3.5" />
-                                <span>{t.cropAction}</span>
-                              </button>
-                              <button
-                                onClick={() =>
-                                  updateElement(el.id, {
-                                    rotation: (((el.rotation || 0) + 90) % 360)
-                                  })
-                                }
-                                className="p-1 rounded-lg hover:bg-slate-800 text-slate-200 transition"
-                                title={t.rotateAction}
-                              >
-                                <RotateCw className="w-3.5 h-3.5" />
-                              </button>
-                            </>
-                          )}
-
-                          {/* Text/Heading Controls: Font size, Bold, Italic */}
-                          {(el.type === 'text' || el.type === 'heading') && (
-                            <>
-                              <button
-                                onClick={() => updateElement(el.id, { bold: !el.bold })}
-                                className={`px-2 py-1 rounded-lg font-bold transition ${
-                                  el.bold ? 'bg-blue-600 text-white' : 'hover:bg-slate-800 text-slate-200'
-                                }`}
-                                title={t.boldAction}
-                              >
-                                B
-                              </button>
-                              <button
-                                onClick={() => updateElement(el.id, { italic: !el.italic })}
-                                className={`px-2 py-1 rounded-lg italic font-serif transition ${
-                                  el.italic ? 'bg-blue-600 text-white' : 'hover:bg-slate-800 text-slate-200'
-                                }`}
-                                title={t.italicAction}
-                              >
-                                I
-                              </button>
-                              <button
-                                onClick={() =>
-                                  updateElement(el.id, {
-                                    fontSize: Math.max(12, (el.fontSize || 16) - 2)
-                                  })
-                                }
-                                className="px-1.5 py-1 rounded-lg hover:bg-slate-800 text-slate-300 font-mono text-[10px]"
-                                title={t.decreaseFont}
-                              >
-                                A-
-                              </button>
-                              <button
-                                onClick={() =>
-                                  updateElement(el.id, {
-                                    fontSize: Math.min(48, (el.fontSize || 16) + 2)
-                                  })
-                                }
-                                className="px-1.5 py-1 rounded-lg hover:bg-slate-800 text-slate-300 font-mono text-[10px]"
-                                title={t.increaseFont}
-                              >
-                                A+
-                              </button>
-                            </>
-                          )}
-
-                          {/* Badge Controls: Color changer */}
-                          {el.type === 'badge' && (
-                            <div className="flex items-center space-x-1 px-1">
-                              {(['blue', 'emerald', 'amber', 'rose', 'purple'] as const).map((color) => (
-                                <button
-                                  key={color}
-                                  onClick={() => updateElement(el.id, { badgeColor: color })}
-                                  className={`w-3.5 h-3.5 rounded-full border ${
-                                    color === 'blue'
-                                      ? 'bg-blue-500'
-                                      : color === 'emerald'
-                                      ? 'bg-emerald-500'
-                                      : color === 'amber'
-                                      ? 'bg-amber-500'
-                                      : color === 'rose'
-                                      ? 'bg-rose-500'
-                                      : 'bg-purple-500'
-                                  } ${el.badgeColor === color ? 'ring-2 ring-white' : ''}`}
-                                />
-                              ))}
-                            </div>
-                          )}
-
-                          {/* Width size adjuster */}
-                          <div className="h-3 w-px bg-slate-700 mx-1" />
-                          <button
-                            onClick={() =>
-                              updateElement(el.id, {
-                                width: Math.max(15, el.width - 5)
-                              })
-                            }
-                            className="px-1.5 py-1 rounded-lg hover:bg-slate-800 text-slate-300 text-[10px] font-mono"
-                            title={t.decreaseWidth}
-                          >
-                            -5%
-                          </button>
-                          <button
-                            onClick={() =>
-                              updateElement(el.id, {
-                                width: Math.min(100, el.width + 5)
-                              })
-                            }
-                            className="px-1.5 py-1 rounded-lg hover:bg-slate-800 text-slate-300 text-[10px] font-mono"
-                            title={t.increaseWidth}
-                          >
-                            +5%
-                          </button>
-
-                          {/* Layer Arrange & Duplicate */}
-                          <div className="h-3 w-px bg-slate-700 mx-1" />
-                          <button
-                            onClick={() => duplicateElement(el.id)}
-                            className="p-1 rounded-lg hover:bg-slate-800 text-slate-300 transition"
-                            title={t.duplicateAction}
-                          >
-                            <Copy className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            onClick={() => bringForward(el.id)}
-                            className="p-1 rounded-lg hover:bg-slate-800 text-slate-300 transition"
-                            title={t.bringForwardAction}
-                          >
-                            <MoveUp className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            onClick={() => sendBackward(el.id)}
-                            className="p-1 rounded-lg hover:bg-slate-800 text-slate-300 transition"
-                            title={t.sendBackwardAction}
-                          >
-                            <MoveDown className="w-3.5 h-3.5" />
-                          </button>
-
-                          {/* Delete button */}
-                          <div className="h-3 w-px bg-slate-700 mx-1" />
-                          <button
-                            onClick={() => deleteElement(el.id)}
-                            className="p-1 rounded-lg hover:bg-rose-900/60 text-rose-400 transition"
-                            title={t.deleteAction}
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      )}
-
-                      {/* ELEMENT CONTENT BY TYPE */}
-                      {el.type === 'image' && (
-                        <div className="relative rounded-xl overflow-hidden bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
-                          <div
-                            className="w-full h-auto overflow-hidden flex items-center justify-center"
-                            style={{
-                              clipPath: el.crop
-                                ? `inset(${el.crop.top}% ${el.crop.right}% ${el.crop.bottom}% ${el.crop.left}%)`
-                                : undefined
-                            }}
-                          >
-                            <img
-                              src={el.src}
-                              alt={el.caption || 'Foto'}
-                              className="w-full h-auto object-contain select-none pointer-events-none"
-                              style={{
-                                transform: el.rotation ? `rotate(${el.rotation}deg)` : undefined
-                              }}
-                            />
-                          </div>
-
-                          {/* Editable Caption */}
-                          <div className="p-1.5 bg-white/90 dark:bg-slate-900/90 border-t border-slate-200 dark:border-slate-800">
-                            <input
-                              type="text"
-                              value={el.caption || ''}
-                              onChange={(e) => updateElement(el.id, { caption: e.target.value })}
-                              placeholder={t.imageCaptionPlaceholder}
-                              className="w-full text-xs font-medium text-slate-700 dark:text-slate-300 bg-transparent border-none focus:outline-hidden focus:ring-1 focus:ring-blue-400 rounded px-1"
-                            />
-                          </div>
-                        </div>
-                      )}
-
-                      {el.type === 'text' && (
-                        <div className="p-2.5 rounded-xl bg-white/90 dark:bg-slate-800/90 border border-slate-200 dark:border-slate-700 shadow-xs">
-                          <textarea
-                            value={el.content || ''}
-                            onChange={(e) => updateElement(el.id, { content: e.target.value })}
-                            placeholder={t.textPlaceholder}
-                            rows={2}
-                            style={{
-                              fontSize: `${el.fontSize || 14}px`,
-                              fontWeight: el.bold ? 'bold' : 'normal',
-                              fontStyle: el.italic ? 'italic' : 'normal',
-                              textAlign: el.align || 'left',
-                              color: el.color || undefined
-                            }}
-                            className="w-full bg-transparent border-none resize-none focus:outline-hidden text-slate-800 dark:text-slate-100"
-                          />
-                        </div>
-                      )}
-
-                      {el.type === 'heading' && (
-                        <div className="p-2 rounded-xl bg-white/80 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 shadow-xs">
-                          <input
-                            type="text"
-                            value={el.content || ''}
-                            onChange={(e) => updateElement(el.id, { content: e.target.value })}
-                            placeholder={t.headingPlaceholder}
-                            style={{
-                              fontSize: `${el.fontSize || 22}px`,
-                              fontWeight: el.bold ? 'bold' : 'normal',
-                              fontStyle: el.italic ? 'italic' : 'normal',
-                              textAlign: el.align || 'left'
-                            }}
-                            className="w-full bg-transparent border-none focus:outline-hidden font-black text-slate-900 dark:text-white"
-                          />
-                        </div>
-                      )}
-
-                      {el.type === 'badge' && (
-                        <div
-                          className={`inline-flex items-center space-x-1 px-3 py-1 rounded-full text-xs font-black shadow-xs ${
-                            el.badgeColor === 'emerald'
-                              ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40'
-                              : el.badgeColor === 'amber'
-                              ? 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
-                              : el.badgeColor === 'rose'
-                              ? 'bg-rose-500/20 text-rose-400 border border-rose-500/40'
-                              : el.badgeColor === 'purple'
-                              ? 'bg-purple-500/20 text-purple-400 border border-purple-500/40'
-                              : 'bg-blue-500/20 text-blue-400 border border-blue-500/40'
-                          }`}
-                        >
-                          <span className="w-1.5 h-1.5 rounded-full bg-current" />
-                          <input
-                            type="text"
-                            value={el.badgeText || ''}
-                            onChange={(e) => updateElement(el.id, { badgeText: e.target.value })}
-                            className="bg-transparent border-none focus:outline-hidden font-bold w-24 text-center text-xs"
-                          />
-                        </div>
-                      )}
-
-                      {/* Corner Drag-Resize Handle (Bottom-Right) */}
-                      {isSelected && (
-                        <div
-                          onMouseDown={(e) => handleResizeMouseDown(e, el.id)}
-                          className="absolute -bottom-2 -right-2 w-5 h-5 rounded-full bg-blue-600 border-2 border-white shadow-md cursor-se-resize flex items-center justify-center text-white z-30"
-                          title={t.resizeTooltip}
-                        >
-                          <Square className="w-2.5 h-2.5 fill-current" />
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-
-          {/* CROP STUDIO MODAL */}
-          {activeCropElementId && (
-            <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-4 animate-in fade-in duration-150">
-              <div className="w-full max-w-3xl bg-slate-900 rounded-3xl border border-slate-700 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-                {/* Modal Header */}
-                <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between">
-                  <div className="flex items-center space-x-2">
-                    <Scissors className="w-5 h-5 text-sky-400" />
-                    <h3 className="font-black text-sm text-white">{t.cropStudioTitle}</h3>
-                  </div>
-
-                  <div className="flex items-center space-x-1.5">
-                    <button
-                      onClick={() => setPresetCrop('1:1')}
-                      className="px-2.5 py-1 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
-                    >
-                      1:1 Kvadrat
-                    </button>
-                    <button
-                      onClick={() => setPresetCrop('5:3')}
-                      className="px-2.5 py-1 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
-                    >
-                      5:3 Keynote
-                    </button>
-                    <button
-                      onClick={() => setPresetCrop('16:9')}
-                      className="px-2.5 py-1 rounded-lg text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
-                    >
-                      16:9 Format
-                    </button>
-                    <button
-                      onClick={resetCrop}
-                      className="px-2.5 py-1 rounded-lg text-xs font-bold bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/30 transition"
-                    >
-                      Asl holat
-                    </button>
-                  </div>
-                </div>
-
-                {/* Crop Workspace: Image Preview with Sliders */}
-                <div className="p-6 flex-1 overflow-y-auto grid grid-cols-1 md:grid-cols-3 gap-6 items-center">
-                  {/* Left 2 Cols: Live Visual Preview */}
-                  <div className="md:col-span-2 flex flex-col items-center justify-center bg-slate-950 rounded-2xl p-4 border border-slate-800 min-h-[300px]">
-                    {(() => {
-                      const cropEl = slides[activeSlideIndex]?.elements.find((el) => el.id === activeCropElementId);
-                      if (!cropEl?.src) return null;
-
-                      return (
-                        <div className="relative max-w-full max-h-[360px] overflow-hidden rounded-xl border border-slate-700/80 shadow-lg">
-                          <img
-                            src={cropEl.src}
-                            alt="Crop Preview"
-                            className="max-h-[360px] w-auto object-contain select-none"
-                            style={{
-                              clipPath: `inset(${cropTemp.top}% ${cropTemp.right}% ${cropTemp.bottom}% ${cropTemp.left}%)`,
-                              transform: cropEl.rotation ? `rotate(${cropEl.rotation}deg)` : undefined
-                            }}
-                          />
-                        </div>
-                      );
-                    })()}
-                  </div>
-
-                  {/* Right Col: Sliders for 4 edges */}
-                  <div className="space-y-4 bg-slate-800/60 p-4 rounded-2xl border border-slate-700">
-                    <h4 className="text-xs font-black uppercase tracking-wider text-slate-400">
-                      {t.cropSettingsTitle}
-                    </h4>
-
-                    <div>
-                      <div className="flex justify-between text-xs text-slate-300 mb-1">
-                        <span>{t.cropTop}</span>
-                        <span className="font-mono text-sky-400 font-bold">{cropTemp.top}%</span>
-                      </div>
-                      <input
-                        type="range"
-                        min="0"
-                        max="45"
-                        value={cropTemp.top}
-                        onChange={(e) => setCropTemp((p) => ({ ...p, top: Number(e.target.value) }))}
-                        className="w-full accent-blue-500 cursor-pointer"
-                      />
-                    </div>
-
-                    <div>
-                      <div className="flex justify-between text-xs text-slate-300 mb-1">
-                        <span>{t.cropBottom}</span>
-                        <span className="font-mono text-sky-400 font-bold">{cropTemp.bottom}%</span>
-                      </div>
-                      <input
-                        type="range"
-                        min="0"
-                        max="45"
-                        value={cropTemp.bottom}
-                        onChange={(e) => setCropTemp((p) => ({ ...p, bottom: Number(e.target.value) }))}
-                        className="w-full accent-blue-500 cursor-pointer"
-                      />
-                    </div>
-
-                    <div>
-                      <div className="flex justify-between text-xs text-slate-300 mb-1">
-                        <span>{t.cropLeft}</span>
-                        <span className="font-mono text-sky-400 font-bold">{cropTemp.left}%</span>
-                      </div>
-                      <input
-                        type="range"
-                        min="0"
-                        max="45"
-                        value={cropTemp.left}
-                        onChange={(e) => setCropTemp((p) => ({ ...p, left: Number(e.target.value) }))}
-                        className="w-full accent-blue-500 cursor-pointer"
-                      />
-                    </div>
-
-                    <div>
-                      <div className="flex justify-between text-xs text-slate-300 mb-1">
-                        <span>{t.cropRight}</span>
-                        <span className="font-mono text-sky-400 font-bold">{cropTemp.right}%</span>
-                      </div>
-                      <input
-                        type="range"
-                        min="0"
-                        max="45"
-                        value={cropTemp.right}
-                        onChange={(e) => setCropTemp((p) => ({ ...p, right: Number(e.target.value) }))}
-                        className="w-full accent-blue-500 cursor-pointer"
-                      />
-                    </div>
-                  </div>
-                </div>
-
-                {/* Modal Footer */}
-                <div className="px-6 py-4 bg-slate-950 border-t border-slate-800 flex items-center justify-end space-x-3">
-                  <button
-                    onClick={() => setActiveCropElementId(null)}
-                    className="px-4 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-white hover:bg-slate-800 transition"
-                  >
-                    Bekor qilish
-                  </button>
-                  <button
-                    onClick={applyCrop}
-                    className="flex items-center space-x-1.5 px-5 py-2 rounded-xl text-xs font-black bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-500/20 transition"
-                  >
-                    <Check className="w-4 h-4" />
-                    <span>{t.cropSaveBtn}</span>
-                  </button>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
+      {activeTab === 'foto' && currentPatient && <PhotoProtocolStudio key={currentPatient.id} patientId={currentPatient.id} patientName={currentPatient.full_name} />}
 
       {/* Dedicated File Upload Modals with Progress Bar and Store */}
       <DentalFileUploadModal
@@ -3503,3 +2868,4 @@ export default function KeynoteDentalPhotoProtocol({
     </div>
   );
 }
+

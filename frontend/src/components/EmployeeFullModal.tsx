@@ -27,37 +27,32 @@ import {
   Branch
 } from '../lib/types';
 import { useI18n } from '../lib/i18n';
+import { translate } from '../lib/locales';
 import { useAuth } from '../lib/auth';
+import PhoneInput, { parsePhone } from './PhoneInput';
 
 const PALETTE_COLORS = [
   '#F472B6', '#C084FC', '#7DD3FC', '#A5B4FC', '#8B5CF6', '#FB923C', '#FEF08A', '#FECDD3', '#0F172A', '#475569', '#F87171',
   '#DB2777', '#FBBF24', '#BAE6FD', '#FDA4AF', '#84CC16', '#86EFAC', '#34D399', '#14B8A6', '#65A30D', '#38BDF8', '#3B82F6'
 ];
 
-const COUNTRY_FLAGS = [
-  { code: 'UZ', flag: '🇺🇿', dial: '+998', name: 'O‘zbekiston' },
-  { code: 'RU', flag: '🇷🇺', dial: '+7', name: 'Россия' },
-  { code: 'KZ', flag: '🇰🇿', dial: '+7', name: 'Казахстан' },
-  { code: 'TJ', flag: '🇹🇯', dial: '+992', name: 'Таджикистан' },
-  { code: 'KG', flag: '🇰🇬', dial: '+996', name: 'Кыргызстан' },
-  { code: 'TR', flag: '🇹🇷', dial: '+90', name: 'Турция' },
-  { code: 'US', flag: '🇺🇸', dial: '+1', name: 'США' }
-];
-
-const DEFAULT_DAYS: { day: EmployeeDaySchedule['day']; labelUz: string; labelRu: string; labelEn: string }[] = [
-  { day: 'monday', labelUz: 'Dushanba', labelRu: 'Понедельник', labelEn: 'Monday' },
-  { day: 'tuesday', labelUz: 'Seshanba', labelRu: 'Вторник', labelEn: 'Tuesday' },
-  { day: 'wednesday', labelUz: 'Chorshanba', labelRu: 'Среда', labelEn: 'Wednesday' },
-  { day: 'thursday', labelUz: 'Payshanba', labelRu: 'Четверг', labelEn: 'Thursday' },
-  { day: 'friday', labelUz: 'Juma', labelRu: 'Пятница', labelEn: 'Friday' },
-  { day: 'saturday', labelUz: 'Shanba', labelRu: 'Суббота', labelEn: 'Saturday' },
-  { day: 'sunday', labelUz: 'Yakshanba', labelRu: 'Воскресенье', labelEn: 'Sunday' }
-];
+// Weekday → markaziy tk kaliti (tarjimalar lib/locales/ uz.ts / ru.ts / en.ts ichida)
+const DAY_KEY: Record<EmployeeDaySchedule['day'], string> = {
+  monday: 'mon', tuesday: 'tue', wednesday: 'wed', thursday: 'thu', friday: 'fri', saturday: 'sat', sunday: 'sun'
+};
+const DEFAULT_DAYS: { day: EmployeeDaySchedule['day']; labelUz: string; labelRu: string; labelEn: string }[] =
+  (Object.keys(DAY_KEY) as EmployeeDaySchedule['day'][]).map((day) => ({
+    day,
+    labelUz: translate('tk.' + DAY_KEY[day], 'uz'),
+    labelRu: translate('tk.' + DAY_KEY[day], 'ru'),
+    labelEn: translate('tk.' + DAY_KEY[day], 'en')
+  }));
 
 interface EmployeeFullModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSave: (employeeData: Partial<Employee>) => Promise<void>;
+  onDelete?: (id: number) => Promise<void>;
   employeeToEdit?: Employee | null;
   workplaces: WorkplaceItem[];
   specialties: SpecialtyItem[];
@@ -68,6 +63,7 @@ export default function EmployeeFullModal({
   isOpen,
   onClose,
   onSave,
+  onDelete,
   employeeToEdit,
   workplaces,
   specialties,
@@ -97,9 +93,7 @@ export default function EmployeeFullModal({
   const [firstName, setFirstName] = useState('');
   const [lastName, setLastName] = useState('');
   const [primaryPhone, setPrimaryPhone] = useState('');
-  const [primaryDial, setPrimaryDial] = useState('+998');
   const [extraPhone, setExtraPhone] = useState('');
-  const [extraDial, setExtraDial] = useState('+998');
   const [email, setEmail] = useState('');
   const [birthDate, setBirthDate] = useState('');
   const [specialty, setSpecialty] = useState('Терапевт');
@@ -117,8 +111,11 @@ export default function EmployeeFullModal({
   const [password, setPassword] = useState('');
   const [isPersonalNaryad, setIsPersonalNaryad] = useState(false);
   const [commissionRate, setCommissionRate] = useState<number>(35);
+  // Oylik (so'm) — admin / direktor o'rinbosari / kassir uchun (shifokorda odatda 0)
+  const [salaryRate, setSalaryRate] = useState<number>(0);
 
   const [isSaving, setIsSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   // Initialize form when opening
   useEffect(() => {
@@ -133,10 +130,9 @@ export default function EmployeeFullModal({
       setFirstName(fName);
       setLastName(lName);
 
-      // Phone
-      const ph = employeeToEdit.phone || '';
-      setPrimaryPhone(ph.replace(/^\+998\s?/, ''));
-      setExtraPhone((employeeToEdit.phone_extra || '').replace(/^\+998\s?/, ''));
+      // Phone (to'liq qiymat — davlat kodi PhoneInput ichida)
+      setPrimaryPhone(employeeToEdit.phone || '');
+      setExtraPhone(employeeToEdit.phone_extra || '');
 
       setEmail(employeeToEdit.email || '');
       setBirthDate(employeeToEdit.birth_date || '');
@@ -200,7 +196,8 @@ export default function EmployeeFullModal({
       setRole(employeeToEdit.role || 'doctor');
       setPassword(employeeToEdit.password || '123456');
       setIsPersonalNaryad(employeeToEdit.naryad_type === 'personal');
-      setCommissionRate(Number(employeeToEdit.commission_rate) || 35);
+      setCommissionRate(Number(employeeToEdit.commission_rate) || 0);
+      setSalaryRate(Number(employeeToEdit.salary_rate) || 0);
     } else {
       // New employee defaults
       setFirstName('');
@@ -243,6 +240,7 @@ export default function EmployeeFullModal({
       setPassword('123456');
       setIsPersonalNaryad(false);
       setCommissionRate(35);
+      setSalaryRate(0);
     }
     setActiveTab('main');
   }, [isOpen, employeeToEdit, workplaces, specialties]);
@@ -382,23 +380,23 @@ export default function EmployeeFullModal({
     );
   };
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  // Forma submit (masalan Enter bosilsa) — FAQAT keyingi bosqichga o'tadi, HECH QACHON saqlamaydi.
+  const handleFormSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-
-    // Prevent premature submit if user presses Enter on Step 1 or Step 2
     if (activeTab === 'main') {
       if (!firstName.trim()) {
         alert(tr('employee.pleaseEnterFirstName'));
         return;
       }
       setActiveTab(role === 'doctor' ? 'schedule' : 'access');
-      return;
-    }
-    if (activeTab === 'schedule' && role === 'doctor') {
+    } else if (activeTab === 'schedule' && role === 'doctor') {
       setActiveTab('access');
-      return;
     }
+    // 'access' (oxirgi bosqich) — hech narsa qilinmaydi: saqlash FAQAT "Saqlash" tugmasi orqali
+  };
 
+  // Haqiqiy saqlash — FAQAT "Saqlash" tugmasi bosilganda chaqiriladi
+  const handleFinalSave = async () => {
     if (!firstName.trim()) {
       alert(tr('employee.pleaseEnterFirstName2'));
       setActiveTab('main');
@@ -408,8 +406,8 @@ export default function EmployeeFullModal({
     setIsSaving(true);
     try {
       const full = `${firstName.trim()} ${lastName.trim()}`.trim();
-      const cleanPhone = primaryPhone.trim() ? (primaryPhone.startsWith('+') ? primaryPhone : `${primaryDial} ${primaryPhone}`) : '';
-      const cleanExtra = extraPhone.trim() ? (extraPhone.startsWith('+') ? extraPhone : `${extraDial} ${extraPhone}`) : '';
+      const cleanPhone = parsePhone(primaryPhone).national ? primaryPhone.trim() : '';
+      const cleanExtra = parsePhone(extraPhone).national ? extraPhone.trim() : '';
 
       // Clean and sanitize schedule details
       const cleanScheduleDetails = scheduleList.map((s) => {
@@ -494,7 +492,8 @@ export default function EmployeeFullModal({
         role,
         password: password.trim() || '123456',
         naryad_type: role === 'doctor' ? (isPersonalNaryad ? 'personal' : 'clinic') : 'clinic',
-        commission_rate: role === 'doctor' ? commissionRate : 0,
+        commission_rate: commissionRate || 0,
+        salary_rate: salaryRate || 0,
         is_active: employeeToEdit?.is_active ?? true
       };
 
@@ -507,11 +506,21 @@ export default function EmployeeFullModal({
     }
   };
 
-  const getDayLabel = (d: EmployeeDaySchedule) => {
-    if (language === 'uz') return d.labelUz;
-    if (language === 'en') return d.labelEn;
-    return d.labelRu;
+  const handleDelete = async () => {
+    if (!employeeToEdit || !onDelete) return;
+    if (typeof window !== 'undefined' && !window.confirm(tk('emp_delete_confirm'))) return;
+    setIsDeleting(true);
+    try {
+      await onDelete(employeeToEdit.id);
+      onClose();
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsDeleting(false);
+    }
   };
+
+  const getDayLabel = (d: EmployeeDaySchedule) => tk(DAY_KEY[d.day]);
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/75 backdrop-blur-sm flex items-center justify-center p-1 sm:p-2 md:p-3 animate-in fade-in duration-200">
@@ -609,7 +618,7 @@ export default function EmployeeFullModal({
         )}
 
         {/* FORM BODY */}
-        <form onSubmit={handleSubmit} className="flex-1 flex flex-col justify-between overflow-hidden">
+        <form onSubmit={handleFormSubmit} className="flex-1 flex flex-col justify-between overflow-hidden">
           <div className="flex-1 overflow-y-auto p-6 space-y-6">
             
             {/* ══════════════ TAB 1: ОСНОВНЫЕ ══════════════ */}
@@ -692,56 +701,24 @@ export default function EmployeeFullModal({
                     <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
                       {tk('phone_primary')}*
                     </label>
-                    <div className="flex items-center border border-slate-300 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-900/60 overflow-hidden focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent transition">
-                      <select
-                        disabled={isRestricted}
-                        value={primaryDial}
-                        onChange={(e) => setPrimaryDial(e.target.value)}
-                        className="bg-transparent px-3 py-2.5 text-sm font-bold border-r border-slate-200 dark:border-slate-700 outline-none cursor-pointer"
-                      >
-                        {COUNTRY_FLAGS.map((f) => (
-                          <option key={f.code} value={f.dial} className="dark:bg-slate-800">
-                            {f.flag} {f.dial}
-                          </option>
-                        ))}
-                      </select>
-                      <input
-                        type="text"
-                        disabled={isRestricted}
-                        placeholder="90 123-45-67"
-                        value={primaryPhone}
-                        onChange={(e) => setPrimaryPhone(e.target.value)}
-                        className="flex-1 px-3 py-2.5 bg-transparent text-sm font-medium outline-none disabled:opacity-60"
-                      />
-                    </div>
+                    <PhoneInput
+                      disabled={isRestricted}
+                      value={primaryPhone}
+                      onChange={setPrimaryPhone}
+                      className="w-full border border-slate-300 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-900/60 text-sm font-medium"
+                    />
                   </div>
 
                   <div>
                     <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
                       {tk('phone_extra')}
                     </label>
-                    <div className="flex items-center border border-slate-300 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-900/60 overflow-hidden focus-within:ring-2 focus-within:ring-blue-500 focus-within:border-transparent transition">
-                      <select
-                        disabled={isRestricted}
-                        value={extraDial}
-                        onChange={(e) => setExtraDial(e.target.value)}
-                        className="bg-transparent px-3 py-2.5 text-sm font-bold border-r border-slate-200 dark:border-slate-700 outline-none cursor-pointer"
-                      >
-                        {COUNTRY_FLAGS.map((f) => (
-                          <option key={f.code} value={f.dial} className="dark:bg-slate-800">
-                            {f.flag} {f.dial}
-                          </option>
-                        ))}
-                      </select>
-                      <input
-                        type="text"
-                        disabled={isRestricted}
-                        placeholder="91 987-65-43"
-                        value={extraPhone}
-                        onChange={(e) => setExtraPhone(e.target.value)}
-                        className="flex-1 px-3 py-2.5 bg-transparent text-sm font-medium outline-none disabled:opacity-60"
-                      />
-                    </div>
+                    <PhoneInput
+                      disabled={isRestricted}
+                      value={extraPhone}
+                      onChange={setExtraPhone}
+                      className="w-full border border-slate-300 dark:border-slate-700 rounded-xl bg-slate-50 dark:bg-slate-900/60 text-sm font-medium"
+                    />
                   </div>
                 </div>
 
@@ -862,6 +839,53 @@ export default function EmployeeFullModal({
                     ))}
                   </select>
                 </div>
+
+                {/* Oylik / Foiz — admin, direktor o'rinbosari, kassir uchun (shifokorda foiz access tabda) */}
+                {role !== 'doctor' && (
+                  <div className="p-4 rounded-2xl bg-emerald-50/70 dark:bg-emerald-950/20 border border-emerald-200/80 dark:border-emerald-800/50 space-y-3">
+                    <div>
+                      <h4 className="text-xs font-black uppercase tracking-wider text-emerald-800 dark:text-emerald-300 flex items-center gap-2">
+                        <Sparkles className="w-4 h-4" />
+                        <span>{tk('emp_comp_title')}</span>
+                      </h4>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">{tk('emp_comp_hint')}</p>
+                    </div>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">{tk('emp_salary_label')}</label>
+                        <div className="flex items-center border border-slate-300 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-900/60 overflow-hidden focus-within:ring-2 focus-within:ring-emerald-500 transition">
+                          <input
+                            type="number"
+                            min={0}
+                            step={100000}
+                            disabled={isRestricted}
+                            value={salaryRate || ''}
+                            onChange={(e) => setSalaryRate(Number(e.target.value) || 0)}
+                            placeholder="0"
+                            className="flex-1 px-4 py-2.5 bg-transparent text-sm font-black outline-none disabled:opacity-60"
+                          />
+                          <span className="px-4 py-2.5 bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold text-sm">{tk('k_11')}</span>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">{tk('emp_commission_label')}</label>
+                        <div className="flex items-center border border-slate-300 dark:border-slate-700 rounded-xl bg-white dark:bg-slate-900/60 overflow-hidden focus-within:ring-2 focus-within:ring-emerald-500 transition">
+                          <input
+                            type="number"
+                            min={0}
+                            max={100}
+                            disabled={isRestricted}
+                            value={commissionRate || ''}
+                            onChange={(e) => setCommissionRate(Number(e.target.value) || 0)}
+                            placeholder="0"
+                            className="flex-1 px-4 py-2.5 bg-transparent text-sm font-black outline-none disabled:opacity-60"
+                          />
+                          <span className="px-4 py-2.5 bg-slate-200 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold text-sm">%</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {/* Row 5: Пол & Указать фото */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-5 pt-2">
@@ -1264,8 +1288,19 @@ export default function EmployeeFullModal({
 
           {/* MODAL FOOTER: Step-by-step navigation (Keyingisi → Keyingisi → Oxirida Saqlash) */}
           <div className="px-6 py-4 bg-slate-50 dark:bg-slate-900/80 border-t border-slate-200 dark:border-slate-700 flex items-center justify-between">
-            {/* Left: Orqaga / Bekor qilish */}
-            <div>
+            {/* Left: Orqaga / Bekor qilish / O'chirish */}
+            <div className="flex items-center gap-2.5">
+              {employeeToEdit && onDelete && (
+                <button
+                  type="button"
+                  onClick={handleDelete}
+                  disabled={isDeleting || isSaving}
+                  className="flex items-center gap-1.5 px-4 py-2.5 rounded-xl border border-red-300 dark:border-red-900/60 bg-red-50 dark:bg-red-950/40 hover:bg-red-100 dark:hover:bg-red-950/70 text-xs sm:text-sm font-bold text-red-600 dark:text-red-400 transition disabled:opacity-50"
+                >
+                  <Trash2 className="w-4 h-4" />
+                  <span>{tk('emp_delete')}</span>
+                </button>
+              )}
               {activeTab === 'main' ? (
                 <button
                   type="button"
@@ -1323,9 +1358,10 @@ export default function EmployeeFullModal({
                   <ArrowRight className="w-4 h-4" />
                 </button>
               ) : (
-                /* FINAL STEP: Saqlash */
+                /* FINAL STEP: Saqlash — faqat shu tugma saqlaydi */
                 <button
-                  type="submit"
+                  type="button"
+                  onClick={handleFinalSave}
                   disabled={isSaving}
                   className="flex items-center space-x-2 px-7 py-2.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 active:scale-98 text-white text-xs sm:text-sm font-bold transition shadow-md shadow-emerald-500/20 disabled:opacity-50"
                 >

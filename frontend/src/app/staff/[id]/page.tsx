@@ -3,7 +3,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
-import { clinicApi } from '../../../lib/api';
+import { clinicApi, isDemoClinic } from '../../../lib/api';
 import {
   Employee,
   Appointment,
@@ -70,8 +70,7 @@ const AVAILABLE_CHAIRS = [
 ];
 
 export default function DoctorDetailPage() {
-  const { language, tr } = useI18n();
-  const lng = (language as Lang) || 'uz';
+  const { language, tr, tk } = useI18n();
   const som = tr('staffdict.som');
 
   const params = useParams();
@@ -100,6 +99,36 @@ export default function DoctorDetailPage() {
   // Patients search in Bemorlari tab
   const [patSearch, setPatSearch] = useState('');
 
+  // Payroll (oylik) — davr bo'yicha to'langan/to'lanmagan holati (localStorage)
+  const monthKey = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  const [payrollPaid, setPayrollPaid] = useState<Record<string, boolean>>({});
+  const [salaryPeriod, setSalaryPeriod] = useState<string>(monthKey(new Date()));
+  const payrollPeriods = useMemo(() => {
+    const locale = language === 'uz' ? 'uz-UZ' : language === 'en' ? 'en-US' : 'ru-RU';
+    const arr: { key: string; label: string }[] = [];
+    const now = new Date();
+    for (let i = 0; i < 6; i++) {
+      const dt = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      arr.push({ key: monthKey(dt), label: dt.toLocaleDateString(locale, { month: 'long', year: 'numeric' }) });
+    }
+    return arr;
+  }, [language]);
+  useEffect(() => {
+    if (!employee || typeof window === 'undefined') return;
+    try {
+      const raw = localStorage.getItem(`32desk_payroll_${employee.id}`);
+      setPayrollPaid(raw ? JSON.parse(raw) : {});
+    } catch {}
+  }, [employee?.id]);
+  const togglePayroll = (period: string) => {
+    if (!employee) return;
+    setPayrollPaid((prev) => {
+      const next = { ...prev, [period]: !prev[period] };
+      try { localStorage.setItem(`32desk_payroll_${employee.id}`, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  };
+
   // Permission checks:
   // Director / Superadmin can edit any employee.
   // Doctor can only edit their own profile (and only name & password inside modal).
@@ -121,18 +150,24 @@ export default function DoctorDetailPage() {
 
   const doctorPercent = Number(employee?.commission_rate) || 35;
 
-  const handleInlinePriceChange = (assignmentId: string, newPrice: number) => {
+  const handleInlinePriceChange = async (assignmentId: string, newPrice: number) => {
+    const prevAssignments = assignments;
     setAssignments((prev) =>
       prev.map((a) => (a.id === assignmentId ? { ...a, custom_price: newPrice, commission_percent: doctorPercent, is_custom_price: true } : a))
     );
-    clinicApi.updateDoctorNaryad(assignmentId, {
-      custom_price: newPrice,
-      commission_percent: doctorPercent,
-      is_custom_price: true
-    });
+    try {
+      await clinicApi.updateDoctorNaryad(assignmentId, {
+        custom_price: newPrice,
+        commission_percent: doctorPercent,
+        is_custom_price: true
+      });
+    } catch {
+      // Server saqlamadi — optimistik o'zgarishni qaytaramiz (soxta muvaffaqiyat yo'q).
+      setAssignments(prevAssignments);
+    }
   };
 
-  const populateBySpecialty = (targetCategory?: string) => {
+  const populateBySpecialty = async (targetCategory?: string) => {
     let itemsToAssign = catalog;
     if (targetCategory && targetCategory !== 'all') {
       itemsToAssign = catalog.filter((c) =>
@@ -140,20 +175,24 @@ export default function DoctorDetailPage() {
       );
     }
     const currentNaryadIds = new Set(assignments.map((a) => a.naryad_id));
-    itemsToAssign.forEach((item) => {
-      if (!currentNaryadIds.has(item.id)) {
-        clinicApi.assignDoctorNaryad({
-          doctor_id: empId,
-          naryad_id: item.id,
-          name: item.name,
-          category: item.category,
-          custom_price: item.base_price,
-          commission_percent: doctorPercent,
-          is_custom_price: false
-        });
+    try {
+      for (const item of itemsToAssign) {
+        if (!currentNaryadIds.has(item.id)) {
+          await clinicApi.assignDoctorNaryad({
+            doctor_id: empId,
+            naryad_id: item.id,
+            name: item.name,
+            category: item.category,
+            custom_price: item.base_price,
+            commission_percent: doctorPercent,
+            is_custom_price: false
+          });
+        }
       }
-    });
-    setAssignments(clinicApi.getDoctorNaryads(empId));
+      setAssignments(await clinicApi.getDoctorNaryads(empId));
+    } catch {
+      setAssignments(await clinicApi.getDoctorNaryads(empId).catch(() => assignments));
+    }
   };
 
   const [assignForm, setAssignForm] = useState<{
@@ -207,10 +246,10 @@ export default function DoctorDetailPage() {
       setEmployee(emp);
       setAppointments(apts.filter((a) => a.doctor === empId));
       setPatients(pats);
-      const catList = clinicApi.getNaryadCatalog();
+      const catList = await clinicApi.getNaryadCatalog();
       setCatalog(catList);
-      const existingAssigns = clinicApi.getDoctorNaryads(empId);
-      if (existingAssigns.length === 0 && emp) {
+      const existingAssigns = await clinicApi.getDoctorNaryads(empId);
+      if (existingAssigns.length === 0 && emp && !isDemoClinic()) {
         // Automatically pre-populate matching this employee's specialty / direction
         const specStr = `${emp.specialty || ''} ${emp.role || ''}`.toLowerCase();
         let catFilter = '';
@@ -225,18 +264,22 @@ export default function DoctorDetailPage() {
           ? catList.filter((c) => c.category.toLowerCase().includes(catFilter.toLowerCase()))
           : catList.slice(0, 16);
 
-        defaultItems.forEach((item) => {
-          clinicApi.assignDoctorNaryad({
-            doctor_id: empId,
-            naryad_id: item.id,
-            name: item.name,
-            category: item.category,
-            custom_price: item.base_price,
-            commission_percent: doctorPercent,
-            is_custom_price: false
-          });
-        });
-        setAssignments(clinicApi.getDoctorNaryads(empId));
+        try {
+          for (const item of defaultItems) {
+            await clinicApi.assignDoctorNaryad({
+              doctor_id: empId,
+              naryad_id: item.id,
+              name: item.name,
+              category: item.category,
+              custom_price: item.base_price,
+              commission_percent: doctorPercent,
+              is_custom_price: false
+            });
+          }
+          setAssignments(await clinicApi.getDoctorNaryads(empId));
+        } catch {
+          setAssignments(existingAssigns);
+        }
       } else {
         setAssignments(existingAssigns);
       }
@@ -383,8 +426,14 @@ export default function DoctorDetailPage() {
     setIsFullModalOpen(false);
   };
 
+  const handleDeleteFullModal = async (id: number) => {
+    await clinicApi.deleteEmployee(id);
+    setIsFullModalOpen(false);
+    if (typeof window !== 'undefined') window.location.href = '/staff';
+  };
+
   // Handle Assigned Naryad Modal Save
-  const handleSaveAssign = () => {
+  const handleSaveAssign = async () => {
     if (!assignForm.naryad_id) return;
     const item = catalog.find((c) => c.id === assignForm.naryad_id);
     if (!item) return;
@@ -393,37 +442,49 @@ export default function DoctorDetailPage() {
     const effectivePrice = isCustom ? Number(assignForm.custom_price) : item.base_price;
     const effectivePercent = isCustom ? Number(assignForm.commission_percent) : (item.default_percent || 30);
 
-    if (editingAssignment) {
-      const updated = clinicApi.updateDoctorNaryad(editingAssignment.id, {
-        custom_price: effectivePrice,
-        commission_percent: effectivePercent,
-        is_custom_price: isCustom,
-        notes: assignForm.notes
-      });
-      if (updated) {
-        setAssignments((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+    try {
+      if (editingAssignment) {
+        const updated = await clinicApi.updateDoctorNaryad(editingAssignment.id, {
+          custom_price: effectivePrice,
+          commission_percent: effectivePercent,
+          is_custom_price: isCustom,
+          notes: assignForm.notes
+        });
+        if (updated) {
+          setAssignments((prev) => prev.map((a) => (a.id === updated.id ? updated : a)));
+        }
+      } else {
+        const created = await clinicApi.assignDoctorNaryad({
+          doctor_id: employee.id,
+          naryad_id: item.id,
+          name: item.name,
+          category: item.category,
+          custom_price: effectivePrice,
+          commission_percent: effectivePercent,
+          is_custom_price: isCustom,
+          notes: assignForm.notes
+        });
+        if (created) {
+          setAssignments((prev) => [...prev.filter((a) => a.id !== created.id), created]);
+        }
       }
-    } else {
-      const created = clinicApi.assignDoctorNaryad({
-        doctor_id: employee.id,
-        naryad_id: item.id,
-        name: item.name,
-        category: item.category,
-        custom_price: effectivePrice,
-        commission_percent: effectivePercent,
-        is_custom_price: isCustom,
-        notes: assignForm.notes
-      });
-      setAssignments((prev) => [...prev.filter((a) => a.id !== created.id), created]);
+      setIsAssignModalOpen(false);
+    } catch {
+      // Server saqlamadi — modalni ochiq qoldiramiz, soxta muvaffaqiyat ko'rsatmaymiz.
+      if (typeof window !== 'undefined') window.dispatchEvent(new CustomEvent('dentos-save-state', { detail: { error: 'Narx saqlanmadi (server xatosi).' } }));
     }
-    setIsAssignModalOpen(false);
   };
 
   // Handle Delete Assigned Naryad
-  const handleDeleteAssignment = (id: string) => {
+  const handleDeleteAssignment = async (id: string) => {
     if (confirm(tr('staffdict.confirmDelete'))) {
-      clinicApi.removeDoctorNaryad(id);
+      const prevAssignments = assignments;
       setAssignments((prev) => prev.filter((a) => a.id !== id));
+      try {
+        await clinicApi.removeDoctorNaryad(id);
+      } catch {
+        setAssignments(prevAssignments);
+      }
     }
   };
 
@@ -434,8 +495,8 @@ export default function DoctorDetailPage() {
       title: certForm.title.trim(),
       issuer: certForm.issuer.trim(),
       year: certForm.year.trim(),
-      file_url: certForm.file_url.trim() || 'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?auto=format&fit=crop&w=800&q=80',
-      preview: certForm.file_url.trim() || 'https://images.unsplash.com/photo-1589829545856-d10d557cf95f?auto=format&fit=crop&w=800&q=80'
+      file_url: certForm.file_url.trim(),
+      preview: certForm.file_url.trim()
     });
     setEmployee((prev) => prev ? { ...prev, certificates: [...(prev.certificates || []), newCert] } : null);
     setIsCertModalOpen(false);
@@ -458,7 +519,7 @@ export default function DoctorDetailPage() {
       institution: dipForm.institution.trim(),
       specialty: dipForm.specialty.trim(),
       year: dipForm.year.trim(),
-      file_url: dipForm.file_url.trim() || 'https://images.unsplash.com/photo-1606326608606-aa0b62935f2b?auto=format&fit=crop&w=800&q=80'
+      file_url: dipForm.file_url.trim()
     });
     setEmployee((prev) => prev ? { ...prev, diplomas: [...(prev.diplomas || []), newDip] } : null);
     setIsDipModalOpen(false);
@@ -474,15 +535,29 @@ export default function DoctorDetailPage() {
   };
 
   // Tabs matching patient profile style
+  // Rolga qarab qaysi bo'limlar ko'rinadi:
+  //  - doctor: hammasi (qabul, bemor, naryad narxi, sertifikat, kreslo/jadval, moliya)
+  //  - director: faqat kuzatuv (qabul/bemor) + sertifikat (asosiy) + moliya — kreslo/naryad narxi yo'q
+  //  - deputy_director (boshqaruvchi): kuzatuv (qabul/bemor) + moliya — sertifikat/kreslo/naryad narxi yo'q
+  //  - admin / kassir / hamshira: faqat Asosiy + Moliya (oylik)
+  const ROLE_TABS: Record<string, string[]> = {
+    doctor: ['Asosiy', 'Qabullar', 'Bemorlari', 'Naryadlar', 'Sertifikatlar', 'Kreslo', 'Moliya'],
+    director: ['Asosiy', 'Qabullar', 'Bemorlari', 'Sertifikatlar', 'Moliya'],
+    deputy_director: ['Asosiy', 'Qabullar', 'Bemorlari', 'Moliya'],
+    admin: ['Asosiy', 'Moliya'],
+    kassa: ['Asosiy', 'Moliya'],
+    nurse: ['Asosiy', 'Moliya']
+  };
+  const allowedTabIds = ROLE_TABS[employee.role] || ['Asosiy', 'Moliya'];
   const tabDefinitions = [
-    { id: 'Asosiy', labelUz: 'Asosiy', labelRu: 'Основные', labelEn: 'General', icon: Users },
-    { id: 'Qabullar', labelUz: 'Qabullar', labelRu: 'Приёмы', labelEn: 'Appointments', count: appointments.length, icon: Calendar },
-    { id: 'Bemorlari', labelUz: 'Bemorlari', labelRu: 'Пациенты', labelEn: 'Patients', count: stats.patientList.length, icon: Stethoscope },
-    { id: 'Naryadlar', labelUz: 'Naryadlar va narxlar', labelRu: 'Журнал нарядов и цены', labelEn: 'Naryads & Pricing', count: assignments.length, icon: FileCheck2 },
-    { id: 'Sertifikatlar', labelUz: 'Sertifikat va diplomlar', labelRu: 'Сертификаты и дипломы', labelEn: 'Certificates & Diplomas', count: (employee.certificates?.length || 0) + (employee.diplomas?.length || 0), icon: Award },
-    { id: 'Kreslo', labelUz: 'Ish jadvali va Kreslo', labelRu: 'График и кресло', labelEn: 'Schedule & Chairs', icon: Armchair },
-    { id: 'Moliya', labelUz: 'Moliya va maosh', labelRu: 'Финансы и зарплата', labelEn: 'Finance & Salary', icon: Wallet }
-  ];
+    { id: 'Asosiy', labelKey: 'sid_tab_general', icon: Users },
+    { id: 'Qabullar', labelKey: 'sid_tab_appointments', count: appointments.length, icon: Calendar },
+    { id: 'Bemorlari', labelKey: 'sid_tab_patients', count: stats.patientList.length, icon: Stethoscope },
+    { id: 'Naryadlar', labelKey: 'sid_tab_naryads', count: assignments.length, icon: FileCheck2 },
+    { id: 'Sertifikatlar', labelKey: 'sid_tab_certs', count: (employee.certificates?.length || 0) + (employee.diplomas?.length || 0), icon: Award },
+    { id: 'Kreslo', labelKey: 'sid_tab_schedule', icon: Armchair },
+    { id: 'Moliya', labelKey: 'sid_tab_finance', icon: Wallet }
+  ].filter((t) => allowedTabIds.includes(t.id));
 
   // Filtered Appointments
   const filteredAppointments = appointments.filter((a) => {
@@ -558,7 +633,7 @@ export default function DoctorDetailPage() {
                 <span className="px-3 py-1 rounded-full text-xs font-black bg-blue-50 dark:bg-blue-950/80 text-blue-700 dark:text-sky-300 border border-blue-200 dark:border-blue-800 shadow-2xs inline-flex items-center gap-1.5">
                   <Building2 className="w-3.5 h-3.5 text-blue-600 dark:text-sky-400" />
                   <span>
-                    {employee.branch_name || branches.find((b) => b.id === employee.branch)?.name || (lng === 'uz' ? 'Barcha filiallar xodimi' : lng === 'en' ? 'All branches' : 'Все филиалы')}
+                    {employee.branch_name || branches.find((b) => b.id === employee.branch)?.name || tk('sid_all_branches')}
                   </span>
                 </span>
                 <span
@@ -631,7 +706,7 @@ export default function DoctorDetailPage() {
         {tabDefinitions.map((tab) => {
           const isActive = activeTab === tab.id;
           const Icon = tab.icon;
-          const label = lng === 'uz' ? tab.labelUz : lng === 'ru' ? tab.labelRu : tab.labelEn;
+          const label = tk(tab.labelKey);
           return (
             <button
               key={tab.id}
@@ -738,7 +813,7 @@ export default function DoctorDetailPage() {
                   <p className="text-xs font-bold text-slate-400 uppercase tracking-wider">{tr('staffd.assignedBranch')}</p>
                   <p className="font-bold text-blue-600 dark:text-sky-400 mt-1 flex items-center gap-1.5">
                     <Building2 className="w-4 h-4" />
-                    {employee.branch_name || branches.find((b) => b.id === employee.branch)?.name || (lng === 'uz' ? 'Barcha filiallar xodimi' : lng === 'en' ? 'All branches' : 'Все филиалы')}
+                    {employee.branch_name || branches.find((b) => b.id === employee.branch)?.name || tk('sid_all_branches')}
                   </p>
                 </div>
                 <div>
@@ -806,7 +881,7 @@ export default function DoctorDetailPage() {
                   <Wallet className="w-5 h-5 opacity-80" />
                 </div>
                 <div>
-                  <p className="text-2xl font-black">{employee.salary_rate || '6 000 000'} {som}</p>
+                  <p className="text-2xl font-black">{Number(employee.salary_rate || 0).toLocaleString()} {som}</p>
                   <p className="text-xs opacity-80 mt-0.5">{tr('staffd.monthlyGuaranteedRate')}</p>
                 </div>
                 <div className="pt-3 border-t border-white/20 flex items-center justify-between text-xs">
@@ -1074,13 +1149,13 @@ export default function DoctorDetailPage() {
       {/* TAB 4: NARYADLAR VA NARXLAR (Assigned Naryads & Custom Pricing) */}
       {activeTab === 'Naryadlar' && (() => {
         const categories = [
-          { id: 'all', labelUz: 'Barchasi', labelRu: 'Все', labelEn: 'All' },
-          { id: 'Терапия', labelUz: 'Terapiya', labelRu: 'Терапия', labelEn: 'Therapy' },
-          { id: 'Хирургия', labelUz: 'Xirurgiya', labelRu: 'Хирургия', labelEn: 'Surgery' },
-          { id: 'Implantologiya', labelUz: 'Implantologiya', labelRu: 'Имплантология', labelEn: 'Implantology' },
-          { id: 'Ортопедия', labelUz: 'Ortopediya', labelRu: 'Ортопедия', labelEn: 'Orthopedics' },
-          { id: 'Ортодонтия', labelUz: 'Ortodontiya', labelRu: 'Ортодонтия', labelEn: 'Orthodontics' },
-          { id: 'Детская стоматология', labelUz: 'Bolalar', labelRu: 'Детская', labelEn: 'Pediatric' }
+          { id: 'all', labelKey: 'sid_cat_all' },
+          { id: 'Терапия', labelKey: 'sid_cat_therapy' },
+          { id: 'Хирургия', labelKey: 'sid_cat_surgery' },
+          { id: 'Implantologiya', labelKey: 'sid_cat_implant' },
+          { id: 'Ортопедия', labelKey: 'sid_cat_ortho' },
+          { id: 'Ортодонтия', labelKey: 'sid_cat_ortodont' },
+          { id: 'Детская стоматология', labelKey: 'sid_cat_pediatric' }
         ];
 
         const filteredAssignments = assignments.filter((a) => {
@@ -1102,11 +1177,11 @@ export default function DoctorDetailPage() {
                     {assignments.length} ta xizmat
                   </span>
                   <span className="text-xs px-3 py-0.5 rounded-full bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 font-black border border-emerald-200 dark:border-emerald-800">
-                    {language === 'ru' ? `Единая ставка: ${doctorPercent}%` : language === 'en' ? `Uniform rate: ${doctorPercent}%` : `Yagona stavka: ${doctorPercent}%`}
+                    {tk('sid_uniform_rate').replace('{p}', String(doctorPercent))}
                   </span>
                 </div>
                 <p className="text-xs text-slate-400 mt-1 leading-relaxed">
-                  {language === 'ru' ? `Единая ставка врача (${doctorPercent}%) применяется ко всем нарядам. Укажите только цену.` : language === 'en' ? `The uniform doctor rate (${doctorPercent}%) applies to all naryads. Just set the price.` : `Shifokorga biriktirilgan yagona foiz (${doctorPercent}%) barcha naryadlar uchun amal qiladi. Narxni to‘g‘ridan-to‘g‘ri katakka yozishingiz kifoya.`}
+                  {tk('sid_uniform_rate_desc').replace('{p}', String(doctorPercent))}
                 </p>
               </div>
 
@@ -1119,10 +1194,10 @@ export default function DoctorDetailPage() {
                     className="flex items-center space-x-1.5 px-3.5 py-2.5 rounded-xl text-xs font-bold bg-amber-500/10 hover:bg-amber-500/20 text-amber-700 dark:text-amber-400 border border-amber-500/30 transition shadow-2xs"
                   >
                     <Sparkles className="w-3.5 h-3.5 text-amber-500" />
-                    <span>{language === 'ru' ? '⚡ Загрузить шаблон специальности' : language === 'en' ? '⚡ Load specialty template' : '⚡ Yo‘nalish shablonini yuklash'}</span>
+                    <span>{tk('sid_load_template')}</span>
                   </button>
                   <div className="absolute right-0 top-full mt-1.5 w-64 p-2 bg-white dark:bg-slate-800 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 hidden group-hover:block z-30 space-y-1">
-                    <p className="text-[10px] font-black uppercase text-slate-400 px-2 py-1">{language === 'ru' ? 'Выберите специальность:' : language === 'en' ? 'Select specialty:' : 'Yo‘nalishni tanlang:'}</p>
+                    <p className="text-[10px] font-black uppercase text-slate-400 px-2 py-1">{tk('sid_select_specialty')}</p>
                     <button
                       onClick={() => populateBySpecialty('Терапия')}
                       className="w-full text-left px-2.5 py-1.5 rounded-lg text-xs font-bold text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-700 flex items-center justify-between"
@@ -1218,7 +1293,7 @@ export default function DoctorDetailPage() {
                           : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
                       }`}
                     >
-                      <span>{cat.labelUz}</span>
+                      <span>{tk(cat.labelKey)}</span>
                       <span className={`ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full ${isActive ? 'bg-white/20' : 'bg-slate-200 dark:bg-slate-700'}`}>
                         {catCount}
                       </span>
@@ -1234,7 +1309,7 @@ export default function DoctorDetailPage() {
                   type="text"
                   value={naryadSearch}
                   onChange={(e) => setNaryadSearch(e.target.value)}
-                  placeholder={language === 'ru' ? 'Поиск наряда...' : language === 'en' ? 'Search naryad...' : 'Naryadni qidirish...'}
+                  placeholder={tk('sid_search_naryad')}
                   className="w-full pl-8 pr-3 py-1.5 rounded-xl text-xs bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-200 focus:outline-hidden focus:ring-1 focus:ring-blue-500"
                 />
               </div>
@@ -1247,8 +1322,8 @@ export default function DoctorDetailPage() {
                   <tr className="bg-slate-50/80 dark:bg-slate-800/60 border-b border-slate-100 dark:border-slate-800 text-slate-400 font-bold uppercase tracking-wider">
                     <th className="py-3 px-3.5">{tr('staffdict.naryadName')}</th>
                     <th className="py-3 px-3">{tr('staffdict.category')}</th>
-                    <th className="py-3 px-3 text-right">{language === 'ru' ? 'Цена (сум) • Быстрый ввод' : language === 'en' ? 'Price (UZS) • Direct edit' : 'Narxi (so‘m) • To‘g‘ridan-to‘g‘ri yozish'}</th>
-                    <th className="py-3 px-3 text-right">{language === 'ru' ? `Доля врача (${doctorPercent}%)` : language === 'en' ? `Doctor Share (${doctorPercent}%)` : `Shifokor ulushi (${doctorPercent}%)`}</th>
+                    <th className="py-3 px-3 text-right">{tk('sid_col_price')}</th>
+                    <th className="py-3 px-3 text-right">{tk('sid_col_doctor_share').replace('{p}', String(doctorPercent))}</th>
                     <th className="py-3 px-3 text-right">{tr('staffdict.actions')}</th>
                   </tr>
                 </thead>
@@ -1659,7 +1734,7 @@ export default function DoctorDetailPage() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
             <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-xs space-y-2">
               <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">{tr('staffd.monthlySalary')}</span>
-              <p className="text-2xl font-black">{employee.salary_rate || '6 000 000'} {som}</p>
+              <p className="text-2xl font-black">{Number(employee.salary_rate || 0).toLocaleString()} {som}</p>
               <p className="text-xs text-slate-500">{tr('staffd.guaranteedMonthly')}</p>
             </div>
             <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-xs space-y-2">
@@ -1675,36 +1750,62 @@ export default function DoctorDetailPage() {
           </div>
 
           <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/80 dark:border-slate-800 p-6 sm:p-7 shadow-xs space-y-5">
-            <h3 className="font-black text-base">{tr('staffd.salaryHistory')}</h3>
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <h3 className="font-black text-base">{tr('staffd.salaryHistory')}</h3>
+              <select
+                value={salaryPeriod}
+                onChange={(e) => setSalaryPeriod(e.target.value)}
+                className="px-3 py-2 rounded-xl bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold text-slate-700 dark:text-slate-200 outline-none"
+              >
+                <option value="all">{tk('all')}</option>
+                {payrollPeriods.map((p) => (
+                  <option key={p.key} value={p.key}>{p.label}</option>
+                ))}
+              </select>
+            </div>
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
                 <thead>
                   <tr className="border-b border-slate-100 dark:border-slate-800 text-slate-400 font-bold uppercase tracking-wider">
-                    <th className="py-3 px-3">{tr('staffd.date')}</th>
                     <th className="py-3 px-3">{tr('staffd.period')}</th>
                     <th className="py-3 px-3">{tr('staffd.paymentType')}</th>
                     <th className="py-3 px-3 text-right">{tr('staffd.amount')}</th>
                     <th className="py-3 px-3 text-center">{tr('staffd.status')}</th>
+                    <th className="py-3 px-3 text-right"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 dark:divide-slate-800 font-medium">
-                  {[
-                    { date: '2026-09-01', period: 'Avgust 2026', type: 'Oylik maosh + Komissiya', amount: '14 200 000', status: 'To‘langan' },
-                    { date: '2026-08-01', period: 'Iyul 2026', type: 'Oylik maosh + Komissiya', amount: '12 850 000', status: 'To‘langan' },
-                    { date: '2026-07-01', period: 'Iyun 2026', type: 'Oylik maosh + Bonus', amount: '13 500 000', status: 'To‘langan' }
-                  ].map((row, idx) => (
-                    <tr key={idx} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/40">
-                      <td className="py-3.5 px-3 font-semibold">{row.date}</td>
-                      <td className="py-3.5 px-3 font-bold text-slate-900 dark:text-white">{row.period}</td>
-                      <td className="py-3.5 px-3 text-slate-600 dark:text-slate-300">{row.type}</td>
-                      <td className="py-3.5 px-3 text-right font-black text-emerald-600">{row.amount} {som}</td>
-                      <td className="py-3.5 px-3 text-center">
-                        <span className="px-2.5 py-1 rounded-full text-[10px] font-black bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300">
-                          {row.status}
-                        </span>
-                      </td>
-                    </tr>
-                  ))}
+                  {payrollPeriods
+                    .filter((p) => salaryPeriod === 'all' || p.key === salaryPeriod)
+                    .map((p) => {
+                      const salary = Number(employee.salary_rate) || 0;
+                      const paid = !!payrollPaid[p.key];
+                      return (
+                        <tr key={p.key} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/40">
+                          <td className="py-3.5 px-3 font-bold text-slate-900 dark:text-white capitalize">{p.label}</td>
+                          <td className="py-3.5 px-3 text-slate-600 dark:text-slate-300">{tr('staffd.monthlySalary')}</td>
+                          <td className="py-3.5 px-3 text-right font-black text-emerald-600">{salary.toLocaleString()} {som}</td>
+                          <td className="py-3.5 px-3 text-center">
+                            <span className={`px-2.5 py-1 rounded-full text-[10px] font-black ${paid
+                              ? 'bg-emerald-100 dark:bg-emerald-950 text-emerald-700 dark:text-emerald-300'
+                              : 'bg-amber-100 dark:bg-amber-950 text-amber-700 dark:text-amber-300'}`}>
+                              {paid ? tk('emp_paid') : tk('emp_unpaid')}
+                            </span>
+                          </td>
+                          <td className="py-3.5 px-3 text-right">
+                            <button
+                              type="button"
+                              onClick={() => togglePayroll(p.key)}
+                              className={`px-3 py-1.5 rounded-lg text-[10px] font-bold transition ${paid
+                                ? 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                                : 'bg-emerald-600 hover:bg-emerald-700 text-white'}`}
+                            >
+                              {paid ? tk('emp_mark_unpaid') : tk('emp_mark_paid')}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
                 </tbody>
               </table>
             </div>
@@ -1718,6 +1819,7 @@ export default function DoctorDetailPage() {
           isOpen={isFullModalOpen}
           onClose={() => setIsFullModalOpen(false)}
           onSave={handleSaveFullModal}
+          onDelete={handleDeleteFullModal}
           employeeToEdit={employee}
           workplaces={workplaces}
           specialties={specialties}

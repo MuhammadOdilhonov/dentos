@@ -27,8 +27,8 @@ from rest_framework.response import Response
 
 GRAPH_VERSION = 'v21.0'
 
-_CFG_FILE = os.path.join(settings.BASE_DIR, 'whatsapp_config.json')
-_MSG_FILE = os.path.join(settings.BASE_DIR, 'whatsapp_messages.json')
+_CFG_FILE = os.path.join(settings.RUNTIME_DIR, 'whatsapp_config.json')
+_MSG_FILE = os.path.join(settings.RUNTIME_DIR, 'whatsapp_messages.json')
 
 
 def _load(path, default):

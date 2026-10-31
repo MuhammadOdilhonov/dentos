@@ -56,14 +56,9 @@ export default function LoginModal() {
     else router.push('/appointments');
   };
 
+  // Demo — direktordan texnikgacha barcha rollar (haqiqiy backend akkaunti orqali).
+  // SuperAdmin ISTISNO: u faqat haqiqiy login talab qiladi.
   const roles: { role: UserRole; title: string; label: string; desc: string; icon: string }[] = [
-    {
-      role: 'superadmin',
-      title: 'SuperAdmin',
-      label: 'Kotta Admin (Platforma)',
-      desc: 'Kvotalar, modullar, texniklar',
-      icon: '⚡'
-    },
     {
       role: 'director',
       title: 'Director',
@@ -102,7 +97,7 @@ export default function LoginModal() {
     {
       role: 'technician',
       title: 'Zubnoy Texnik',
-      label: 'Laboratoriya Portali',
+      label: 'Laboratoriya Portali (demo klinikaga ulangan)',
       desc: 'Naryad buyurtmalari, narxlar',
       icon: '🔧'
     }
