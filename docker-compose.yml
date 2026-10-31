@@ -99,7 +99,7 @@ services:
       <<: *backend-env
       START_BACKGROUND_SERVICES: "false"
       RUN_MIGRATIONS: "false"
-    command: [celery, -A, core, worker, -Q, default,media,ops, --concurrency=4, --prefetch-multiplier=1, --loglevel=info]
+    command: [celery, -A, core, worker, -Q, "default,media,ops", --concurrency=4, --prefetch-multiplier=1, --loglevel=info]
     depends_on:
       api: {condition: service_healthy}
       redis: {condition: service_healthy}
