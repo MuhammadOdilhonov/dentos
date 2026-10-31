@@ -134,9 +134,71 @@ docker compose up -d --build
 - `GUNICORN_WORKERS`/`--concurrency`/Postgres `max_connections`ni natijaga qarab moslang.
 - Natijasiz "CX53 yetadi" DEYILMAYDI.
 
-## 12. B2 yoqish (FAQAT huquqiy moslik + approval hujjatlangach)
-- `.env`: `B2_KEY_ID`, `B2_APPLICATION_KEY`, haqiqiy `B2_BUCKET_NAME`/`B2_REGION`/`B2_ENDPOINT`
-  (konsoldan tasdiqlangan — example qiymatlar emas), `MEDIA_STORAGE=b2`, `B2_MEDICAL_STORAGE_APPROVED=true`.
-- App key FAQAT o'sha bucket'ga (master key EMAS). Bucket PRIVATE + SSE-B2. Billing cap/alert yoqilgan.
-- `docker compose up -d api worker` → sintetik fayl bilan upload→download→authorization rad testlari.
-- Browser→B2 to'g'ridan ishlatilmasa bucket CORS'ni ochmang; kerak bo'lsa aniq origin, wildcard EMAS.
+## 12. Backblaze B2 (private media) — konsol → server → test
+> Kod TAYYOR va TO'G'RI (`clinic/storage.py` PrivateB2Storage: SSE AES256, private, 300s imzolangan
+> URL, checksum; `PatientMediaViewSet` klinika-scoping + backend-proxy download). Ikkinchi integratsiya
+> YOZILMAYDI. Qolgani — konsol + env + sinov. `B2_MEDICAL_STORAGE_APPROVED` huquqiy moslik +
+> sintetik sinovdan OLDIN `true` qilinmaydi.
+
+### 12.1 Backblaze konsol (siz qilasiz — men kira olmayman; parolni chatga yozmang)
+1. Mavjud hisobni tekshiring. Yangi hisob/bucket KERAK bo'lsagina yarating (dentical'ni O'CHIRMANG).
+2. Bucket: **`dentos`** (dentical emas). Agar `dentos` band bo'lsa — o'zboshimcha boshqa nom tanlamang, menga ayting.
+   - **Private** (Public emas).
+   - **Default Encryption: SSE-B2 (AES-256)** yoqilgan.
+   - **Object Lock** — tekshirmasdan yoqmang (tibbiy saqlash muddati aniqlanmaguncha).
+3. Region/endpoint'ni **konsoldan aniq** oling (taxmin emas). S3 endpoint `https://s3.<region>.backblazeb2.com` ko'rinishida.
+4. **Application Key** (App Keys → Add a New Application Key):
+   - **Allow access to Bucket:** faqat `dentos` (hammasi EMAS).
+   - **Type:** Read and Write (+ List). **Master key ISHLATMANG.**
+   - **Delete** huquqi faqat zarur bo'lsa (CRM destroy B2 versiyasini o'chirmaydi — odatda delete KERAK EMAS).
+   - `keyID` + `applicationKey` ni BIR MARTA ko'rsatadi — faqat serverda saqlang (chat/Git/log/screenshot'ga EMAS).
+5. **Caps & Alerts** (Account → Caps & Alerts): oylik byudjetga mos storage/download/transaction cap + email alert.
+   Cap'ga yetganda: storage cap → **upload** bloklanadi; download cap → **download** bloklanadi (403). Raqamni SIZ berasiz.
+
+### 12.2 Server `.env` (real qiymatlar, kalit faqat shu yerda)
+```bash
+cd /opt/dentos
+nano .env
+# To'ldiring (konsoldan):
+#   B2_BUCKET_NAME=dentos
+#   B2_REGION=<konsoldagi region>
+#   B2_ENDPOINT=https://s3.<region>.backblazeb2.com
+#   B2_KEY_ID=<keyID>
+#   B2_APPLICATION_KEY=<applicationKey>
+# HOZIRCHA O'ZGARTIRMANG (sinovgacha va huquqiy moslikkacha):
+#   MEDIA_STORAGE=local
+#   B2_MEDICAL_STORAGE_APPROVED=false
+grep -E "^(B2_|MEDIA_STORAGE)" .env   # kalit qiymatini EKRANGA chiqarmang jamoada
+```
+
+### 12.3 Sintetik sinov (ALOHIDA, production himoyasini chetlab o'tmasdan; REAL bemor fayli EMAS)
+Sinov uchun vaqtincha b2 + approval'ni FAQAT serverda yoqib, SINTETIK fayl bilan tekshiramiz:
+```bash
+# Vaqtincha sinov qiymatlari (faqat shu sessiya uchun — .env'ni o'zgartirmasdan ham mumkin):
+docker compose exec -e MEDIA_STORAGE=b2 -e B2_MEDICAL_STORAGE_APPROVED=true api python manage.py shell -c "
+from clinic.storage import PrivateB2Storage
+from django.core.files.base import ContentFile
+import hashlib
+s = PrivateB2Storage()
+data = b'DENTOS SYNTHETIC TEST ' + b'x'*1024
+name = s.save('selftest/hello.txt', ContentFile(data))
+back = s.open(name).read()
+print('upload+download OK:', hashlib.sha256(data).hexdigest()==hashlib.sha256(back).hexdigest())
+print('exists:', s.exists(name)); s.delete(name); print('cleaned:', not s.exists(name))
+"
+```
+Natija `upload+download OK: True` bo'lsa — ulanish + SSE + checksum ishlaydi. Noto'g'ri kalit/timeout/cap bo'lsa — aniq xato chiqadi (soxta "OK" yo'q).
+
+### 12.4 Productionga o'tkazish (FAQAT 12.3 OK + huquqiy moslik hujjatlangach)
+```bash
+sed -i "s|^MEDIA_STORAGE=.*|MEDIA_STORAGE=b2|" .env
+sed -i "s|^B2_MEDICAL_STORAGE_APPROVED=.*|B2_MEDICAL_STORAGE_APPROVED=true|" .env
+docker compose up -d api worker telegram beat
+# Brauzerда (test klinika): foto upload → reload → authorized download → boshqa klinikadan 404 tekshiring.
+```
+
+### 12.5 CORS / kalit almashtirish / xato tekshirish
+- Oqim **browser → backend → B2**, shuning uchun bucket **CORS KERAK EMAS**. To'g'ridan browser→B2 kerak bo'lmasa CORS'ni ochmang. Kerak bo'lsa: faqat `https://dentos.cc`, aniq method/header; **wildcard YO'Q**.
+- **Kalit almashtirish (rotation):** konsolда yangi app key yarating (bucket-only) → `.env`da `B2_KEY_ID`/`B2_APPLICATION_KEY`ni yangilang → `docker compose up -d api worker telegram beat` → 12.3 self-test → eski kalitni konsolда o'chiring. Kalitni 6–12 oyда yoki xodim ketganda almashtiring.
+- **Ulanish xatosini tekshirish:** `docker compose logs --tail=50 api | grep -iE "b2|s3|botocore|credential|endpoint"`; self-test (12.3) qayta ishlating.
+- **CRM kvota ≠ B2 billing cap:** klinika `storage_quota_gb` (CRM) va B2 Caps alohida. Ikkalasini davriy solishtiring (monitoring `collect_ops_status` + konsol usage).
