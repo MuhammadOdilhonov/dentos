@@ -76,3 +76,21 @@ def open_media_for_read(media):
     # local yoki noma'lum → fayl tizimi (MEDIA_ROOT) orqali aniq o'qiymiz.
     from django.core.files.storage import FileSystemStorage
     return FileSystemStorage().open(media.file.name, 'rb')
+
+
+def media_remote_url(media):
+    """Remote (Cloupard/B2) fayl uchun qisqa muddatli presigned URL qaytaradi.
+
+    Katta fayllar (3D skan/DICOM, o'nlab MB) Django proksi orqali oqitilsa sekin va
+    timeout bo'ladi. Buning o'rniga ruxsat tekshirilgach, brauzer to'g'ridan-to'g'ri
+    Cloupard'dan presigned havola bilan yuklaydi (kalit chiqmaydi — faqat imzo).
+    Lokal fayl uchun None (u proksi orqali oqib beriladi)."""
+    backend = (media.meta or {}).get('storage_backend') or getattr(settings, 'MEDIA_STORAGE_LEGACY', 'local')
+    current = getattr(settings, 'MEDIA_STORAGE', 'local')
+    if backend == current and current in ('cloupard', 'b2'):
+        return media.file.url  # default storage presigned (querystring_auth=True)
+    if backend == 'b2':
+        return PrivateB2Storage().url(media.file.name)
+    if backend == 'cloupard':
+        return PrivateCloupardStorage().url(media.file.name)
+    return None  # local → proksi

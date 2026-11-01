@@ -1409,6 +1409,18 @@ class PatientMediaViewSet(TenantViewSet):
         response['X-Content-Type-Options'] = 'nosniff'
         return response
 
+    @action(detail=True, methods=['get'], url_path='access-url')
+    def access_url(self, request, pk=None):
+        """Katta fayl (skan/rentgen) uchun kirish havolasi — ruxsat get_object() da
+        klinika bo'yicha tekshiriladi. Remote (Cloupard/B2) → qisqa muddatli presigned
+        URL (brauzer to'g'ridan yuklaydi, Django 57MB tashimaydi). Lokal → proksi yo'li."""
+        from .storage import media_remote_url
+        media = self.get_object()
+        if not media.file:
+            return Response(status=404)
+        url = media_remote_url(media) or f'/api/patient-media/{media.pk}/download/'
+        return Response({'url': url, 'file_name': media.file_name, 'file_type': media.file_type})
+
     def update(self, request, *args, **kwargs):
         return Response({'detail': 'Faylni o‘zgartirish uchun yangi fayl yuklang.'}, status=405)
 

@@ -20,12 +20,33 @@ async function remoteLoad(identifier: string | number, kind: 'rentgen' | 'skan')
   const rows = await clinicApi.listPatientMedia(patientId, kind);
   const row = rows[0];
   if (!row?.file_url) return null;
-  const response = await apiFetch(row.file_url);
+  const build = (file: Blob): StoredMediaItem => ({
+    key: String(identifier), file, fileName: row.file_name, fileSize: row.file_size,
+    fileType: row.file_type, isZip: (row.file_name || '').toLowerCase().endsWith('.zip'),
+    uploadedAt: row.uploaded_at, extractedList: row.meta?.extractedList, filesCount: row.meta?.extractedList?.length });
+
+  // TEZ YO'L: ruxsat tekshirilgach presigned URL olib, katta faylni (3D skan/rentgen)
+  // to'g'ridan Cloupard'dan yuklaymiz — Django proksi 57MB'ni tashimaydi, 30s timeout yo'q.
+  try {
+    const accessPath = row.file_url.replace(/\/download\/?$/, '/access-url/');
+    const info = await apiFetch(accessPath).then(r => (r.ok ? r.json() : null));
+    const url: string | undefined = info?.url;
+    if (url && /^https?:\/\//i.test(url)) {
+      const direct = await fetch(url); // presigned, cross-origin, cookiesiz (Cloupard CORS kerak)
+      if (direct.ok) return build(await direct.blob());
+    }
+  } catch { /* presigned/CORS ishlamasa — pastdagi proksi zaxirasiga tushamiz */ }
+
+  // ZAXIRA: backend proksi (lokal fayllar yoki Cloupard CORS hali sozlanmagan holat).
+  // apiFetch EMAS — u GET'ni 30s da uzadi; bu yerda katta fayl uchun cheklovsiz fetch.
+  const headers: Record<string, string> = {};
+  try {
+    const u = JSON.parse(localStorage.getItem('32desk_auth_user') || 'null');
+    if (u?.clinicId) headers['X-Clinic-ID'] = String(u.clinicId);
+  } catch { /* ignore */ }
+  const response = await fetch(row.file_url, { credentials: 'include', headers });
   if (!response.ok) throw new Error('Faylni serverdan olib bo‘lmadi.');
-  const file = await response.blob();
-  return { key: String(identifier), file, fileName: row.file_name, fileSize: row.file_size,
-    fileType: row.file_type, isZip: row.file_name.toLowerCase().endsWith('.zip'),
-    uploadedAt: row.uploaded_at, extractedList: row.meta?.extractedList, filesCount: row.meta?.extractedList?.length };
+  return build(await response.blob());
 }
 async function remoteDelete(identifier: string | number, kind: 'rentgen' | 'skan') {
   const patientId = await patientIdentifier(identifier);
