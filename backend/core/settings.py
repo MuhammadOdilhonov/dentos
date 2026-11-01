@@ -217,14 +217,35 @@ FILE_UPLOAD_MAX_MEMORY_SIZE = 2 * 1024 * 1024
 MAX_PATIENT_FILE_BYTES = int(os.environ.get('MAX_PATIENT_FILE_BYTES', 512 * 1024 * 1024))
 RUNTIME_DIR = Path(os.environ.get('RUNTIME_DIR', str(BASE_DIR)))
 MEDIA_STORAGE = os.environ.get('MEDIA_STORAGE', 'local')
+# Cutover'dan OLDIN yuklangan (meta'da storage_backend yo'q) fayllar qaysi backend'da yotibdi.
+# Hozirgi serverda fayllar local disk'da → default 'local'. Agar eski fayllar B2'da bo'lsa 'b2'.
+MEDIA_STORAGE_LEGACY = os.environ.get('MEDIA_STORAGE_LEGACY', 'local')
+
+# OLD: Backblaze B2 S3 — endi yangi yuklashlar uchun ishlatilmaydi, faqat eski fayllarni
+# o'qish uchun qoladi (MEDIA_STORAGE=b2 bo'lsa yana standart bo'ladi).
 B2_KEY_ID = os.environ.get('B2_KEY_ID', '')
 B2_APPLICATION_KEY = os.environ.get('B2_APPLICATION_KEY', '')
 B2_BUCKET_NAME = os.environ.get('B2_BUCKET_NAME', 'dentos')
 B2_REGION = os.environ.get('B2_REGION', 'eu-central-003')
 B2_ENDPOINT = os.environ.get('B2_ENDPOINT', 'https://s3.eu-central-003.backblazeb2.com')
 B2_MEDICAL_STORAGE_APPROVED = os.environ.get('B2_MEDICAL_STORAGE_APPROVED', 'false').lower() == 'true'
+
+# NEW: Cloupard S3 Object Storage — yangi yuklashlar uchun standart backend.
+# Endpoint va region kabinetdagi "joylashuv nomi"dan TAXMIN qilinmaydi — aniq qiymatlar
+# serverdagi .env dan olinadi. Kalitlar faqat serverda; brauzerga/log'ga chiqmaydi.
+CLOUPARD_ACCESS_KEY = os.environ.get('CLOUPARD_ACCESS_KEY', '')
+CLOUPARD_SECRET_KEY = os.environ.get('CLOUPARD_SECRET_KEY', '')
+CLOUPARD_BUCKET_NAME = os.environ.get('CLOUPARD_BUCKET_NAME', 'dentos-private')
+CLOUPARD_REGION = os.environ.get('CLOUPARD_REGION', '')
+CLOUPARD_ENDPOINT = os.environ.get('CLOUPARD_ENDPOINT', '')
+
+# MEDIA_STORAGE → standart (yozish) backend. 'local' = disk; 'b2' = legacy B2; 'cloupard' = yangi.
+_MEDIA_BACKENDS = {
+    'b2': 'clinic.storage.PrivateB2Storage',            # OLD: Backblaze B2 S3 (legacy o'qish)
+    'cloupard': 'clinic.storage.PrivateCloupardStorage',  # NEW: Cloupard S3 (yangi yuklashlar)
+}
 STORAGES = {
-    'default': {'BACKEND': 'clinic.storage.PrivateB2Storage' if MEDIA_STORAGE == 'b2' else 'django.core.files.storage.FileSystemStorage'},
+    'default': {'BACKEND': _MEDIA_BACKENDS.get(MEDIA_STORAGE, 'django.core.files.storage.FileSystemStorage')},
     'staticfiles': {'BACKEND': 'whitenoise.storage.CompressedStaticFilesStorage'},
 }
 if not DEBUG and os.environ.get('DJANGO_SETTINGS_MODULE') != 'core.test_settings':
@@ -237,3 +258,6 @@ if not DEBUG and os.environ.get('DJANGO_SETTINGS_MODULE') != 'core.test_settings
         raise ImproperlyConfigured('Set explicit ALLOWED_HOSTS, e.g. dentos.cc,localhost,127.0.0.1.')
     if MEDIA_STORAGE == 'b2' and (not B2_MEDICAL_STORAGE_APPROVED or not B2_KEY_ID or not B2_APPLICATION_KEY):
         raise ImproperlyConfigured('B2 needs credentials and documented medical-storage approval.')
+    # NEW: Cloupard S3 — standart backend bo'lsa endpoint va kalitlar to'ldirilgan bo'lishi shart.
+    if MEDIA_STORAGE == 'cloupard' and (not CLOUPARD_ENDPOINT or not CLOUPARD_ACCESS_KEY or not CLOUPARD_SECRET_KEY):
+        raise ImproperlyConfigured('Cloupard S3 uchun CLOUPARD_ENDPOINT, CLOUPARD_ACCESS_KEY va CLOUPARD_SECRET_KEY kerak.')

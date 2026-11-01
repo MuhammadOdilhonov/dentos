@@ -285,6 +285,17 @@ class PatientMedia(models.Model):
         ordering = ['-uploaded_at']
         indexes = [models.Index(fields=['clinic', 'patient', 'kind'])]
 
+    def save(self, *args, **kwargs):
+        # Fayl BIRINCHI marta yozilganda u qaysi backend'ga tushganini belgilab qo'yamiz
+        # (foto/rentgen/skan — barcha yo'llar uchun yagona joy). Download keyinchalik aynan
+        # shu backend'dan o'qiydi; eski (local/B2) fayllar buzilmaydi.
+        if self.file and not (self.meta or {}).get('storage_backend'):
+            from django.conf import settings
+            meta = dict(self.meta or {})
+            meta['storage_backend'] = getattr(settings, 'MEDIA_STORAGE', 'local')
+            self.meta = meta
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return f"{self.kind} • {self.file_name} (bemor {self.patient_id})"
 

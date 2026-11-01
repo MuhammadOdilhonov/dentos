@@ -1389,17 +1389,21 @@ class PatientMediaViewSet(TenantViewSet):
             total = PatientMedia.objects.filter(clinic_id=clinic_id).aggregate(n=Sum('file_size'))['n'] or 0
             if total + f.size > float(clinic.storage_quota_gb) * 1024 ** 3:
                 raise ValidationError({'file': 'Klinika xotira limiti tugadi.'})
+            # storage_backend tegi PatientMedia.save() ichida avtomatik qo'yiladi (3 tur ham).
             serializer.save(clinic=clinic, file_name=f.name, file_size=f.size,
                             file_type=getattr(f, 'content_type', '') or 'application/octet-stream')
 
     @action(detail=True, methods=['get'])
     def download(self, request, pk=None):
         from django.http import FileResponse
+        from .storage import open_media_for_read
         media = self.get_object()
         if not media.file:
             return Response(status=404)
-        # Proxy through the authenticated backend: no B2 credential or permanent public URL.
-        response = FileResponse(media.file.open('rb'), content_type=media.file_type or 'application/octet-stream',
+        # Proxy through the authenticated backend: no storage credential or permanent public URL
+        # reaches the browser. open_media_for_read fayl saqlangan backend'dan ochadi
+        # (eski local/B2 fayllar yangi Cloupard'ga ko'chmasa ham ochiladi).
+        response = FileResponse(open_media_for_read(media), content_type=media.file_type or 'application/octet-stream',
                                 as_attachment=False, filename=media.file_name)
         response['Cache-Control'] = 'private, no-store'
         response['X-Content-Type-Options'] = 'nosniff'
