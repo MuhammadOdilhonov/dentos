@@ -17,8 +17,14 @@ def _s3_client_config():
 _COMMON_S3_KWARGS = dict(
     default_acl=None, file_overwrite=False, querystring_auth=True, querystring_expire=300,
     max_memory_size=8388608,
-    object_parameters={'ServerSideEncryption': 'AES256', 'CacheControl': 'private, no-store'},
 )
+
+# B2 SSE-S3 (AES256) ni qo'llaydi.
+_B2_OBJECT_PARAMETERS = {'ServerSideEncryption': 'AES256', 'CacheControl': 'private, no-store'}
+# Cloupard (S3-mos) SSE-S3 sarlavhasini QO'LLAMAYDI → PutObject/CreateMultipartUpload
+# "InternalError" qaytaradi. Shuning uchun ServerSideEncryption YUBORILMAYDI (shifrlash
+# Cloupard tomonida — bucket darajasida). CacheControl saqlanadi (fayl keshlanmasin).
+_CLOUPARD_OBJECT_PARAMETERS = {'CacheControl': 'private, no-store'}
 
 
 # OLD: Backblaze B2 S3 — avval yagona standart (yozish) backend edi. ENDI standart emas,
@@ -31,7 +37,7 @@ class PrivateB2Storage(S3Storage):
         super().__init__(
             access_key=settings.B2_KEY_ID, secret_key=settings.B2_APPLICATION_KEY,
             bucket_name=settings.B2_BUCKET_NAME, endpoint_url=settings.B2_ENDPOINT,
-            region_name=settings.B2_REGION,
+            region_name=settings.B2_REGION, object_parameters=_B2_OBJECT_PARAMETERS,
             client_config=_s3_client_config(), **_COMMON_S3_KWARGS, **kwargs)
 
 
@@ -47,7 +53,7 @@ class PrivateCloupardStorage(S3Storage):
         super().__init__(
             access_key=settings.CLOUPARD_ACCESS_KEY, secret_key=settings.CLOUPARD_SECRET_KEY,
             bucket_name=settings.CLOUPARD_BUCKET_NAME, endpoint_url=settings.CLOUPARD_ENDPOINT,
-            region_name=settings.CLOUPARD_REGION,
+            region_name=settings.CLOUPARD_REGION, object_parameters=_CLOUPARD_OBJECT_PARAMETERS,
             client_config=_s3_client_config(), **_COMMON_S3_KWARGS, **kwargs)
 
 
