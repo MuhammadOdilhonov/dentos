@@ -441,7 +441,7 @@ class Specialty(models.Model):
     name_uz = models.CharField(max_length=255, blank=True, default='')
     name_en = models.CharField(max_length=255, blank=True, default='')
     # GLOBAL standart mutaxassislik — barcha klinikaga ko'rinadi, o'chirib bo'lmaydi.
-    is_default = models.BooleanField(default=False, db_index=True)
+    is_default = models.BooleanField(default=False)
     clinic = models.ForeignKey(ClinicTenant, on_delete=models.CASCADE, null=True, blank=True, related_name='specialties')
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
