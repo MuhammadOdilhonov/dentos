@@ -375,19 +375,32 @@ class SpecialtyViewSet(TenantViewSet):
     queryset = Specialty.objects.filter(is_active=True).order_by('id')
     serializer_class = SpecialtySerializer
 
-    def get_queryset(self):
-        qs = super().get_queryset()
+    def _current_clinic_id(self):
         clinic_id = get_clinic_id(self.request)
-        if clinic_id:
-            qs = qs.filter(clinic_id=clinic_id)
-        return qs
+        if clinic_id is None and getattr(settings, 'ENFORCE_API_AUTH', False):
+            clinic_id = getattr(self.request.user, 'clinic_id', None)
+        return clinic_id
+
+    def get_queryset(self):
+        # GLOBAL standart (is_default=True, clinic=None) — BARCHA klinikaga ko'rinadi.
+        # Qolgani faqat o'z klinikasiga. Standartlar birinchi, keyin o'z qo'shganlari.
+        from django.db.models import Q
+        clinic_id = self._current_clinic_id()
+        qs = Specialty.objects.filter(is_active=True).filter(
+            Q(is_default=True) | Q(clinic_id=clinic_id)
+        )
+        return qs.order_by('-is_default', 'id')
 
     def perform_create(self, serializer):
-        clinic_id = get_clinic_id(self.request)
-        if clinic_id and not serializer.validated_data.get('clinic'):
-            serializer.save(clinic_id=clinic_id)
-        else:
-            serializer.save()
+        # Klinika o'zi qo'shgani — faqat o'ziga ko'rinadi, o'chirsa bo'ladi (is_default=False).
+        serializer.save(clinic_id=self._current_clinic_id(), is_default=False)
+
+    def perform_destroy(self, instance):
+        # Standart (global) mutaxassislikni o'chirib bo'lmaydi — majburiy.
+        if instance.is_default:
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied('Standart mutaxassislikni o‘chirib bo‘lmaydi.')
+        instance.delete()
 
 class ServiceCatalogItemViewSet(TenantViewSet):
     """Klinika xizmatlar/naryad narx katalogi — BAZADA, klinika bo'yicha scoping."""
@@ -1111,6 +1124,8 @@ class ClinicTenantViewSet(TenantViewSet):
             return Response({'detail': 'Login band.'}, status=400)
         from django.contrib.auth.hashers import make_password
         clinic = serializer.save()
+        # Standart 10 mutaxassislik GLOBAL (clinic=None) — har klinikaga alohida
+        # seed qilinmaydi, barchasiga avtomatik ko'rinadi (SpecialtyViewSet.get_queryset).
         # Create or update PlatformUser for this director
         user, _ = PlatformUser.objects.get_or_create(
             username=director_email,

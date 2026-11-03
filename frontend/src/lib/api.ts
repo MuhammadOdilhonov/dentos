@@ -2712,52 +2712,69 @@ export const clinicApi = {
   // --- Director: Specialties ---
   async getSpecialties(): Promise<SpecialtyItem[]> {
     const fallback: SpecialtyItem[] = [
-      { id: 1, name: 'Терапевт' },
-      { id: 2, name: 'Ортопед' },
-      { id: 3, name: 'Ортодонт' },
-      { id: 4, name: 'Хирург' },
-      { id: 5, name: 'Имплантолог' },
-      { id: 6, name: 'Пародонтолог' },
-      { id: 7, name: 'Детский стоматолог' },
-      { id: 8, name: 'Ассистент врача' },
-      { id: 9, name: 'Гигиенист' },
+      { id: 1,  name: 'Терапевт',                 name_ru: 'Терапевт',                 name_uz: 'Terapevt',                  name_en: 'Therapist',          is_default: true },
+      { id: 2,  name: 'Ортопед',                  name_ru: 'Ортопед',                  name_uz: 'Ortoped',                   name_en: 'Orthopedist',        is_default: true },
+      { id: 3,  name: 'Ортодонт',                 name_ru: 'Ортодонт',                 name_uz: 'Ortodont',                  name_en: 'Orthodontist',       is_default: true },
+      { id: 4,  name: 'Хирург',                   name_ru: 'Хирург',                   name_uz: 'Xirurg',                    name_en: 'Surgeon',            is_default: true },
+      { id: 5,  name: 'Имплантолог',              name_ru: 'Имплантолог',              name_uz: 'Implantolog',               name_en: 'Implantologist',     is_default: true },
+      { id: 6,  name: 'Пародонтолог',             name_ru: 'Пародонтолог',             name_uz: 'Parodontolog',              name_en: 'Periodontist',       is_default: true },
+      { id: 7,  name: 'Детский стоматолог',       name_ru: 'Детский стоматолог',       name_uz: 'Bolalar stomatologi',       name_en: 'Pediatric dentist',  is_default: true },
+      { id: 8,  name: 'Ассистент врача',          name_ru: 'Ассистент врача',          name_uz: 'Shifokor assistenti',       name_en: "Doctor's assistant", is_default: true },
+      { id: 9,  name: 'Гигиенист',                name_ru: 'Гигиенист',                name_uz: 'Gigienist',                 name_en: 'Hygienist',          is_default: true },
+      { id: 10, name: 'Стоматолог общей практики', name_ru: 'Стоматолог общей практики', name_uz: 'Umumiy amaliyot stomatologi', name_en: 'General dentist',  is_default: true },
     ];
-    if (typeof window !== 'undefined') {
-      try {
-        const stored = localStorage.getItem('32desk_specialties');
-        if (stored) return JSON.parse(stored);
-      } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
-    }
+    // Har doim YANGI ma'lumotni olamiz (safeFetch o'zida xotira-kesh + offline fallback bor).
+    // localStorage keshni BIRINCHI qaytarmaymiz — aks holda qo'shilgan/o'zgargan
+    // mutaxassislik ko'rinmay, eski ro'yxat qotib qolardi. localStorage faqat backend
+    // umuman javob bermaganda (offline) oxirgi haqiqiy ma'lumot sifatida ishlatiladi.
     const res = await safeFetch<SpecialtyItem[]>(`${API_BASE}/specialties/`, fallback);
-    if (typeof window !== 'undefined' && res && res.length > 0) {
-      localStorage.setItem('32desk_specialties', JSON.stringify(res));
+    if (typeof window !== 'undefined') {
+      if (res && res.length > 0 && res !== fallback) {
+        localStorage.setItem('32desk_specialties_v2', JSON.stringify(res));
+      } else {
+        // Backend javob bermadi (fallback qaytdi) — oxirgi saqlangan haqiqiy ro'yxat bo'lsa shuni beramiz
+        try {
+          const stored = localStorage.getItem('32desk_specialties_v2');
+          if (stored) return JSON.parse(stored);
+        } catch { /* ignore */ }
+      }
     }
     return res;
   },
 
-  async createSpecialty(name: string): Promise<SpecialtyItem> {
+  // names: 3 tilli nomlar. Kamida bittasi to'ldirilsa yetadi; kanonik name ruscha
+  // (bo'sh bo'lsa uz/en dan olinadi) — xodim mutaxassisligi shu matnda saqlanadi.
+  async createSpecialty(names: { ru?: string; uz?: string; en?: string }): Promise<SpecialtyItem> {
+    const ru = (names.ru || '').trim();
+    const uz = (names.uz || '').trim();
+    const en = (names.en || '').trim();
+    const canonical = ru || uz || en;
+    const payload = { name: canonical, name_ru: ru || canonical, name_uz: uz, name_en: en };
     try {
       const res = await apiFetch(`${API_BASE}/specialties/`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name })
+        body: JSON.stringify(payload)
       });
       if (res.ok) {
         const item = await res.json();
         const current = await this.getSpecialties();
         const next = [...current.filter(s => s.id !== item.id), item];
-        if (typeof window !== 'undefined') localStorage.setItem('32desk_specialties', JSON.stringify(next));
+        if (typeof window !== 'undefined') localStorage.setItem('32desk_specialties_v2', JSON.stringify(next));
         return item;
       }
     } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
     const newItem: SpecialtyItem = {
       id: Date.now(),
-      name,
+      name: canonical,
+      name_ru: ru || canonical,
+      name_uz: uz,
+      name_en: en,
       is_active: true
     };
     const current = await this.getSpecialties();
     const next = [...current, newItem];
-    if (typeof window !== 'undefined') localStorage.setItem('32desk_specialties', JSON.stringify(next));
+    if (typeof window !== 'undefined') localStorage.setItem('32desk_specialties_v2', JSON.stringify(next));
     return newItem;
   },
 
@@ -2767,7 +2784,7 @@ export const clinicApi = {
     } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; }
     const current = await this.getSpecialties();
     const next = current.filter(s => String(s.id) !== String(id));
-    if (typeof window !== 'undefined') localStorage.setItem('32desk_specialties', JSON.stringify(next));
+    if (typeof window !== 'undefined') localStorage.setItem('32desk_specialties_v2', JSON.stringify(next));
     return true;
   },
 

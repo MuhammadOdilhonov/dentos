@@ -18,6 +18,7 @@ import {
   ShieldCheck,
   X,
   Trash2,
+  Lock,
   Loader2,
   MessageSquareText,
   Plus,
@@ -43,7 +44,7 @@ import {
   UserCog,
   Save
 } from 'lucide-react';
-import { WorkplaceItem, SpecialtyItem, Branch } from '../../lib/types';
+import { WorkplaceItem, SpecialtyItem, Branch, specialtyLabel } from '../../lib/types';
 
 type MsgTemplate = { id: number; title: string; uz: string; ru: string; en: string };
 
@@ -347,7 +348,9 @@ export default function SettingsPage() {
   // ── Mutaxassisliklar (Specialties) ──
   const [specialties, setSpecialties] = useState<SpecialtyItem[]>([]);
   const [isSpecModalOpen, setIsSpecModalOpen] = useState(false);
-  const [newSpecName, setNewSpecName] = useState('');
+  const [newSpecRu, setNewSpecRu] = useState('');
+  const [newSpecUz, setNewSpecUz] = useState('');
+  const [newSpecEn, setNewSpecEn] = useState('');
 
   const loadWorkplacesAndSpecialties = async () => {
     const [wList, sList, bList] = await Promise.all([
@@ -484,11 +487,21 @@ export default function SettingsPage() {
     await loadWorkplacesAndSpecialties();
   };
 
+  const handleOpenAddSpec = () => {
+    setNewSpecRu('');
+    setNewSpecUz('');
+    setNewSpecEn('');
+    setIsSpecModalOpen(true);
+  };
+
   const handleCreateSpec = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newSpecName.trim()) return;
-    await clinicApi.createSpecialty(newSpecName.trim());
-    setNewSpecName('');
+    // Kamida bitta til to'ldirilishi shart
+    if (!newSpecRu.trim() && !newSpecUz.trim() && !newSpecEn.trim()) return;
+    await clinicApi.createSpecialty({ ru: newSpecRu.trim(), uz: newSpecUz.trim(), en: newSpecEn.trim() });
+    setNewSpecRu('');
+    setNewSpecUz('');
+    setNewSpecEn('');
     setIsSpecModalOpen(false);
     await loadWorkplacesAndSpecialties();
   };
@@ -2325,7 +2338,7 @@ export default function SettingsPage() {
 
                 <button
                   type="button"
-                  onClick={() => setIsSpecModalOpen(true)}
+                  onClick={handleOpenAddSpec}
                   className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs sm:text-sm font-bold shadow-md shadow-blue-500/20 transition active:scale-95 cursor-pointer"
                 >
                   <Plus className="w-4 h-4" />
@@ -2345,18 +2358,26 @@ export default function SettingsPage() {
                         {idx + 1}
                       </div>
                       <span className="text-sm font-bold text-slate-900 dark:text-white">
-                        {s.name}
+                        {specialtyLabel(s, language)}
                       </span>
                     </div>
 
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteSpec(s.id, s.name)}
-                      className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer"
-                      title={tr('settings2.delete')}
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
+                    {s.is_default ? (
+                      // Standart (global) mutaxassislik — o'chirib bo'lmaydi
+                      <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400 text-[10px] font-bold" title={tr('settings2.defaultSpecialtyLocked')}>
+                        <Lock className="w-3 h-3" />
+                        {tr('settings2.standard')}
+                      </span>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteSpec(s.id, specialtyLabel(s, language))}
+                        className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-slate-800 rounded-lg transition cursor-pointer"
+                        title={tr('settings2.delete')}
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
                   </div>
                 ))}
               </div>
@@ -2821,16 +2842,43 @@ export default function SettingsPage() {
             </div>
 
             <form onSubmit={handleCreateSpec} className="space-y-4 text-xs">
+              <p className="text-[11px] text-slate-500 dark:text-slate-400 -mt-1">
+                {tr('settings2.specialtyMultiLangHint')}
+              </p>
+              {/* 3 til — kamida bittasi to'ldirilishi yetarli */}
               <div>
                 <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1.5">
-                  {tr('settings2.specialtyName')} *
+                  {tr('settings2.specialtyName')} · Русский
                 </label>
                 <input
                   type="text"
-                  required
-                  placeholder={tr('settings2.eGOrthodontistGnathologist')}
-                  value={newSpecName}
-                  onChange={(e) => setNewSpecName(e.target.value)}
+                  placeholder="Напр.: Ортодонт"
+                  value={newSpecRu}
+                  onChange={(e) => setNewSpecRu(e.target.value)}
+                  className="w-full px-3.5 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                  {tr('settings2.specialtyName')} · O‘zbekcha
+                </label>
+                <input
+                  type="text"
+                  placeholder="Masalan: Ortodont"
+                  value={newSpecUz}
+                  onChange={(e) => setNewSpecUz(e.target.value)}
+                  className="w-full px-3.5 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                  {tr('settings2.specialtyName')} · English
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Orthodontist"
+                  value={newSpecEn}
+                  onChange={(e) => setNewSpecEn(e.target.value)}
                   className="w-full px-3.5 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>

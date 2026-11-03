@@ -58,9 +58,29 @@ class WorkplaceSerializer(TenantModelSerializer):
         fields = '__all__'
 
 class SpecialtySerializer(TenantModelSerializer):
+    name = serializers.CharField(required=False, allow_blank=True)
+
     class Meta:
         model = Specialty
         fields = '__all__'
+        read_only_fields = ['is_default']
+
+    def validate(self, attrs):
+        # 3 tilli nomlar — kamida bittasi to'ldirilsa yetadi; name (kanonik) bo'sh
+        # bo'lsa ruscha → o'zbekcha → inglizchadan to'ldiramiz (eski klient faqat
+        # name yuborsa ham ishlaydi).
+        name = (attrs.get('name') or '').strip()
+        ru = (attrs.get('name_ru') or '').strip()
+        uz = (attrs.get('name_uz') or '').strip()
+        en = (attrs.get('name_en') or '').strip()
+        canonical = name or ru or uz or en
+        if not canonical:
+            raise serializers.ValidationError({'name': 'Mutaxassislik nomi kiritilishi shart.'})
+        attrs['name'] = canonical
+        attrs['name_ru'] = ru or name or canonical
+        attrs['name_uz'] = uz
+        attrs['name_en'] = en
+        return attrs
 
 class ServiceCatalogItemSerializer(TenantModelSerializer):
     class Meta:

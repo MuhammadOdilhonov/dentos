@@ -24,7 +24,8 @@ import {
   SpecialtyItem,
   EmployeeDaySchedule,
   EmployeeScheduleInterval,
-  Branch
+  Branch,
+  specialtyLabel
 } from '../lib/types';
 import { useI18n } from '../lib/i18n';
 import { translate } from '../lib/locales';
@@ -770,7 +771,7 @@ export default function EmployeeFullModal({
                       >
                         {specialties.map((s) => (
                           <option key={s.id} value={s.name}>
-                            {s.name}
+                            {specialtyLabel(s, language)}
                           </option>
                         ))}
                       </select>

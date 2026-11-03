@@ -417,14 +417,56 @@ class Workplace(models.Model):
     def __str__(self):
         return f"{self.name} ({self.color})"
 
+# Platforma standart mutaxassisliklari (10 ta) — GLOBAL, barcha klinikaga ko'rinadi,
+# o'chirib bo'lmaydi. clinic=None, is_default=True bo'lib BITTA marta saqlanadi.
+# 3 tilda (ru / uz / en). name = kanonik qiymat (ruscha) — xodim.specialty shu matnda
+# saqlanadi, shuning uchun mavjud ma'lumot buzilmasin. Ko'rsatishda til bo'yicha tarjima.
+DEFAULT_SPECIALTIES = [
+    {'ru': 'Терапевт',                 'uz': 'Terapevt',                  'en': 'Therapist'},
+    {'ru': 'Ортопед',                  'uz': 'Ortoped',                   'en': 'Orthopedist'},
+    {'ru': 'Ортодонт',                 'uz': 'Ortodont',                  'en': 'Orthodontist'},
+    {'ru': 'Хирург',                   'uz': 'Xirurg',                    'en': 'Surgeon'},
+    {'ru': 'Имплантолог',              'uz': 'Implantolog',               'en': 'Implantologist'},
+    {'ru': 'Пародонтолог',             'uz': 'Parodontolog',              'en': 'Periodontist'},
+    {'ru': 'Детский стоматолог',       'uz': 'Bolalar stomatologi',       'en': 'Pediatric dentist'},
+    {'ru': 'Ассистент врача',          'uz': 'Shifokor assistenti',       'en': "Doctor's assistant"},
+    {'ru': 'Гигиенист',                'uz': 'Gigienist',                 'en': 'Hygienist'},
+    {'ru': 'Стоматолог общей практики', 'uz': 'Umumiy amaliyot stomatologi', 'en': 'General dentist'},
+]
+
+
 class Specialty(models.Model):
-    name = models.CharField(max_length=255) # e.g. "Терапевт"
+    name = models.CharField(max_length=255)  # kanonik nom (ruscha) — e.g. "Терапевт"
+    name_ru = models.CharField(max_length=255, blank=True, default='')
+    name_uz = models.CharField(max_length=255, blank=True, default='')
+    name_en = models.CharField(max_length=255, blank=True, default='')
+    # GLOBAL standart mutaxassislik — barcha klinikaga ko'rinadi, o'chirib bo'lmaydi.
+    is_default = models.BooleanField(default=False, db_index=True)
     clinic = models.ForeignKey(ClinicTenant, on_delete=models.CASCADE, null=True, blank=True, related_name='specialties')
     is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
         return self.name
+
+
+def ensure_default_specialties():
+    """Platforma 10 global standart mutaxassisligini (clinic=None, is_default=True)
+    mavjud qiladi. Idempotent — bor bo'lsa tarjimasini yangilaydi, yo'g'ini qo'shadi.
+    """
+    for s in DEFAULT_SPECIALTIES:
+        Specialty.objects.update_or_create(
+            is_default=True,
+            clinic__isnull=True,
+            name=s['ru'],
+            defaults={
+                'name_ru': s['ru'],
+                'name_uz': s['uz'],
+                'name_en': s['en'],
+                'is_active': True,
+                'clinic': None,
+            },
+        )
 
 
 

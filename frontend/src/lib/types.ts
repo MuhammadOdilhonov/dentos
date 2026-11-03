@@ -50,9 +50,21 @@ export interface WorkplaceItem {
 
 export interface SpecialtyItem {
   id: number | string;
-  name: string;
+  name: string;        // kanonik nom (ruscha) — xodim.specialty shu matnda saqlanadi
+  name_ru?: string;
+  name_uz?: string;
+  name_en?: string;
+  is_default?: boolean; // GLOBAL standart — barcha klinikaga ko'rinadi, o'chirib bo'lmaydi
   clinic?: number | null;
   is_active?: boolean;
+}
+
+// Mutaxassislik nomini joriy til bo'yicha ko'rsatish (uz→uz, ru→ru, en→en),
+// tarjima bo'lmasa kanonik name ga qaytadi.
+export function specialtyLabel(s: SpecialtyItem, lang: string): string {
+  if (lang === 'uz') return s.name_uz || s.name_ru || s.name;
+  if (lang === 'en') return s.name_en || s.name_ru || s.name;
+  return s.name_ru || s.name;
 }
 
 export interface EmployeeScheduleInterval {
