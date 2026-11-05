@@ -238,6 +238,15 @@ export interface NaryadDraftItem {
 
 // Activity log entry (who / when / why) for a naryad added or removed.
 export interface NaryadLogEntry {
+  doctor_id?: number;
+  unitPrice?: number;
+  quantity?: number;
+  teeth?: string[];
+  percent?: number;
+  doctor_share?: number;
+  clinic_share?: number;
+  note?: string;
+  created_at?: string;
   id: number;
   naryad_id?: string | number;
   patient_id?: number;
@@ -275,14 +284,47 @@ export interface TreatmentPlanStage {
 }
 
 
+// Service group / category (32desk «Услуга») — left panel, managed by the Director
+export interface ServiceCategory {
+  id: string;
+  name: string;
+  description?: string;
+  show_in_calendar?: boolean;
+  item_count?: number;
+  created_at?: string;
+}
+
+// One package sub-item inside a procedure (32desk «Пакет» tab)
+export interface NaryadPackageItem {
+  service_id?: string;
+  name: string;
+  qty: number;
+  price: number;
+}
+
 // Service / Naryad catalog item managed by the Director
 export interface NaryadCatalogItem {
   id: string;
   name: string;
-  category: string;
+  category: string;              // legacy text (kept in sync with category_ref name)
+  category_ref?: string | null;  // FK → ServiceCategory
+  category_name?: string;        // read-only resolved name from server
+  code?: string;
   base_price: number;
   default_percent?: number;
   description?: string;
+  // 32desk «Основные» metadata
+  duration_min?: number | null;
+  buffer_min?: number | null;
+  price_fixed?: boolean;
+  duration_fixed?: boolean;
+  show_in_calendar?: boolean;
+  // 32desk other tabs
+  package_items?: NaryadPackageItem[];
+  diagnoses?: { code?: string; name: string }[];
+  manipulations?: { name: string; note?: string }[];
+  reminder_enabled?: boolean;
+  reminder_days?: number | null;
   created_at?: string;
 }
 

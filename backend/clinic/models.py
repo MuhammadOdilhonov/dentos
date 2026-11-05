@@ -508,6 +508,30 @@ class PatientRecord(models.Model):
         constraints = [models.UniqueConstraint(fields=['patient', 'section'], name='unique_patient_record_section')]
 
 
+class ServiceCategory(models.Model):
+    """Klinika xizmat guruhi/kategoriyasi — 32desk «Услуга» (chap panel).
+
+    Har bir klinika o'z kategoriyalarini yaratadi/tahrirlaydi. Naryad (ServiceCatalogItem)
+    shu guruhga `category_ref` orqali ulanadi. Eski matnli `category` ustuni mosligi
+    uchun saqlanadi (serializerda nom bilan sinxronlanadi). Demo (clinic 1) bu modeldan
+    foydalanmaydi — frontend demo hardcoded ko'rsatadi.
+    """
+    clinic = models.ForeignKey(ClinicTenant, on_delete=models.CASCADE, null=True, blank=True, related_name='service_categories')
+    name = models.CharField(max_length=160)
+    description = models.TextField(blank=True)
+    show_in_calendar = models.BooleanField(default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['name', 'id']
+        constraints = [
+            models.UniqueConstraint(fields=['clinic', 'name'], name='uniq_service_category_per_clinic'),
+        ]
+
+    def __str__(self):
+        return self.name
+
+
 class ServiceCatalogItem(models.Model):
     """Klinikaning xizmatlar/naryad narx katalogi — BAZADA (brauzer localStorage emas).
 
@@ -517,10 +541,26 @@ class ServiceCatalogItem(models.Model):
     """
     clinic = models.ForeignKey(ClinicTenant, on_delete=models.CASCADE, null=True, blank=True, related_name='service_catalog')
     name = models.CharField(max_length=500)
+    # Eski matnli kategoriya — orqaga moslik (kassa/hisobot `category` ni o'qiydi).
+    # category_ref bilan sinxron: serializer category_ref.name ni shu yerga yozadi.
     category = models.CharField(max_length=120, blank=True)
+    category_ref = models.ForeignKey(ServiceCategory, on_delete=models.SET_NULL, null=True, blank=True, related_name='items')
+    code = models.CharField(max_length=40, blank=True)
     base_price = models.DecimalField(max_digits=14, decimal_places=2, default=0)
     default_percent = models.PositiveIntegerField(null=True, blank=True)
     description = models.TextField(blank=True)
+    # 32desk «Основные» qo'shimcha metama'lumot
+    duration_min = models.PositiveIntegerField(null=True, blank=True)
+    buffer_min = models.PositiveIntegerField(null=True, blank=True)
+    price_fixed = models.BooleanField(default=True)
+    duration_fixed = models.BooleanField(default=True)
+    show_in_calendar = models.BooleanField(default=False)
+    # 32desk qolgan tablar — ma'lumot saqlash (chuqur integratsiyasiz)
+    package_items = models.JSONField(default=list, blank=True)   # [{service_id, name, qty, price}]
+    diagnoses = models.JSONField(default=list, blank=True)        # [{code, name}]
+    manipulations = models.JSONField(default=list, blank=True)    # [{name, note}]
+    reminder_enabled = models.BooleanField(default=False)
+    reminder_days = models.PositiveIntegerField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

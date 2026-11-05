@@ -4,6 +4,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useI18n } from '../lib/i18n';
 import { clinicApi } from '../lib/api';
 import { Employee, NaryadCatalogItem, DoctorNaryadAssignment } from '../lib/types';
+import { doctorRate, naryadSplit } from '../lib/naryadPricing';
 import ToothIcon from './ToothIcon';
 import {
   X,
@@ -64,46 +65,6 @@ interface CatalogServiceItem {
   default_percent?: number;
 }
 
-// Full dental services catalog including Dental Technician / Laboratory services
-const DEFAULT_SERVICES: CatalogServiceItem[] = [
-  // Терапия
-  { name: 'Консультация врача (осмотр, план лечения, 3D рентген)', category: 'Терапия', base_price: 500000, default_percent: 50 },
-  { name: 'Лечение кариеса + световая пломба Estelite', category: 'Терапия', base_price: 650000, default_percent: 40 },
-  { name: 'Эндодонтическое лечение корневого канала (1 канал)', category: 'Терапия', base_price: 800000, default_percent: 35 },
-  { name: 'Реставрация зуба фотополимером Estelite Asteria', category: 'Терапия', base_price: 900000, default_percent: 35 },
-  { name: 'Композитный винир прямой метод', category: 'Терапия', base_price: 3500000, default_percent: 35 },
-
-  // Гигиена
-  { name: 'Профессиональная гигиена полости рта (GBT протокол)', category: 'Гигиена', base_price: 1500000, default_percent: 45 },
-  { name: 'Фторирование эмали и реминерализация', category: 'Гигиена', base_price: 300000, default_percent: 50 },
-  { name: 'Отбеливание зубов Beyond Polus Advanced', category: 'Гигиена', base_price: 2500000, default_percent: 40 },
-
-  // Хирургия & Имплантация
-  { name: 'Удаление зуба простое с анестезией', category: 'Хирургия', base_price: 450000, default_percent: 35 },
-  { name: 'Удаление зуба сложное (дистопия/ретинированный 8-й зуб)', category: 'Хирургия', base_price: 900000, default_percent: 35 },
-  { name: 'Установка имплантата Osstem TS-III (Корея)', category: 'Хирургия', base_price: 4200000, default_percent: 30 },
-  { name: 'Установка имплантата Straumann BLX (Швейцария)', category: 'Хирургия', base_price: 7500000, default_percent: 35 },
-  { name: 'Закрытый синус-лифтинг с костной пластикой', category: 'Хирургия', base_price: 3500000, default_percent: 30 },
-
-  // Ортопедия
-  { name: 'Металлокерамическая коронка Duceram', category: 'Ортопедия', base_price: 1200000, default_percent: 35 },
-  { name: 'Циркониевая коронка цельноанатомическая Prettau', category: 'Ортопедия', base_price: 2400000, default_percent: 35 },
-  { name: 'Керамическая коронка IPS e.max Press', category: 'Ортопедия', base_price: 3000000, default_percent: 35 },
-  { name: 'Керамические виниры E.max (Premium LAB)', category: 'Ортопедия', base_price: 18000000, default_percent: 40 },
-  { name: 'Рельсовый бюгельный протез на имплантатах (на балке)', category: 'Ортопедия', base_price: 25000000, default_percent: 35 },
-
-  // Зуботехнические работы / Laboratoriya (Dental Technician)
-  { name: 'Циркониевая коронка Prettau (Зуботехника)', category: 'Зуботехнические работы', base_price: 1800000, default_percent: 30 },
-  { name: 'Керамическая коронка E.max (Зуботехника)', category: 'Зуботехнические работы', base_price: 2200000, default_percent: 30 },
-  { name: 'Металлокерамическая коронка (Зуботехника)', category: 'Зуботехнические работы', base_price: 900000, default_percent: 30 },
-  { name: 'Временная коронка PMMA (CAD/CAM фрезеровка)', category: 'Зуботехнические работы', base_price: 350000, default_percent: 25 },
-  { name: 'Керамический винир E.max (LAB)', category: 'Зуботехнические работы', base_price: 2500000, default_percent: 30 },
-  { name: 'Бюгельный протез с замковой фиксацией (Bredent)', category: 'Зуботехнические работы', base_price: 12000000, default_percent: 30 },
-  { name: 'Индивидуальная слепочная ложка', category: 'Зуботехнические работы', base_price: 250000, default_percent: 20 },
-  { name: 'Индивидуальный циркониевый абатмент', category: 'Зуботехнические работы', base_price: 1500000, default_percent: 25 },
-  { name: 'Wax-up диагностическое моделирование (1 зуб)', category: 'Зуботехнические работы', base_price: 200000, default_percent: 25 }
-];
-
 const UPPER_TEETH = ['18', '17', '16', '15', '14', '13', '12', '11', '21', '22', '23', '24', '25', '26', '27', '28'];
 const LOWER_TEETH = ['48', '47', '46', '45', '44', '43', '42', '41', '31', '32', '33', '34', '35', '36', '37', '38'];
 const UPPER_TEETH_CHILD = ['55', '54', '53', '52', '51', '61', '62', '63', '64', '65'];
@@ -119,7 +80,6 @@ export default function NaryadModal({
   patientBalance,
   doctorId,
   doctorName,
-  doctorPercent,
   onSave
 }: NaryadModalProps) {
   const { language, tk, tr } = useI18n();
@@ -130,6 +90,8 @@ export default function NaryadModal({
   const [activeCategory, setActiveCategory] = useState('Barchasi');
   const [searchQuery, setSearchQuery] = useState('');
   const [cart, setCart] = useState<NaryadCartItem[]>([]);
+  const [loadError, setLoadError] = useState('');
+  const [loading, setLoading] = useState(false);
   const [note, setNote] = useState('');
 
   // Dental technician selection in naryad
@@ -138,54 +100,34 @@ export default function NaryadModal({
 
   // Doctor state
   const [doctorsList, setDoctorsList] = useState<Employee[]>([]);
-  const [selectedDoctorId, setSelectedDoctorId] = useState<number>(doctorId || 1);
+  const [selectedDoctorId, setSelectedDoctorId] = useState<number>(doctorId || 0);
   const [catalogItems, setCatalogItems] = useState<CatalogServiceItem[]>([]);
   const [doctorAssignments, setDoctorAssignments] = useState<DoctorNaryadAssignment[]>([]);
 
   useEffect(() => {
     if (!isOpen) return;
 
-    // Load doctors
-    clinicApi.getEmployees().then((emps) => {
-      const docs = emps.filter((e) => e.role === 'doctor');
-      setDoctorsList(docs);
-      if (doctorId) {
-        setSelectedDoctorId(doctorId);
-      } else if (doctorName) {
-        const found = docs.find((d) => d.full_name.toLowerCase().includes(doctorName.toLowerCase()));
-        if (found) setSelectedDoctorId(found.id);
-        else if (docs[0]) setSelectedDoctorId(docs[0].id);
-      } else if (docs[0]) {
-        setSelectedDoctorId(docs[0].id);
-      }
-    });
-
-    // Load catalog items (BAZADAN). Bo'sh bo'lsa standart xizmatlar ko'rsatiladi.
-    (async () => {
-      let cat: NaryadCatalogItem[] = [];
-      try {
-        cat = await clinicApi.getNaryadCatalog();
-      } catch {
-        cat = [];
-      }
-      if (cat && cat.length > 0) {
-        // Merge with dental technician category if missing
-        const hasTech = cat.some((c) => c.category === 'Зуботехнические работы');
-        if (!hasTech) {
-          const techItems = DEFAULT_SERVICES.filter((s) => s.category === 'Зуботехнические работы');
-          setCatalogItems([...cat, ...techItems]);
-        } else {
-          setCatalogItems(cat);
-        }
-      } else {
-        setCatalogItems(DEFAULT_SERVICES);
-      }
-    })();
-
-    (async () => {
-      try { setDoctorAssignments(await clinicApi.getDoctorNaryads()); }
-      catch { setDoctorAssignments([]); }
-    })();
+    let cancelled = false;
+    setLoading(true);
+    setLoadError('');
+    setDoctorsList([]);
+    setCatalogItems([]);
+    setDoctorAssignments([]);
+    setSelectedDoctorId(doctorId || 0);
+    Promise.all([clinicApi.getEmployees(), clinicApi.getNaryadCatalog(), clinicApi.getDoctorNaryads()])
+      .then(([employees, catalog, assignments]) => {
+        if (cancelled) return;
+        const doctors = employees.filter(employee => employee.role === 'doctor' && employee.is_active !== false);
+        setDoctorsList(doctors);
+        setCatalogItems(catalog);
+        setDoctorAssignments(assignments);
+        const selected = doctors.find(doctor => doctor.id === doctorId)
+          || doctors.find(doctor => doctor.full_name === doctorName)
+          || doctors[0];
+        setSelectedDoctorId(selected?.id || 0);
+      })
+      .catch(() => { if (!cancelled) setLoadError('Ma’lumotlar yuklanmadi. Oynani qayta ochib ko‘ring.'); })
+      .finally(() => { if (!cancelled) setLoading(false); });
 
     // Reset view
     setIsChildChart(false);
@@ -195,6 +137,7 @@ export default function NaryadModal({
     setCart([]);
     setNote('');
     setTechNote('');
+    return () => { cancelled = true; };
   }, [isOpen, doctorId, doctorName]);
 
   const upperRow = isChildChart ? UPPER_TEETH_CHILD : UPPER_TEETH;
@@ -237,7 +180,7 @@ export default function NaryadModal({
     doctorAssignments
       .filter((a) => a.doctor_id === selectedDoctorId)
       .forEach((a) => {
-        map.set(a.naryad_id, a.custom_price);
+        if (a.is_custom_price) map.set(a.naryad_id, a.custom_price);
       });
     return map;
   }, [doctorAssignments, selectedDoctorId]);
@@ -282,9 +225,8 @@ export default function NaryadModal({
       ? `${item.name} [${selectedTechnician}]`
       : item.name;
 
-    // Foiz: shifokorга (xodimga) foiz belgilangan bo'lsa — o'sha; aks holda xizmatning standart foizi.
-    const useDoctorPercent = doctorPercent != null && !Number.isNaN(Number(doctorPercent));
-    const appliedPercent = useDoctorPercent ? Number(doctorPercent) : item.default_percent;
+    const appliedPercent = doctorRate(currentDoctor?.commission_rate);
+    if (appliedPercent == null || loading || loadError) return;
 
     setCart((prev) => [
       ...prev,
@@ -299,7 +241,7 @@ export default function NaryadModal({
         technician: isTechService ? selectedTechnician : undefined,
         category: item.category,
         percent: appliedPercent,
-        percentSource: useDoctorPercent ? 'doctor' : 'standard',
+        percentSource: 'doctor',
       }
     ]);
     setSelectedTeeth([]);
@@ -315,6 +257,7 @@ export default function NaryadModal({
 
   // Naryad item uchun QO'LDA narx kiritish (o'zini narxini qo'yish)
   const updatePrice = (id: string, newPrice: number) => {
+    if (!Number.isFinite(newPrice) || newPrice < 0) return;
     setCart((prev) =>
       prev.map((item) =>
         item.id === id
@@ -329,7 +272,7 @@ export default function NaryadModal({
   const total = cart.reduce((acc, item) => acc + item.price * item.quantity, 0);
 
   const handleFinish = () => {
-    if (cart.length === 0) return;
+    if (loading || loadError || cart.length === 0 || !currentDoctor || doctorRate(currentDoctor.commission_rate) == null) return;
     const finalNote = [
       note.trim(),
       techNote.trim() ? `Texnikka (${selectedTechnician}): ${techNote.trim()}` : ''
@@ -379,8 +322,10 @@ export default function NaryadModal({
               <select
                 value={selectedDoctorId}
                 onChange={(e) => setSelectedDoctorId(Number(e.target.value))}
+                disabled={cart.length > 0}
                 className="font-bold bg-transparent border-none outline-none cursor-pointer text-slate-900 dark:text-white"
               >
+                <option value={0}>—</option>
                 {doctorsList.map((doc) => (
                   <option key={doc.id} value={doc.id}>
                     {doc.full_name} ({doc.specialty || 'Shifokor'})
@@ -814,6 +759,9 @@ export default function NaryadModal({
                   </span>
                 </div>
 
+                {loading && <p role="status">{language === 'uz' ? 'Yuklanmoqda…' : language === 'en' ? 'Loading…' : 'Загрузка…'}</p>}
+                {loadError && <p role="alert" className="text-sm text-red-600">{loadError}</p>}
+                {cart.length > 0 && <p className="text-xs text-slate-500">{language === 'uz' ? 'Shifokor ulushi' : language === 'en' ? 'Doctor share' : 'Доля врача'}: {cart.reduce((sum, item) => sum + naryadSplit(item.price, item.quantity, item.percent!).doctorShare, 0).toLocaleString()} {som}</p>}
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
@@ -825,7 +773,7 @@ export default function NaryadModal({
                   <button
                     type="button"
                     onClick={handleFinish}
-                    disabled={cart.length === 0}
+                    disabled={loading || !!loadError || cart.length === 0 || !currentDoctor || doctorRate(currentDoctor.commission_rate) == null}
                     className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white rounded-xl text-xs font-bold shadow-md shadow-blue-500/20 transition flex items-center justify-center gap-1.5 active:scale-95"
                   >
                     <Check className="w-4 h-4" />

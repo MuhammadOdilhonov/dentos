@@ -4,7 +4,7 @@ from .models import (
     Employee, Patient, Appointment, FinancialTransaction, ClinicTask,
     WarehouseItem, DentalLabOrder, DentalTechnician, PlatformSetting, ClinicTenant,
     PlatformUser, Workplace, Specialty, Branch, PatientMedia, PhotoProtocol,
-    ServiceCatalogItem, DoctorNaryadRate
+    ServiceCatalogItem, DoctorNaryadRate, ServiceCategory
 )
 
 
@@ -82,11 +82,46 @@ class SpecialtySerializer(TenantModelSerializer):
         attrs['name_en'] = en
         return attrs
 
+class ServiceCategorySerializer(TenantModelSerializer):
+    item_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = ServiceCategory
+        fields = ['id', 'clinic', 'name', 'description', 'show_in_calendar', 'created_at', 'item_count']
+        read_only_fields = ['created_at', 'item_count']
+
+    def get_item_count(self, obj):
+        # select_related/annotate ViewSetda; bo'lmasa oddiy count
+        return getattr(obj, 'item_count', None) if hasattr(obj, 'item_count') else obj.items.count()
+
+
 class ServiceCatalogItemSerializer(TenantModelSerializer):
+    # O'ng paneldagi kichik kategoriya nomi uchun (faqat o'qish)
+    category_name = serializers.SerializerMethodField()
+
     class Meta:
         model = ServiceCatalogItem
-        fields = ['id', 'clinic', 'name', 'category', 'base_price', 'default_percent', 'description', 'created_at']
-        read_only_fields = ['created_at']
+        fields = [
+            'id', 'clinic', 'name', 'category', 'category_ref', 'category_name',
+            'code', 'base_price', 'default_percent', 'description',
+            'duration_min', 'buffer_min', 'price_fixed', 'duration_fixed', 'show_in_calendar',
+            'package_items', 'diagnoses', 'manipulations', 'reminder_enabled', 'reminder_days',
+            'created_at',
+        ]
+        read_only_fields = ['created_at', 'category_name']
+
+    def get_category_name(self, obj):
+        if obj.category_ref_id:
+            return obj.category_ref.name
+        return obj.category or ''
+
+    def validate(self, attrs):
+        attrs = super().validate(attrs)
+        # category_ref berilsa — eski matnli `category` ni nom bilan sinxronlab,
+        # kassa/hisobot kabi eski iste'molchilar to'g'ri ko'rsatishi uchun.
+        if 'category_ref' in attrs and attrs['category_ref'] is not None:
+            attrs['category'] = attrs['category_ref'].name
+        return attrs
 
     def validate_base_price(self, value):
         if value is None or value < 0:
@@ -159,6 +194,11 @@ class DoctorNaryadRateSerializer(TenantModelSerializer):
 
 class EmployeeSerializer(TenantModelSerializer):
     branch_name = serializers.CharField(source='branch.name', read_only=True)
+
+    def validate_commission_rate(self, value):
+        if not value.is_finite() or value < 0 or value > 100:
+            raise serializers.ValidationError('Shifokor foizi 0–100 oralig‘ida bo‘lishi kerak.')
+        return value
 
     class Meta:
         model = Employee

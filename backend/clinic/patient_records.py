@@ -29,6 +29,12 @@ def _write_section(patient, section, value, expected_version, attempts=8):
                 current = row.version if row else 0
                 if expected_version != current:
                     return (_CONFLICT, current)
+                if section == 'naryads':
+                    from .naryads import snapshot_naryads
+                    value = snapshot_naryads(patient, value, row.value if row else [])
+                elif section == 'naryad_log':
+                    from .naryads import snapshot_log
+                    value = snapshot_log(patient, value, row.value if row else [])
                 if not row:
                     row = PatientRecord(patient=patient, section=section)
                 row.value, row.version = value, current + 1

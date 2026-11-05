@@ -22,7 +22,7 @@ from .models import (
     Employee, Patient, Appointment, FinancialTransaction, ClinicTask,
     WarehouseItem, DentalLabOrder, DentalTechnician, PlatformSetting, ClinicTenant,
     PlatformUser, Workplace, Specialty, Branch, PatientMedia, PhotoProtocol,
-    ServiceCatalogItem, DoctorNaryadRate
+    ServiceCatalogItem, DoctorNaryadRate, ServiceCategory
 )
 from .serializers import (
     EmployeeSerializer, PatientSerializer, AppointmentSerializer,
@@ -31,7 +31,7 @@ from .serializers import (
     DentalTechnicianSerializer, PlatformSettingSerializer, ClinicTenantSerializer,
     PlatformUserSerializer, WorkplaceSerializer, SpecialtySerializer, BranchSerializer,
     PatientMediaSerializer, PhotoProtocolSerializer, ServiceCatalogItemSerializer,
-    DoctorNaryadRateSerializer
+    DoctorNaryadRateSerializer, ServiceCategorySerializer
 )
 
 
@@ -232,6 +232,11 @@ class EmployeeViewSet(TenantViewSet):
     queryset = Employee.objects.all().order_by('id')
     serializer_class = EmployeeSerializer
 
+    @action(detail=True, methods=['get'], url_path='naryad-journal')
+    def naryad_journal(self, request, pk=None):
+        from .naryads import employee_journal
+        return Response(employee_journal(request, self.get_object()))
+
     def get_queryset(self):
         qs = super().get_queryset()
         clinic_id = get_clinic_id(self.request)
@@ -402,9 +407,40 @@ class SpecialtyViewSet(TenantViewSet):
             raise PermissionDenied('Standart mutaxassislikni o‘chirib bo‘lmaydi.')
         instance.delete()
 
+class ServiceCategoryViewSet(TenantViewSet):
+    """Klinika xizmat guruhlari (32desk «Услуга») — chap panel CRUD, klinika scoping."""
+    queryset = ServiceCategory.objects.all()
+    serializer_class = ServiceCategorySerializer
+
+    def get_queryset(self):
+        qs = super().get_queryset()
+        clinic_id = get_clinic_id(self.request)
+        if clinic_id:
+            qs = qs.filter(clinic_id=clinic_id)
+        elif not self.request.user.is_superuser:
+            return qs.none()
+        return qs
+
+    def perform_create(self, serializer):
+        clinic_id = get_clinic_id(self.request)
+        if clinic_id and not serializer.validated_data.get('clinic'):
+            serializer.save(clinic_id=clinic_id)
+        else:
+            serializer.save()
+
+    def perform_destroy(self, instance):
+        # Kategoriya o'chsa — ICHIDAGI NARYADLAR HAM o'chadi (foydalanuvchi talabi).
+        # Eski matnli `category` bir xil bo'lgan (ref biriktirilmagan) naryadlar ham o'chadi.
+        from django.db.models import Q
+        ServiceCatalogItem.objects.filter(
+            Q(category_ref=instance) | Q(category_ref__isnull=True, clinic=instance.clinic, category=instance.name)
+        ).delete()
+        instance.delete()
+
+
 class ServiceCatalogItemViewSet(TenantViewSet):
     """Klinika xizmatlar/naryad narx katalogi — BAZADA, klinika bo'yicha scoping."""
-    queryset = ServiceCatalogItem.objects.all()
+    queryset = ServiceCatalogItem.objects.select_related('category_ref').all()
     serializer_class = ServiceCatalogItemSerializer
 
     def get_queryset(self):
@@ -417,6 +453,9 @@ class ServiceCatalogItemViewSet(TenantViewSet):
         category = self.request.query_params.get('category')
         if category:
             qs = qs.filter(category=category)
+        category_ref = self.request.query_params.get('category_ref')
+        if category_ref:
+            qs = qs.filter(category_ref_id=category_ref)
         return qs
 
     def perform_create(self, serializer):
@@ -447,6 +486,7 @@ class ServiceCatalogItemViewSet(TenantViewSet):
             with transaction.atomic():
                 existing = {n.lower().strip() for n in ServiceCatalogItem.objects.filter(
                     clinic_id=clinic_id).values_list('name', flat=True)}
+                cat_cache = {}  # nom(lower) -> ServiceCategory
                 for it in items:
                     name = str(it.get('name', '')).strip()
                     if not name:
@@ -454,8 +494,17 @@ class ServiceCatalogItemViewSet(TenantViewSet):
                     if name.lower() in existing:
                         skipped += 1
                         continue
+                    cat_name = str(it.get('category', '')).strip()
+                    cat_ref_id = None
+                    if cat_name:
+                        cat = cat_cache.get(cat_name.lower())
+                        if cat is None:
+                            cat, _ = ServiceCategory.objects.get_or_create(
+                                clinic_id=clinic_id, name=cat_name)
+                            cat_cache[cat_name.lower()] = cat
+                        cat_ref_id = cat.id
                     ser = ServiceCatalogItemSerializer(data={
-                        'name': name, 'category': it.get('category', ''),
+                        'name': name, 'category': cat_name, 'category_ref': cat_ref_id,
                         'base_price': it.get('base_price', 0),
                         'default_percent': it.get('default_percent'),
                         'description': it.get('description', '')},

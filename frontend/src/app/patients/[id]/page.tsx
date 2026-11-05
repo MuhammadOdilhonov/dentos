@@ -1,5 +1,6 @@
 'use client';
 
+import { naryadSplit } from '../../../lib/naryadPricing';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
@@ -1203,6 +1204,12 @@ export default function PatientDetailPage() {
     title: string;
     name: string;
     unitPrice: number;
+    doctor_id?: number;
+    percent?: number;
+    doctor_share?: number;
+    clinic_share?: number;
+    note?: string;
+    created_at?: string;
     teeth: string[];
     doctor: string;
     date: string;
@@ -2386,6 +2393,12 @@ export default function PatientDetailPage() {
       title: it.teeth.length ? `${it.name} (${it.teeth.join(', ')})` : it.name,
       name: it.name,
       unitPrice: it.price,
+      doctor_id: docId,
+      percent: it.percent,
+      doctor_share: naryadSplit(it.price, it.quantity, it.percent!).doctorShare,
+      clinic_share: naryadSplit(it.price, it.quantity, it.percent!).clinicShare,
+      note,
+      created_at: new Date().toISOString(),
       teeth: it.teeth,
       doctor,
       date: nowLabel,
@@ -2401,6 +2414,7 @@ export default function PatientDetailPage() {
     // Log each struck naryad (who + when)
     newNaryadItems.forEach((n) => {
       const entry: NaryadLogEntry = {
+        ...n,
         id: n.id,
         naryad_id: n.id,
         patient_id: patient.id,
@@ -2451,6 +2465,7 @@ export default function PatientDetailPage() {
       setPatient((prev) => (prev ? { ...prev, balance: prev.balance + item.price } : null));
     }
     const logEntry: NaryadLogEntry = {
+      ...item,
       id: Date.now(),
       naryad_id: item.id,                        // barqaror ID bo'yicha 'added' yozuvni bekor qiladi
       patient_id: patient.id,

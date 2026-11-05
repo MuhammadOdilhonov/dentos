@@ -6,7 +6,7 @@ import {
   NaryadDraftItem, NaryadLogEntry, NaryadCatalogItem, DoctorNaryadAssignment,
   TreatmentPlanStage, DentalTechnician, PlatformSetting, DoctorCertificate, DoctorDiploma,
   TechnicianPriceItem, ClinicTenant, ClinicDossierData, WorkplaceItem, SpecialtyItem,
-  EmployeeScheduleInterval, EmployeeDaySchedule, Branch
+  EmployeeScheduleInterval, EmployeeDaySchedule, Branch, ServiceCategory
 } from './types';
 import {
   mockEmployees, mockPatients, mockAppointments,
@@ -2797,11 +2797,75 @@ export const clinicApi = {
       id: String(row.id),
       name: row.name,
       category: row.category || '',
+      category_ref: row.category_ref != null ? String(row.category_ref) : null,
+      category_name: row.category_name || row.category || '',
+      code: row.code || '',
       base_price: Number(row.base_price) || 0,
       default_percent: row.default_percent ?? undefined,
       description: row.description || '',
+      duration_min: row.duration_min ?? null,
+      buffer_min: row.buffer_min ?? null,
+      price_fixed: row.price_fixed ?? true,
+      duration_fixed: row.duration_fixed ?? true,
+      show_in_calendar: row.show_in_calendar ?? false,
+      package_items: Array.isArray(row.package_items) ? row.package_items : [],
+      diagnoses: Array.isArray(row.diagnoses) ? row.diagnoses : [],
+      manipulations: Array.isArray(row.manipulations) ? row.manipulations : [],
+      reminder_enabled: row.reminder_enabled ?? false,
+      reminder_days: row.reminder_days ?? null,
       created_at: row.created_at,
     };
+  },
+
+  _mapCategoryRow(row: any): ServiceCategory {
+    return {
+      id: String(row.id),
+      name: row.name,
+      description: row.description || '',
+      show_in_calendar: row.show_in_calendar ?? false,
+      item_count: typeof row.item_count === 'number' ? row.item_count : undefined,
+      created_at: row.created_at,
+    };
+  },
+
+  // --- Service categories (32desk «Услуга») — BAZADA /service-categories/ ---
+  async getServiceCategories(): Promise<ServiceCategory[]> {
+    if (typeof window === 'undefined') return [];
+    if (isDemoClinic()) return DEMO_SERVICE_CATEGORIES;
+    const rows = await safeFetch<any[]>(`${API_BASE}/service-categories/`, []);
+    return Array.isArray(rows) ? rows.map((r) => this._mapCategoryRow(r)) : [];
+  },
+
+  async createServiceCategory(cat: Omit<ServiceCategory, 'id'>): Promise<ServiceCategory> {
+    if (isDemoClinic()) return { ...cat, id: `demo-${Date.now()}` } as ServiceCategory;
+    const res = await apiFetch(`${API_BASE}/service-categories/`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: cat.name, description: cat.description || '', show_in_calendar: !!cat.show_in_calendar }),
+    });
+    const row = await res.json();
+    bustApiCache();
+    return this._mapCategoryRow(row);
+  },
+
+  async updateServiceCategory(id: string, updates: Partial<ServiceCategory>): Promise<ServiceCategory | null> {
+    if (isDemoClinic()) return null;
+    const body: Record<string, any> = {};
+    for (const k of ['name', 'description', 'show_in_calendar'] as const) {
+      if (updates[k] !== undefined) body[k] = updates[k];
+    }
+    const res = await apiFetch(`${API_BASE}/service-categories/${id}/`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const row = await res.json();
+    bustApiCache();
+    return this._mapCategoryRow(row);
+  },
+
+  async deleteServiceCategory(id: string): Promise<void> {
+    if (isDemoClinic()) return;
+    await apiFetch(`${API_BASE}/service-categories/${id}/`, { method: 'DELETE' });
+    bustApiCache();
   },
 
   // Klinika serverda sessiya (cookie + X-Clinic-ID) bo'yicha aniqlanadi — shuning
@@ -2834,8 +2898,16 @@ export const clinicApi = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         name: item.name, category: item.category,
+        category_ref: item.category_ref ? Number(item.category_ref) : null,
+        code: item.code || '',
         base_price: item.base_price, default_percent: item.default_percent,
         description: item.description || '',
+        duration_min: item.duration_min ?? null, buffer_min: item.buffer_min ?? null,
+        price_fixed: item.price_fixed ?? true, duration_fixed: item.duration_fixed ?? true,
+        show_in_calendar: item.show_in_calendar ?? false,
+        package_items: item.package_items || [], diagnoses: item.diagnoses || [],
+        manipulations: item.manipulations || [],
+        reminder_enabled: item.reminder_enabled ?? false, reminder_days: item.reminder_days ?? null,
       }),
     });
     const row = await res.json();
@@ -2846,9 +2918,12 @@ export const clinicApi = {
   async updateNaryadCatalogItem(id: string, updates: Partial<NaryadCatalogItem>): Promise<NaryadCatalogItem | null> {
     if (isDemoClinic()) return null; // demo: saqlanmaydi
     const body: Record<string, any> = {};
-    for (const k of ['name', 'category', 'base_price', 'default_percent', 'description'] as const) {
+    for (const k of ['name', 'category', 'code', 'base_price', 'default_percent', 'description',
+      'duration_min', 'buffer_min', 'price_fixed', 'duration_fixed', 'show_in_calendar',
+      'package_items', 'diagnoses', 'manipulations', 'reminder_enabled', 'reminder_days'] as const) {
       if (updates[k] !== undefined) body[k] = updates[k];
     }
+    if (updates.category_ref !== undefined) body.category_ref = updates.category_ref ? Number(updates.category_ref) : null;
     const res = await apiFetch(`${API_BASE}/service-catalog/${id}/`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -3709,6 +3784,18 @@ const DEFAULT_NARYAD_CATALOG: NaryadCatalogItem[] = [
   { id: 'nar-86', name: 'Плазмолифтинг десен (PRP аутоплазма, 1 процедура)', category: 'Parodontologiya', base_price: 600000, default_percent: 40, description: 'Bemor o‘z qoni plazmasi bilan milkni qayta tiklash' },
   { id: 'nar-87', name: 'Шинирование подвижных зубов стекловолоконной лентой (1 зуб)', category: 'Parodontologiya', base_price: 250000, default_percent: 35, description: 'Qimirlagan tishlarni mustahkam biriktirish' }
 ];
+
+// DEMO klinika (id=1) uchun chap panel kategoriyalari — DEFAULT_NARYAD_CATALOG dan
+// aniq kategoriyalar. Saqlanmaydi (demo).
+const DEMO_SERVICE_CATEGORIES: ServiceCategory[] = Array.from(
+  new Set(DEFAULT_NARYAD_CATALOG.map((d) => d.category).filter(Boolean))
+).map((name, i) => ({
+  id: `democat-${i + 1}`,
+  name,
+  description: '',
+  show_in_calendar: false,
+  item_count: DEFAULT_NARYAD_CATALOG.filter((d) => d.category === name).length,
+}));
 
 const DEFAULT_DOCTOR_NARYADS: DoctorNaryadAssignment[] = [
   { id: 'dna-1', doctor_id: 1, naryad_id: 'nar-6', name: 'Циркониевая коронка Prettau', category: 'Ортопедия', custom_price: 2500000, commission_percent: 35 },

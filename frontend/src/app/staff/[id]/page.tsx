@@ -19,6 +19,7 @@ import {
 import { useI18n } from '../../../lib/i18n';
 import { useAuth } from '../../../lib/auth';
 import { useBranch } from '../../../lib/branchContext';
+import EmployeeNaryadJournal from '../../../components/EmployeeNaryadJournal';
 import EmployeeFullModal from '../../../components/EmployeeFullModal';
 import {
   ArrowLeft,
@@ -72,6 +73,8 @@ const AVAILABLE_CHAIRS = [
 export default function DoctorDetailPage() {
   const { language, tr, tk } = useI18n();
   const som = tr('staffdict.som');
+  // Qisqa 3-tilli yordamchi (qattiq yozilgan matnlar uchun)
+  const L = (uz: string, ru: string, en: string) => (language === 'uz' ? uz : language === 'en' ? en : ru);
 
   const params = useParams();
   const empId = params?.id ? Number(params.id) : 0;
@@ -148,7 +151,7 @@ export default function DoctorDetailPage() {
   const [naryadCatFilter, setNaryadCatFilter] = useState<string>('all');
   const [naryadSearch, setNaryadSearch] = useState<string>('');
 
-  const doctorPercent = Number(employee?.commission_rate) || 35;
+  const doctorPercent = Number(employee?.commission_rate ?? 0);
 
   const handleInlinePriceChange = async (assignmentId: string, newPrice: number) => {
     const prevAssignments = assignments;
@@ -249,40 +252,7 @@ export default function DoctorDetailPage() {
       const catList = await clinicApi.getNaryadCatalog();
       setCatalog(catList);
       const existingAssigns = await clinicApi.getDoctorNaryads(empId);
-      if (existingAssigns.length === 0 && emp && !isDemoClinic()) {
-        // Automatically pre-populate matching this employee's specialty / direction
-        const specStr = `${emp.specialty || ''} ${emp.role || ''}`.toLowerCase();
-        let catFilter = '';
-        if (specStr.includes('terap') || specStr.includes('davolash')) catFilter = 'Терапия';
-        else if (specStr.includes('ortoped') || specStr.includes('protez')) catFilter = 'Ортопедия';
-        else if (specStr.includes('xirurg') || specStr.includes('jarroh')) catFilter = 'Хирургия';
-        else if (specStr.includes('implant')) catFilter = 'Implantologiya';
-        else if (specStr.includes('ortodont')) catFilter = 'Ортодонтия';
-        else if (specStr.includes('bolalar')) catFilter = 'Детская стоматология';
-
-        const defaultItems = catFilter
-          ? catList.filter((c) => c.category.toLowerCase().includes(catFilter.toLowerCase()))
-          : catList.slice(0, 16);
-
-        try {
-          for (const item of defaultItems) {
-            await clinicApi.assignDoctorNaryad({
-              doctor_id: empId,
-              naryad_id: item.id,
-              name: item.name,
-              category: item.category,
-              custom_price: item.base_price,
-              commission_percent: doctorPercent,
-              is_custom_price: false
-            });
-          }
-          setAssignments(await clinicApi.getDoctorNaryads(empId));
-        } catch {
-          setAssignments(existingAssigns);
-        }
-      } else {
-        setAssignments(existingAssigns);
-      }
+      setAssignments(existingAssigns);
       setWorkplaces(wplaces);
       setSpecialties(specs);
       setBranches(bList);
@@ -304,9 +274,10 @@ export default function DoctorDetailPage() {
     let completed = 0;
     const perPatient: Record<number, { name: string; phone: string; visits: number; paid: number; debt: number; lastDate: string }> = {};
 
+    // FAQAT HAQIQIY ma'lumot (bazadan). Soxta baseline/fallback YO'Q — yangi xodimda 0.
     appointments.forEach((a) => {
-      const price = Number(a.price) || 450000;
-      const paidAmt = Number(a.paid_amount) || price;
+      const price = Number(a.price) || 0;
+      const paidAmt = Number(a.paid_amount) || 0;
       const d = Math.max(0, price - paidAmt);
       revenue += paidAmt;
       debt += d;
@@ -317,11 +288,11 @@ export default function DoctorDetailPage() {
         const foundP = patients.find((p) => p.id === pid);
         perPatient[pid] = {
           name: a.patient_name || foundP?.full_name || `Bemor #${pid}`,
-          phone: foundP?.phone || '+998 90 000 00 00',
+          phone: foundP?.phone || '',
           visits: 0,
           paid: 0,
           debt: 0,
-          lastDate: a.start_time ? a.start_time.split('T')[0] : '2026-09-15'
+          lastDate: a.start_time ? a.start_time.split('T')[0] : ''
         };
       }
       perPatient[pid].visits += 1;
@@ -332,13 +303,7 @@ export default function DoctorDetailPage() {
       }
     });
 
-    if (revenue === 0) {
-      revenue = 24800000; // Baseline realistic demonstration figure
-      debt = 1400000;
-      completed = 18;
-    }
-
-    const doctorRate = employee?.commission_rate || 35;
+    const doctorRate = employee?.commission_rate ?? 0;
     const doctorEarned = Math.round(revenue * (doctorRate / 100));
     const clinicEarned = revenue - doctorEarned;
 
@@ -352,7 +317,7 @@ export default function DoctorDetailPage() {
       completed,
       doctorEarned,
       clinicEarned,
-      total: appointments.length || 22,
+      total: appointments.length,
       patientList
     };
   }, [appointments, patients, employee]);
@@ -440,7 +405,7 @@ export default function DoctorDetailPage() {
 
     const isCustom = assignForm.price_type === 'custom';
     const effectivePrice = isCustom ? Number(assignForm.custom_price) : item.base_price;
-    const effectivePercent = isCustom ? Number(assignForm.commission_percent) : (item.default_percent || 30);
+    const effectivePercent = doctorPercent;
 
     try {
       if (editingAssignment) {
@@ -541,7 +506,7 @@ export default function DoctorDetailPage() {
   //  - deputy_director (boshqaruvchi): kuzatuv (qabul/bemor) + moliya — sertifikat/kreslo/naryad narxi yo'q
   //  - admin / kassir / hamshira: faqat Asosiy + Moliya (oylik)
   const ROLE_TABS: Record<string, string[]> = {
-    doctor: ['Asosiy', 'Qabullar', 'Bemorlari', 'Naryadlar', 'Sertifikatlar', 'Kreslo', 'Moliya'],
+    doctor: ['Asosiy', 'Qabullar', 'Bemorlari', 'Jurnal', ...(isDirectorOrAdmin ? ['Naryadlar'] : []), 'Sertifikatlar', 'Kreslo', 'Moliya'],
     director: ['Asosiy', 'Qabullar', 'Bemorlari', 'Sertifikatlar', 'Moliya'],
     deputy_director: ['Asosiy', 'Qabullar', 'Bemorlari', 'Moliya'],
     admin: ['Asosiy', 'Moliya'],
@@ -553,6 +518,7 @@ export default function DoctorDetailPage() {
     { id: 'Asosiy', labelKey: 'sid_tab_general', icon: Users },
     { id: 'Qabullar', labelKey: 'sid_tab_appointments', count: appointments.length, icon: Calendar },
     { id: 'Bemorlari', labelKey: 'sid_tab_patients', count: stats.patientList.length, icon: Stethoscope },
+    { id: 'Jurnal', labelKey: 'naryad_log', icon: FileCheck2 },
     { id: 'Naryadlar', labelKey: 'sid_tab_naryads', count: assignments.length, icon: FileCheck2 },
     { id: 'Sertifikatlar', labelKey: 'sid_tab_certs', count: (employee.certificates?.length || 0) + (employee.diplomas?.length || 0), icon: Award },
     { id: 'Kreslo', labelKey: 'sid_tab_schedule', icon: Armchair },
@@ -758,7 +724,7 @@ export default function DoctorDetailPage() {
               </div>
               <div>
                 <p className="text-2xl font-black tracking-tight text-emerald-600">{stats.doctorEarned.toLocaleString()} {som}</p>
-                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mt-1">{tr('staffdict.doctorShare')} ({employee.commission_rate || 35}%)</p>
+                <p className="text-xs font-bold text-slate-400 uppercase tracking-wider mt-1">{tr('staffdict.doctorShare')} ({employee.commission_rate ?? 0}%)</p>
               </div>
             </div>
 
@@ -885,8 +851,8 @@ export default function DoctorDetailPage() {
                   <p className="text-xs opacity-80 mt-0.5">{tr('staffd.monthlyGuaranteedRate')}</p>
                 </div>
                 <div className="pt-3 border-t border-white/20 flex items-center justify-between text-xs">
-                  <span>Muolajadan shifokor ulushi:</span>
-                  <span className="font-black text-sm">{employee.commission_rate || 35}%</span>
+                  <span>{L('Muolajadan shifokor ulushi:', 'Доля врача с процедуры:', 'Doctor share per procedure:')}</span>
+                  <span className="font-black text-sm">{employee.commission_rate ?? 0}%</span>
                 </div>
               </div>
 
@@ -1019,13 +985,13 @@ export default function DoctorDetailPage() {
                         )}
                       </td>
                       <td className="py-3.5 px-3 text-slate-600 dark:text-slate-300">
-                        {a.procedure || a.treatment_notes || 'Stomatologik ko‘rik va konsultatsiya'}
+                        {a.procedure || a.treatment_notes || '—'}
                       </td>
                       <td className="py-3.5 px-3 text-right font-bold">
-                        {Number(a.price || 450000).toLocaleString()} {som}
+                        {(Number(a.price) || 0).toLocaleString()} {som}
                       </td>
                       <td className="py-3.5 px-3 text-right font-bold text-emerald-600">
-                        {Number(a.paid_amount || a.price || 450000).toLocaleString()} {som}
+                        {(Number(a.paid_amount) || 0).toLocaleString()} {som}
                       </td>
                       <td className="py-3.5 px-3 text-center">
                         <span
@@ -1040,12 +1006,12 @@ export default function DoctorDetailPage() {
                           }`}
                         >
                           {a.status === 'completed'
-                            ? 'Yakunlangan'
+                            ? L('Yakunlangan', 'Завершён', 'Completed')
                             : a.status === 'debt'
-                            ? 'Qarz'
+                            ? L('Qarz', 'Долг', 'Debt')
                             : a.status === 'cancelled'
-                            ? 'Bekor qilingan'
-                            : 'Kutilmoqda'}
+                            ? L('Bekor qilingan', 'Отменён', 'Cancelled')
+                            : L('Kutilmoqda', 'Ожидается', 'Pending')}
                         </span>
                       </td>
                     </tr>
@@ -1145,6 +1111,8 @@ export default function DoctorDetailPage() {
           </div>
         </div>
       )}
+
+      {activeTab === 'Jurnal' && <EmployeeNaryadJournal employeeId={empId} />}
 
       {/* TAB 4: NARYADLAR VA NARXLAR (Assigned Naryads & Custom Pricing) */}
       {activeTab === 'Naryadlar' && (() => {
@@ -1259,8 +1227,8 @@ export default function DoctorDetailPage() {
                     setAssignForm({
                       naryad_id: first ? first.id : '',
                       price_type: 'standard',
-                      custom_price: first ? first.base_price : 450000,
-                      commission_percent: first ? (first.default_percent || 35) : 35,
+                      custom_price: first ? first.base_price : 0,
+                      commission_percent: first ? (first.default_percent ?? doctorPercent) : doctorPercent,
                       notes: ''
                     });
                     setIsAssignModalOpen(true);
@@ -1740,7 +1708,7 @@ export default function DoctorDetailPage() {
             <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-xs space-y-2">
               <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">{tr('staffd.doctorCommission')}</span>
               <p className="text-2xl font-black text-emerald-600">{stats.doctorEarned.toLocaleString()} {som}</p>
-              <p className="text-xs text-slate-500">Muolajalardan hisoblangan ulush ({employee.commission_rate || 35}%)</p>
+              <p className="text-xs text-slate-500">{L('Muolajalardan hisoblangan ulush', 'Доля, рассчитанная с процедур', 'Share calculated from procedures')} ({employee.commission_rate ?? 0}%)</p>
             </div>
             <div className="p-6 rounded-3xl bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 shadow-xs space-y-2">
               <span className="text-xs font-bold text-slate-400 uppercase tracking-wider">{tr('staffd.clinicNetIncome')}</span>
@@ -1833,7 +1801,9 @@ export default function DoctorDetailPage() {
           <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-3xl p-6 sm:p-7 w-full max-w-lg shadow-2xl space-y-5">
             <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-4">
               <h3 className="text-lg font-black">
-                {editingAssignment ? 'Naryad narxini o‘zgartirish' : 'Yangi naryad biriktirish'}
+                {editingAssignment
+                  ? L('Naryad narxini o‘zgartirish', 'Изменить цену наряда', 'Edit procedure price')
+                  : L('Yangi naryad biriktirish', 'Привязать новый наряд', 'Assign new procedure')}
               </h3>
               <button onClick={() => setIsAssignModalOpen(false)} className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg">
                 <X className="w-5 h-5" />
@@ -1853,7 +1823,7 @@ export default function DoctorDetailPage() {
                       ...prev,
                       naryad_id: selId,
                       custom_price: item ? item.base_price : prev.custom_price,
-                      commission_percent: item ? (item.default_percent || 35) : prev.commission_percent
+                      commission_percent: item ? (item.default_percent ?? doctorPercent) : prev.commission_percent
                     }));
                   }}
                   className="w-full px-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none"
@@ -1867,7 +1837,7 @@ export default function DoctorDetailPage() {
               </div>
 
               <div className="space-y-1">
-                <label className="text-slate-500 font-bold uppercase text-[11px]">Shaxsiy narx (UZS) *</label>
+                <label className="text-slate-500 font-bold uppercase text-[11px]">{L('Shaxsiy narx (UZS)', 'Индивидуальная цена (UZS)', 'Custom price (UZS)')} *</label>
                 <input
                   type="number"
                   step="10000"
@@ -1878,12 +1848,12 @@ export default function DoctorDetailPage() {
               </div>
 
               <div className="p-2.5 rounded-xl bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 flex items-center justify-between text-xs">
-                <span className="text-slate-500 font-bold">Shifokor yagona foizi:</span>
+                <span className="text-slate-500 font-bold">{L('Shifokor yagona foizi:', 'Единый процент врача:', 'Doctor unified percent:')}</span>
                 <span className="font-black text-blue-600 dark:text-sky-400 font-mono text-sm">{doctorPercent}%</span>
               </div>
 
               <div className="p-3 bg-blue-50 dark:bg-blue-950/50 rounded-xl text-blue-900 dark:text-blue-200 flex items-center justify-between">
-                <span>1 muolajadan sof shifokor tushumi:</span>
+                <span>{L('1 muolajadan sof shifokor tushumi:', 'Чистый доход врача с 1 процедуры:', 'Net doctor income per procedure:')}</span>
                 <span className="font-black text-sm text-blue-600 dark:text-blue-400">
                   {Math.round(assignForm.custom_price * (assignForm.commission_percent / 100)).toLocaleString()} {som}
                 </span>

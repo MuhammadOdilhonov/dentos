@@ -4,6 +4,7 @@ import React, { useState, useMemo } from 'react';
 import { Employee, Appointment, WorkplaceItem } from '../lib/types';
 import AppointmentCard from './AppointmentCard';
 import { useI18n } from '../lib/i18n';
+import { useAuth } from '../lib/auth';
 import {
   ChevronLeft,
   ChevronRight,
@@ -43,6 +44,9 @@ export default function CalendarGrid({
   currentBranchId = null
 }: CalendarGridProps) {
   const { t, language, tr } = useI18n();
+  const { user } = useAuth();
+  // Administrator/kassa (reception) moliyaviy/monitoring KPI panelni KO'RMAYDI.
+  const canSeeFinance = ['director', 'deputy_director', 'superadmin'].includes(user?.role || '');
   const [viewMode, setViewMode] = useState<'day' | '3days' | 'week' | 'month'>('day');
   const [groupMode, setGroupMode] = useState<'employees' | 'chairs'>('employees');
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
@@ -435,7 +439,9 @@ export default function CalendarGrid({
         </div>
       </div>
 
-      {/* 2.1.B. Real-time Daily Financial & Operational Statistics Bar */}
+      {/* 2.1.B. Real-time Daily Financial & Operational Statistics Bar —
+          FAQAT moliyaviy ruxsatli rollarga. Administrator/kassa (reception) KO'RMAYDI. */}
+      {canSeeFinance && (
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 px-3.5 py-2.5 bg-slate-100/70 dark:bg-slate-900/60 border-b border-slate-200 dark:border-slate-800 transition-colors">
         {/* 1. Received Payment (Kirim / Paid) */}
         <div className="bg-white dark:bg-[#1E293B] p-2.5 rounded-xl border border-slate-200/80 dark:border-slate-700/80 shadow-2xs flex items-center justify-between">
@@ -521,6 +527,7 @@ export default function CalendarGrid({
           </div>
         </div>
       </div>
+      )}
 
       {/* 2.2. Calendar body — month = month grid, otherwise a time grid */}
       {viewMode === 'month' ? (
@@ -597,32 +604,42 @@ export default function CalendarGrid({
                   }`}
                 >
                   {viewMode === 'day' ? (
-                    <>
+                    // Shifokor ustuni: LOGO ortda (watermark), TEPADA ism, PASTDA filial
+                    <div className="relative w-full flex flex-col items-center justify-center text-center overflow-hidden rounded-lg py-1">
+                      {/* orqa fon — avatar yoki rang (watermark) */}
                       {col.avatar ? (
                         // eslint-disable-next-line @next/next/no-img-element
-                        <img src={col.avatar} alt={col.headerTop} className="w-10 h-10 rounded-full object-cover ring-2 ring-slate-100 dark:ring-slate-700 shadow-xs" />
+                        <img src={col.avatar} alt="" aria-hidden className="absolute inset-0 w-full h-full object-cover opacity-10 dark:opacity-[0.14] pointer-events-none select-none" />
                       ) : (
-                        <div className="w-10 h-10 rounded-full flex items-center justify-center text-white font-bold text-sm shadow-xs" style={{ backgroundColor: col.color }}>
-                          {col.headerTop[0]}
-                        </div>
+                        <div className="absolute inset-0 opacity-10 dark:opacity-20 pointer-events-none" style={{ backgroundColor: col.color }} />
                       )}
-                      <div className="min-w-0">
-                        <p className="text-xs font-bold text-slate-900 dark:text-white truncate">{col.headerTop}</p>
-                        <p className="text-[11px] text-slate-500 dark:text-slate-400 truncate">{col.headerSub}</p>
-                        <div className="flex flex-wrap items-center gap-1 mt-0.5">
-                          {col.branchName && (
-                            <span className="text-[9px] font-bold text-cyan-600 dark:text-cyan-400 bg-cyan-50 dark:bg-cyan-950/80 px-1.5 py-0.5 rounded border border-cyan-200 dark:border-cyan-800">
-                              {col.branchName}
-                            </span>
-                          )}
-                          {col.badge && (
-                            <span className="text-[9px] font-medium text-blue-600 dark:text-sky-400 bg-blue-50 dark:bg-blue-950/60 px-1.5 py-0.5 rounded border border-blue-100 dark:border-blue-900/60">
-                              {col.badge}
-                            </span>
-                          )}
-                        </div>
+                      {/* tepada kichik avatar + ism */}
+                      <div className="relative z-10 flex flex-col items-center min-w-0 w-full">
+                        {col.avatar ? (
+                          // eslint-disable-next-line @next/next/no-img-element
+                          <img src={col.avatar} alt={col.headerTop} className="w-9 h-9 rounded-full object-cover ring-2 ring-white dark:ring-slate-800 shadow-sm mb-1" />
+                        ) : (
+                          <div className="w-9 h-9 rounded-full flex items-center justify-center text-white font-black text-sm shadow-sm ring-2 ring-white dark:ring-slate-800 mb-1" style={{ backgroundColor: col.color }}>
+                            {col.headerTop[0]}
+                          </div>
+                        )}
+                        <p className="text-xs font-black text-slate-900 dark:text-white truncate max-w-full leading-tight">{col.headerTop}</p>
+                        {col.headerSub && (
+                          <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate max-w-full">{col.headerSub}</p>
+                        )}
+                        {/* pastda filial */}
+                        {col.branchName && (
+                          <span className="mt-0.5 text-[9px] font-bold text-cyan-700 dark:text-cyan-300 bg-cyan-50 dark:bg-cyan-950/80 px-1.5 py-0.5 rounded-full border border-cyan-200 dark:border-cyan-800 truncate max-w-full">
+                            {col.branchName}
+                          </span>
+                        )}
+                        {col.badge && (
+                          <span className="mt-0.5 text-[9px] font-medium text-blue-600 dark:text-sky-400 bg-blue-50 dark:bg-blue-950/60 px-1.5 py-0.5 rounded-full border border-blue-100 dark:border-blue-900/60 truncate max-w-full">
+                            {col.badge}
+                          </span>
+                        )}
                       </div>
-                    </>
+                    </div>
                   ) : (
                     <div className="w-full text-center">
                       <p className={`text-[11px] font-semibold uppercase ${col.isToday ? 'text-blue-600' : 'text-slate-400'}`}>{col.headerTop}</p>

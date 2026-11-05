@@ -332,7 +332,7 @@ export default function ReportsPage() {
       const grossRevenue = docAppointments.reduce((sum, a) => sum + (Number(a.price) || 0), 0);
 
       // Commission Rate (default 35% or doc.commission_rate)
-      const commRate = Number(doc.commission_rate) || 35;
+      const commRate = Number(doc.commission_rate ?? 0);
       const earnedSalary = Math.round((grossRevenue * commRate) / 100);
 
       // Payouts & Advances given to this doctor from Transactions

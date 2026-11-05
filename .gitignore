@@ -60,3 +60,4 @@ backend/.reception-*.lock
 backend/runtime/
 backups/
 *.dump
+.next-naryad-check/

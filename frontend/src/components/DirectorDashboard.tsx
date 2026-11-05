@@ -46,6 +46,9 @@ export default function DirectorDashboard() {
   const { user } = useAuth();
   // Direktor o'rinbosari (deputy) oylik moliyaviy rejani FAQAT KO'RADI — yoza/tahrirlay olmaydi.
   const isDeputy = user?.role === 'deputy_director';
+  // Administrator/kassa (reception) MOLIYAVIY va analitik ko'rsatkichlarni KO'RMAYDI:
+  // tushum, foyda, qarz, o'rtacha chek, qabullar monitoringi, jami xizmatlar.
+  const canSeeFinance = ['director', 'deputy_director', 'superadmin'].includes(user?.role || '');
   const { language, tr } = useI18n();
   const { currentBranchId, currentBranch } = useBranch();
   const [period, setPeriod] = useState<'today' | 'yesterday' | 'week' | 'month' | 'year'>('month');
@@ -976,6 +979,7 @@ export default function DirectorDashboard() {
       change: `+${periodIncomes.length} ta kirim`,
       isPositive: true,
       sub: `${formatPercent(monthlyPlanStats.percent)}% oylik rejadan bajarildi`,
+      finance: true,
       icon: DollarSign,
       iconBg: 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
     },
@@ -986,6 +990,7 @@ export default function DirectorDashboard() {
       change: `${formatPercent(profitMargin)}% marja`,
       isPositive: netProfit >= 0,
       sub: `Rasxod: ${formatMoney(totalExpenses)} UZS`,
+      finance: true,
       icon: TrendingUp,
       iconBg: 'bg-sky-500/15 text-sky-600 dark:text-sky-400'
     },
@@ -996,6 +1001,7 @@ export default function DirectorDashboard() {
       change: `${completedVisits} yakunlandi`,
       isPositive: true,
       sub: `${inChairVisits} stulda • ${waitingVisits} kutilmoqda`,
+      finance: true,
       icon: Calendar,
       iconBg: 'bg-indigo-500/15 text-indigo-600 dark:text-indigo-400'
     },
@@ -1016,6 +1022,7 @@ export default function DirectorDashboard() {
       change: avgCheck > 500000 ? 'Yuqori' : 'Standart',
       isPositive: true,
       sub: `Bemor boshiga tushum: ${formatMoney(avgCheck)} UZS`,
+      finance: true,
       icon: CreditCard,
       iconBg: 'bg-purple-500/15 text-purple-600 dark:text-purple-400'
     },
@@ -1026,10 +1033,13 @@ export default function DirectorDashboard() {
       change: `${debtStats.count} bemor`,
       isPositive: false,
       sub: `${debtStats.count} nafar bemorda qarzdorlik bor`,
+      finance: true,
       icon: AlertCircle,
       iconBg: 'bg-rose-500/15 text-rose-600 dark:text-rose-400'
     }
   ];
+  // Admin/kassa uchun moliyaviy KPI'lar yashiriladi (faqat operatsion ko'rsatkich qoladi).
+  const visibleKpis = canSeeFinance ? kpis : kpis.filter((k) => !(k as { finance?: boolean }).finance);
 
   return (
     <div className="space-y-6 max-w-[1600px] mx-auto pb-16">
@@ -1173,7 +1183,7 @@ export default function DirectorDashboard() {
 
       {/* 2. Top High-Impact Clinic KPI Cards (Dynamically Computed) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-3.5 sm:gap-4">
-        {kpis.map((kpi, idx) => {
+        {visibleKpis.map((kpi, idx) => {
           const Icon = kpi.icon;
           return (
             <div
@@ -1220,6 +1230,9 @@ export default function DirectorDashboard() {
         })}
       </div>
 
+      {/* 3–6 bo'limlar (reja, foyda, to'lov/kreslo monitoringi, shifokor jadvali, xizmatlar) —
+          FAQAT moliyaviy ruxsatli rollarga. Administrator/kassa (reception) KO'RMAYDI. */}
+      {canSeeFinance && (<>
       {/* 3. Monthly Target Progress Bar (Dynamic Calculation) */}
       <div className="bg-white dark:bg-[#1E293B] p-5 rounded-2xl border border-slate-200 dark:border-[#334155] shadow-xs">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
@@ -1673,6 +1686,8 @@ export default function DirectorDashboard() {
           )}
         </div>
       </div>
+
+      </>)}
 
       {/* 7. Warehouse Critical Alerts & Dental Lab Work Orders (Real Inventory & Lab) */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">

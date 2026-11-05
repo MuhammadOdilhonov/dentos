@@ -1,36 +1,26 @@
 'use client';
 
 import React, { useState, useEffect, useMemo } from 'react';
-import Link from 'next/link';
 import { clinicApi } from '../../lib/api';
 import { ApiError } from '../../lib/http';
-import { NaryadCatalogItem, DoctorNaryadAssignment, Employee } from '../../lib/types';
+import { NaryadCatalogItem, DoctorNaryadAssignment, Employee, ServiceCategory } from '../../lib/types';
 import { useI18n } from '../../lib/i18n';
 import { useAuth } from '../../lib/auth';
+import ServiceCategoryModal from '../../components/ServiceCategoryModal';
+import ServiceProcedureModal from '../../components/ServiceProcedureModal';
 import {
   FileSpreadsheet,
   Plus,
   Search,
-  Filter,
   Edit2,
   Trash2,
   CheckCircle2,
-  AlertCircle,
   X,
-  Save,
-  Users,
-  Percent,
-  Layers,
-  Sparkles,
-  ChevronRight,
   Check,
-  Building2,
-  DollarSign,
-  Info
+  Layers,
 } from 'lucide-react';
 
 type Lang = 'uz' | 'ru' | 'en';
-
 
 export default function NaryadsPage() {
   const { language, tr } = useI18n();
@@ -41,53 +31,147 @@ export default function NaryadsPage() {
   const clinicId = user?.clinicId || null;
 
   const [catalog, setCatalog] = useState<NaryadCatalogItem[]>([]);
+  const [categories, setCategories] = useState<ServiceCategory[]>([]);
   const [assignments, setAssignments] = useState<DoctorNaryadAssignment[]>([]);
-  const [employees, setEmployees] = useState<Employee[]>([]);
+  const [, setEmployees] = useState<Employee[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
-  // Search and filter
+  // 'all' | 'uncat' | <categoryId>
+  const [categoryFilter, setCategoryFilter] = useState<string>('all');
   const [searchQuery, setSearchQuery] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState('all');
+  const [catSearch, setCatSearch] = useState('');
 
-  // Inline price quick edit state
+  // Inline price quick edit
   const [quickEditingId, setQuickEditingId] = useState<string | null>(null);
   const [quickPriceValue, setQuickPriceValue] = useState<number>(0);
 
-  // Add / Edit Modal (Large screen-wide dialog)
-  const [isModalOpen, setIsModalOpen] = useState(false);
+  // Procedure modal
+  const [procModalOpen, setProcModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<NaryadCatalogItem | null>(null);
-  const [form, setForm] = useState({
-    name: '',
-    category: 'Терапия',
-    base_price: 350000,
-    default_percent: 35,
-    description: ''
-  });
+
+  // Category modal
+  const [catModalOpen, setCatModalOpen] = useState(false);
+  const [editingCat, setEditingCat] = useState<ServiceCategory | null>(null);
+
+  const [importing, setImporting] = useState(false);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3000);
   };
-
-  const [importing, setImporting] = useState(false);
+  const saveErrToast = () =>
+    showToast(lng === 'uz' ? 'Saqlanmadi (server xatosi)' : lng === 'en' ? 'Not saved (server error)' : 'Не сохранено (ошибка сервера)');
 
   const loadData = async () => {
-    try {
-      setCatalog(await clinicApi.getNaryadCatalog());
-    } catch {
-      setCatalog([]);
-    }
-    try {
-      setAssignments(await clinicApi.getDoctorNaryads());
-    } catch {
-      setAssignments([]);
-    }
-    const emps = await clinicApi.getEmployees();
-    setEmployees(emps);
+    try { setCatalog(await clinicApi.getNaryadCatalog()); } catch { setCatalog([]); }
+    try { setCategories(await clinicApi.getServiceCategories()); } catch { setCategories([]); }
+    try { setAssignments(await clinicApi.getDoctorNaryads()); } catch { setAssignments([]); }
+    try { setEmployees(await clinicApi.getEmployees()); } catch { setEmployees([]); }
   };
 
-  // Nazoratli import: bo'sh katalogda direktor eski lokal narxlarni yoki standart
-  // ro'yxatni (narx 0) BIR MARTA bazaga yozadi. Avtomatik emas — faqat shu tugma.
+  useEffect(() => { loadData(); }, [clinicId]);
+
+  // Naryad shu kategoriyaga tegishlimi (real: category_ref; demo: nom bo'yicha)
+  const itemInCategory = (item: NaryadCatalogItem, cat: ServiceCategory) =>
+    (item.category_ref != null && String(item.category_ref) === cat.id) ||
+    (!item.category_ref && !!item.category && item.category === cat.name);
+
+  const countFor = (cat: ServiceCategory) => catalog.filter((i) => itemInCategory(i, cat)).length;
+  const uncatCount = useMemo(
+    () => catalog.filter((i) => !i.category_ref && !categories.some((c) => c.name === i.category)).length,
+    [catalog, categories]
+  );
+
+  const visibleCategories = useMemo(() => {
+    const q = catSearch.toLowerCase().trim();
+    return q ? categories.filter((c) => c.name.toLowerCase().includes(q)) : categories;
+  }, [categories, catSearch]);
+
+  const filteredCatalog = useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
+    return catalog.filter((item) => {
+      const matchSearch =
+        !q ||
+        item.name.toLowerCase().includes(q) ||
+        (item.category || '').toLowerCase().includes(q) ||
+        (item.code || '').toLowerCase().includes(q) ||
+        item.id.toLowerCase().includes(q);
+      let matchCat = true;
+      if (categoryFilter === 'all') matchCat = true;
+      else if (categoryFilter === 'uncat') matchCat = !item.category_ref && !categories.some((c) => c.name === item.category);
+      else {
+        const cat = categories.find((c) => c.id === categoryFilter);
+        matchCat = cat ? itemInCategory(item, cat) : true;
+      }
+      return matchSearch && matchCat;
+    });
+  }, [catalog, categories, searchQuery, categoryFilter]);
+
+  // ---- Category handlers ----
+  const openNewCat = () => { setEditingCat(null); setCatModalOpen(true); };
+  const openEditCat = (cat: ServiceCategory) => { setEditingCat(cat); setCatModalOpen(true); };
+  const handleCatSaved = (cat: ServiceCategory, isNew: boolean) => {
+    setCategories((prev) => isNew ? [...prev, cat] : prev.map((c) => c.id === cat.id ? cat : c));
+    showToast(tr('naryadcat.catSaved'));
+  };
+  const handleDeleteCat = async (cat: ServiceCategory) => {
+    const inside = catalog.filter((i) => itemInCategory(i, cat));
+    const msg = inside.length > 0
+      ? tr('naryadcat.catConfirmDeleteN').replace('{n}', String(inside.length))
+      : tr('naryadcat.catConfirmDelete');
+    if (!confirm(msg)) return;
+    try {
+      await clinicApi.deleteServiceCategory(cat.id);
+      setCategories((prev) => prev.filter((c) => c.id !== cat.id));
+      // kategoriya bilan birga ichidagi naryadlar ham o'chadi (lokal ro'yxatdan)
+      const insideIds = new Set(inside.map((i) => i.id));
+      setCatalog((prev) => prev.filter((i) => !insideIds.has(i.id)));
+      if (categoryFilter === cat.id) setCategoryFilter('all');
+      showToast(inside.length > 0
+        ? tr('naryadcat.catDeletedN').replace('{n}', String(inside.length))
+        : tr('naryadcat.catDeleted'));
+    } catch { saveErrToast(); }
+  };
+
+  // ---- Procedure handlers ----
+  const openNewProc = () => {
+    if (categories.length === 0) { showToast(tr('naryadcat.catRequired')); openNewCat(); return; }
+    setEditingItem(null); setProcModalOpen(true);
+  };
+  const openEditProc = (item: NaryadCatalogItem) => { setQuickEditingId(null); setEditingItem(item); setProcModalOpen(true); };
+  const handleProcSaved = (item: NaryadCatalogItem, isNew: boolean) => {
+    setCatalog((prev) => isNew ? [item, ...prev] : prev.map((c) => c.id === item.id ? item : c));
+    // yangi kategoriya biriktirilgan bo'lsa item_count yangilash uchun qayta yuklash shart emas —
+    // lekin yangi element qo'shilganda count o'zgaradi; soddalik uchun kategoriyalarni yangilaymiz
+    clinicApi.getServiceCategories().then(setCategories).catch(() => {});
+    showToast(isNew
+      ? (lng === 'uz' ? 'Yangi naryad kiritildi!' : lng === 'en' ? 'New naryad added!' : 'Новый наряд добавлен!')
+      : (lng === 'uz' ? 'Naryad saqlandi!' : lng === 'en' ? 'Naryad saved!' : 'Наряд сохранён!'));
+  };
+  const handleDeleteProc = async (id: string) => {
+    if (!confirm(tr('naryadcat.confirmDelete'))) return;
+    try {
+      await clinicApi.deleteNaryadCatalogItem(id);
+      setCatalog((prev) => prev.filter((c) => c.id !== id));
+      showToast(lng === 'uz' ? 'Naryad o‘chirildi' : lng === 'en' ? 'Naryad deleted' : 'Наряд удалён');
+    } catch { saveErrToast(); }
+  };
+
+  // ---- Quick price edit ----
+  const startQuickPrice = (item: NaryadCatalogItem) => { setQuickEditingId(item.id); setQuickPriceValue(item.base_price); };
+  const saveQuickPrice = async (id: string) => {
+    if (!Number.isFinite(quickPriceValue) || quickPriceValue < 0) { setQuickEditingId(null); return; }
+    try {
+      const updated = await clinicApi.updateNaryadCatalogItem(id, { base_price: Number(quickPriceValue) });
+      if (updated) {
+        setCatalog((prev) => prev.map((c) => c.id === updated.id ? updated : c));
+        showToast(lng === 'uz' ? 'Narx yangilandi!' : lng === 'en' ? 'Price updated!' : 'Цена обновлена!');
+      }
+    } catch { saveErrToast(); }
+    setQuickEditingId(null);
+  };
+
+  // ---- Controlled import (empty catalog) ----
   const handleImport = async (source: 'local' | 'default') => {
     if (importing) return;
     setImporting(true);
@@ -97,154 +181,17 @@ export default function NaryadsPage() {
       const extra = skipped ? (lng === 'uz' ? `, ${skipped} ta mavjud` : lng === 'en' ? `, ${skipped} existing` : `, ${skipped} уже были`) : '';
       showToast(lng === 'uz' ? `${created} ta xizmat import qilindi${extra}` : lng === 'en' ? `${created} services imported${extra}` : `Импортировано услуг: ${created}${extra}`);
     } catch (e) {
-      const msg = e instanceof ApiError ? e.message : (lng === 'uz' ? 'Import amalga oshmadi (server xatosi)' : lng === 'en' ? 'Import failed (server error)' : 'Импорт не удался (ошибка сервера)');
-      showToast(msg);
-    } finally {
-      setImporting(false);
-    }
+      showToast(e instanceof ApiError ? e.message : (lng === 'uz' ? 'Import amalga oshmadi' : lng === 'en' ? 'Import failed' : 'Импорт не удался'));
+    } finally { setImporting(false); }
   };
 
-  useEffect(() => {
-    loadData();
-  }, [clinicId]);
-
-  const categories = useMemo(() => {
-    const set = new Set<string>();
-    catalog.forEach((c) => {
-      if (c.category) set.add(c.category);
-    });
-    return Array.from(set);
-  }, [catalog]);
-
-  const filteredCatalog = useMemo(() => {
-    return catalog.filter((item) => {
-      const q = searchQuery.toLowerCase().trim();
-      const matchSearch =
-        !q ||
-        item.name.toLowerCase().includes(q) ||
-        item.category.toLowerCase().includes(q) ||
-        item.id.toLowerCase().includes(q);
-      const matchCat = categoryFilter === 'all' || item.category === categoryFilter;
-      return matchSearch && matchCat;
-    });
-  }, [catalog, searchQuery, categoryFilter]);
-
-  const avgPrice = useMemo(() => {
-    if (catalog.length === 0) return 0;
-    return Math.round(catalog.reduce((acc, c) => acc + c.base_price, 0) / catalog.length);
-  }, [catalog]);
-
-  // Open modal for add or edit
-  const handleOpenModal = (item?: NaryadCatalogItem) => {
-    setQuickEditingId(null);
-    if (item) {
-      setEditingItem(item);
-      setForm({
-        name: item.name,
-        category: item.category,
-        base_price: item.base_price,
-        default_percent: item.default_percent || 35,
-        description: item.description || ''
-      });
-    } else {
-      setEditingItem(null);
-      setForm({
-        name: '',
-        category: categoryFilter !== 'all' ? categoryFilter : 'Терапия',
-        base_price: 0,
-        default_percent: 35,
-        description: ''
-      });
-    }
-    setIsModalOpen(true);
-  };
-
-  // Quick Inline price edit
-  const handleStartQuickPrice = (item: NaryadCatalogItem) => {
-    setQuickEditingId(item.id);
-    setQuickPriceValue(item.base_price);
-  };
-
-  const handleSaveQuickPrice = async (id: string) => {
-    if (quickPriceValue < 0) return;
-    try {
-      const updated = await clinicApi.updateNaryadCatalogItem(
-        id,
-        { base_price: Number(quickPriceValue) }
-      );
-      if (updated) {
-        setCatalog((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
-        showToast(lng === 'uz' ? 'Narx yangilandi!' : lng === 'en' ? 'Price updated!' : 'Цена обновлена!');
-      }
-    } catch {
-      showToast(lng === 'uz' ? 'Saqlanmadi (server xatosi)' : lng === 'en' ? 'Not saved (server error)' : 'Не сохранено (ошибка сервера)');
-    }
-    setQuickEditingId(null);
-  };
-
-  // Save Naryad item
-  const handleSave = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!form.name.trim()) return;
-
-    try {
-      if (editingItem) {
-        const updated = await clinicApi.updateNaryadCatalogItem(
-          editingItem.id,
-          {
-            name: form.name.trim(),
-            category: form.category,
-            base_price: Number(form.base_price),
-            default_percent: Number(form.default_percent),
-            description: form.description.trim()
-          }
-        );
-        if (updated) {
-          setCatalog((prev) => prev.map((c) => (c.id === updated.id ? updated : c)));
-          showToast(lng === 'uz' ? 'Naryad narxi saqlandi!' : lng === 'en' ? 'Naryad price saved!' : 'Наряд успешно сохранён!');
-        }
-      } else {
-        const created = await clinicApi.createNaryadCatalogItem(
-          {
-            name: form.name.trim(),
-            category: form.category,
-            base_price: Number(form.base_price),
-            default_percent: Number(form.default_percent),
-            description: form.description.trim()
-          }
-        );
-        setCatalog((prev) => [created, ...prev]);
-        showToast(lng === 'uz' ? 'Yangi naryad kiritildi!' : lng === 'en' ? 'New naryad added!' : 'Новый наряд добавлен в прейскурант!');
-      }
-      setIsModalOpen(false);
-    } catch {
-      showToast(lng === 'uz' ? 'Saqlanmadi (server xatosi)' : lng === 'en' ? 'Not saved (server error)' : 'Не сохранено (ошибка сервера)');
-    }
-  };
-
-  // Delete Naryad item
-  const handleDelete = async (id: string) => {
-    if (confirm(tr('naryadcat.confirmDelete'))) {
-      try {
-        await clinicApi.deleteNaryadCatalogItem(id);
-        setCatalog((prev) => prev.filter((c) => c.id !== id));
-        showToast(lng === 'uz' ? 'Naryad o‘chirildi' : lng === 'en' ? 'Naryad deleted' : 'Наряд удален из прейскуранта');
-      } catch {
-        showToast(lng === 'uz' ? 'O‘chirilmadi (server xatosi)' : lng === 'en' ? 'Not deleted (server error)' : 'Не удалено (ошибка сервера)');
-      }
-    }
-  };
-
-  const calculatedDoctorShare = Math.round(form.base_price * ((form.default_percent || 0) / 100));
-  const calculatedClinicShare = Math.max(0, form.base_price - calculatedDoctorShare);
+  const catName = (item: NaryadCatalogItem) => item.category_name || item.category || tr('naryadcat.uncategorized');
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-[1700px] mx-auto space-y-6 pb-24 text-slate-900 dark:text-white">
-      {/* Toast Notification */}
       {toastMessage && (
-        <div className="fixed bottom-6 right-6 z-50 bg-emerald-600 text-white px-5 py-3 rounded-2xl shadow-2xl flex items-center space-x-3 text-sm font-bold animate-in fade-in slide-in-from-bottom-2">
-          <CheckCircle2 className="w-5 h-5" />
-          <span>{toastMessage}</span>
+        <div className="fixed bottom-6 right-6 z-[70] bg-emerald-600 text-white px-5 py-3 rounded-2xl shadow-2xl flex items-center space-x-3 text-sm font-bold animate-in fade-in slide-in-from-bottom-2">
+          <CheckCircle2 className="w-5 h-5" /><span>{toastMessage}</span>
         </div>
       )}
 
@@ -256,520 +203,158 @@ export default function NaryadsPage() {
           </div>
           <div>
             <h1 className="text-2xl sm:text-3xl font-black tracking-tight">{tr('naryadcat.title')}</h1>
-            <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 font-medium mt-0.5">
-              {tr('naryadcat.subtitle')}
-            </p>
+            <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400 font-medium mt-0.5">{tr('naryadcat.subtitle')}</p>
           </div>
         </div>
-
-        <button
-          onClick={() => handleOpenModal()}
-          className="flex items-center space-x-2 px-5 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl text-xs sm:text-sm font-black transition-all shadow-md shadow-blue-500/25 whitespace-nowrap active:scale-95"
-        >
-          <Plus className="w-4 h-4 stroke-[3]" />
-          <span>{tr('naryadcat.addNaryad')}</span>
+        <button onClick={openNewProc} className="flex items-center space-x-2 px-5 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl text-xs sm:text-sm font-black transition-all shadow-md shadow-blue-500/25 whitespace-nowrap active:scale-95">
+          <Plus className="w-4 h-4 stroke-[3]" /><span>{tr('naryadcat.addNaryad')}</span>
         </button>
       </div>
 
-      {/* KPI Cards */}
+      {/* KPI */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <div className="bg-white dark:bg-slate-900 rounded-3xl p-5 border border-slate-200/80 dark:border-slate-800 shadow-2xs flex flex-col justify-between">
+        <div className="bg-white dark:bg-slate-900 rounded-3xl p-5 border border-slate-200/80 dark:border-slate-800 shadow-2xs">
           <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">{tr('naryadcat.kpiTotal')}</span>
-          <p className="text-2xl sm:text-3xl font-black text-slate-900 dark:text-white mt-2 tabular-nums">
-            {catalog.length} <span className="text-sm font-semibold text-slate-400">{lng === 'uz' ? 'xizmat' : lng === 'en' ? 'items' : 'услуг'}</span>
-          </p>
+          <p className="text-2xl sm:text-3xl font-black mt-2 tabular-nums">{catalog.length} <span className="text-sm font-semibold text-slate-400">{lng === 'uz' ? 'xizmat' : lng === 'en' ? 'items' : 'услуг'}</span></p>
         </div>
-
-        <div className="bg-white dark:bg-slate-900 rounded-3xl p-5 border border-slate-200/80 dark:border-slate-800 shadow-2xs flex flex-col justify-between">
+        <div className="bg-white dark:bg-slate-900 rounded-3xl p-5 border border-slate-200/80 dark:border-slate-800 shadow-2xs">
           <span className="text-[11px] font-bold uppercase tracking-wider text-blue-600 dark:text-sky-400">{tr('naryadcat.kpiCategories')}</span>
-          <p className="text-2xl sm:text-3xl font-black text-blue-600 dark:text-sky-400 mt-2 tabular-nums">
-            {categories.length} <span className="text-sm font-semibold text-slate-400">{lng === 'uz' ? 'yo‘nalish' : lng === 'en' ? 'categories' : 'категорий'}</span>
-          </p>
+          <p className="text-2xl sm:text-3xl font-black text-blue-600 dark:text-sky-400 mt-2 tabular-nums">{categories.length} <span className="text-sm font-semibold text-slate-400">{lng === 'uz' ? 'kategoriya' : lng === 'en' ? 'categories' : 'категорий'}</span></p>
         </div>
-
-        <div className="bg-white dark:bg-slate-900 rounded-3xl p-5 border border-slate-200/80 dark:border-slate-800 shadow-2xs flex flex-col justify-between">
+        <div className="bg-white dark:bg-slate-900 rounded-3xl p-5 border border-slate-200/80 dark:border-slate-800 shadow-2xs">
           <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-600 dark:text-emerald-400">{tr('naryadcat.kpiAvgPrice')}</span>
-          <p className="text-2xl sm:text-3xl font-black text-emerald-600 dark:text-emerald-400 mt-2 tabular-nums">
-            {avgPrice.toLocaleString()} <span className="text-sm font-semibold">{som}</span>
-          </p>
+          <p className="text-2xl sm:text-3xl font-black text-emerald-600 dark:text-emerald-400 mt-2 tabular-nums">{(catalog.length ? Math.round(catalog.reduce((a, c) => a + c.base_price, 0) / catalog.length) : 0).toLocaleString()} <span className="text-sm font-semibold">{som}</span></p>
         </div>
-
-        <div className="bg-white dark:bg-slate-900 rounded-3xl p-5 border border-slate-200/80 dark:border-slate-800 shadow-2xs flex flex-col justify-between">
+        <div className="bg-white dark:bg-slate-900 rounded-3xl p-5 border border-slate-200/80 dark:border-slate-800 shadow-2xs">
           <span className="text-[11px] font-bold uppercase tracking-wider text-purple-600 dark:text-purple-400">{tr('naryadcat.kpiAssignments')}</span>
-          <p className="text-2xl sm:text-3xl font-black text-purple-600 dark:text-purple-400 mt-2 tabular-nums">
-            {assignments.length} <span className="text-sm font-semibold text-slate-400">{lng === 'uz' ? 'tarif' : lng === 'en' ? 'rates' : 'тарифов'}</span>
-          </p>
+          <p className="text-2xl sm:text-3xl font-black text-purple-600 dark:text-purple-400 mt-2 tabular-nums">{assignments.length} <span className="text-sm font-semibold text-slate-400">{lng === 'uz' ? 'tarif' : lng === 'en' ? 'rates' : 'тарифов'}</span></p>
         </div>
       </div>
 
-      {/* Quick Category Filter Pills */}
-      <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
-        <button
-          onClick={() => setCategoryFilter('all')}
-          className={`px-4 py-2 rounded-2xl text-xs font-bold whitespace-nowrap transition-all flex items-center gap-2 shadow-2xs ${
-            categoryFilter === 'all'
-              ? 'bg-blue-600 text-white shadow-blue-500/20'
-              : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800'
-          }`}
-        >
-          <span>{tr('naryadcat.allCategories')}</span>
-          <span className={`text-[10px] px-2 py-0.5 rounded-full font-black ${categoryFilter === 'all' ? 'bg-blue-500 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
-            {catalog.length}
-          </span>
-        </button>
-        {categories.map((cat) => {
-          const count = catalog.filter((c) => c.category === cat).length;
-          const isActive = categoryFilter === cat;
-          return (
-            <button
-              key={cat}
-              onClick={() => setCategoryFilter(cat)}
-              className={`px-4 py-2 rounded-2xl text-xs font-bold whitespace-nowrap transition-all flex items-center gap-2 shadow-2xs ${
-                isActive
-                  ? 'bg-blue-600 text-white shadow-blue-500/20'
-                  : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-800 hover:bg-slate-50 dark:hover:bg-slate-800'
-              }`}
-            >
-              <span>{cat}</span>
-              <span className={`text-[10px] px-2 py-0.5 rounded-full font-black ${isActive ? 'bg-blue-500 text-white' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>
-                {count}
-              </span>
+      {/* Two-panel: LEFT categories CRUD | RIGHT procedures */}
+      <div className="grid grid-cols-1 lg:grid-cols-[300px_minmax(0,1fr)] gap-5 items-start">
+        {/* LEFT — categories */}
+        <aside className="rounded-3xl border border-slate-200/80 dark:border-slate-800 bg-white dark:bg-slate-900 shadow-2xs overflow-hidden">
+          <div className="p-3 border-b border-slate-100 dark:border-slate-800 flex items-center gap-2">
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input value={catSearch} onChange={(e) => setCatSearch(e.target.value)} placeholder={tr('naryadcat.catSearchPlaceholder')} className="w-full pl-9 pr-3 py-2 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-semibold outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+            <button onClick={openNewCat} title={tr('naryadcat.catAdd')} className="p-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white shrink-0 shadow-sm active:scale-95 transition"><Plus className="w-4 h-4 stroke-[3]" /></button>
+          </div>
+
+          <div className="p-2 space-y-1 max-h-[70vh] overflow-y-auto">
+            <button onClick={() => setCategoryFilter('all')} className={`w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-sm font-bold transition ${categoryFilter === 'all' ? 'bg-blue-600 text-white' : 'hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200'}`}>
+              <span className="flex items-center gap-2"><Layers className="w-4 h-4" />{tr('naryadcat.catAll')}</span>
+              <span className={`text-[10px] px-2 py-0.5 rounded-full font-black ${categoryFilter === 'all' ? 'bg-blue-500' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>{catalog.length}</span>
             </button>
-          );
-        })}
-      </div>
 
-      {/* Controls Bar: Search & Select Filter */}
-      <div className="bg-white dark:bg-slate-900 p-4 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-2xs flex flex-col md:flex-row gap-3 items-center justify-between">
-        <div className="relative w-full md:w-96">
-          <Search className="w-4 h-4 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder={tr('naryadcat.searchPlaceholder')}
-            className="w-full pl-11 pr-4 py-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-2xl text-xs sm:text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 dark:text-white"
-          />
-        </div>
+            {visibleCategories.map((cat) => {
+              const active = categoryFilter === cat.id;
+              return (
+                <div key={cat.id} className={`group flex items-center gap-1 rounded-xl px-1 ${active ? 'bg-blue-600' : 'hover:bg-slate-100 dark:hover:bg-slate-800'}`}>
+                  <button onClick={() => setCategoryFilter(cat.id)} className={`flex-1 flex items-center justify-between gap-2 px-2 py-2.5 text-sm font-bold text-left ${active ? 'text-white' : 'text-slate-700 dark:text-slate-200'}`}>
+                    <span className="truncate">{cat.name}</span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-black shrink-0 ${active ? 'bg-blue-500' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>{countFor(cat)}</span>
+                  </button>
+                  <button onClick={() => openEditCat(cat)} title={tr('naryadcat.catEdit')} className={`p-1.5 rounded-lg shrink-0 opacity-0 group-hover:opacity-100 transition ${active ? 'text-white hover:bg-blue-500' : 'text-blue-600 dark:text-sky-400 hover:bg-blue-50 dark:hover:bg-blue-950/60'}`}><Edit2 className="w-3.5 h-3.5" /></button>
+                  <button onClick={() => handleDeleteCat(cat)} title={tr('common.delete')} className={`p-1.5 rounded-lg shrink-0 opacity-0 group-hover:opacity-100 transition ${active ? 'text-white hover:bg-blue-500' : 'text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40'}`}><Trash2 className="w-3.5 h-3.5" /></button>
+                </div>
+              );
+            })}
 
-        <div className="flex items-center space-x-2.5 w-full md:w-auto justify-end">
-          <Filter className="w-4 h-4 text-slate-400" />
-          <select
-            value={categoryFilter}
-            onChange={(e) => setCategoryFilter(e.target.value)}
-            className="px-4 py-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 rounded-2xl text-xs sm:text-sm font-bold text-slate-700 dark:text-slate-300 focus:ring-2 focus:ring-blue-500 cursor-pointer"
-          >
-            <option value="all">{tr('naryadcat.allCategories')}</option>
-            {categories.map((cat) => (
-              <option key={cat} value={cat}>
-                {cat} ({catalog.filter((c) => c.category === cat).length})
-              </option>
-            ))}
-          </select>
-        </div>
-      </div>
+            {uncatCount > 0 && (
+              <button onClick={() => setCategoryFilter('uncat')} className={`w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2.5 text-sm font-bold transition ${categoryFilter === 'uncat' ? 'bg-slate-600 text-white' : 'hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500'}`}>
+                <span>{tr('naryadcat.uncategorized')}</span>
+                <span className={`text-[10px] px-2 py-0.5 rounded-full font-black ${categoryFilter === 'uncat' ? 'bg-slate-500' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>{uncatCount}</span>
+              </button>
+            )}
 
-      {/* Naryad Catalog Table */}
-      <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-2xs overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-slate-50/90 dark:bg-slate-800/60 text-[11px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800">
-                <th className="py-4 px-4 w-20">{tr('naryadcat.colId')}</th>
-                <th className="py-4 px-4">{tr('naryadcat.colName')}</th>
-                <th className="py-4 px-4">{tr('naryadcat.colCategory')}</th>
-                <th className="py-4 px-4 text-right">{tr('naryadcat.colBasePrice')}</th>
-                <th className="py-4 px-4 text-center">{tr('naryadcat.colDoctorPercent')}</th>
-                <th className="py-4 px-4 text-right">{tr('naryadcat.colDoctorNet')}</th>
-                <th className="py-4 px-4 text-center">{tr('naryadcat.colAssignedDocs')}</th>
-                <th className="py-4 px-4 text-center w-36">{tr('naryadcat.colActions')}</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-xs">
-              {filteredCatalog.length === 0 ? (
-                <tr>
-                  <td colSpan={8} className="py-16 text-center text-slate-400 font-semibold">
-                    <p className="text-sm font-bold">{tr('naryadcat.noItemsFound')}</p>
-                    <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
-                      <button
-                        onClick={() => handleOpenModal()}
-                        className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-2xl text-xs font-black shadow-md shadow-blue-500/20"
-                      >
-                        <Plus className="w-4 h-4 stroke-[3]" />
-                        <span>{tr('naryadcat.addNaryad')}</span>
-                      </button>
-                      {searchQuery.trim() === '' && categoryFilter === 'all' && (
-                        <>
-                          <button
-                            onClick={() => handleImport('local')}
-                            disabled={importing}
-                            className="inline-flex items-center gap-2 px-5 py-2.5 bg-emerald-600 text-white rounded-2xl text-xs font-black shadow-md shadow-emerald-500/20 disabled:opacity-50"
-                            title={lng === 'uz' ? 'Shu brauzerdagi eski narxlarni bazaga ko‘chirish' : lng === 'en' ? 'Import old prices from this browser into the database' : 'Импортировать старые цены из этого браузера в базу'}
-                          >
-                            <span>{lng === 'uz' ? 'Eski narxlarni import qilish' : lng === 'en' ? 'Import old prices' : 'Импорт старых цен'}</span>
-                          </button>
-                          <button
-                            onClick={() => handleImport('default')}
-                            disabled={importing}
-                            className="inline-flex items-center gap-2 px-5 py-2.5 bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-2xl text-xs font-black disabled:opacity-50"
-                            title={lng === 'uz' ? 'Standart xizmatlar ro‘yxatini narxsiz (0) yuklash' : lng === 'en' ? 'Load the standard service list with zero prices' : 'Загрузить стандартный список услуг с нулевыми ценами'}
-                          >
-                            <span>{lng === 'uz' ? 'Standart ro‘yxat (narx 0)' : lng === 'en' ? 'Standard list (price 0)' : 'Стандартный список (цена 0)'}</span>
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ) : (
-                filteredCatalog.map((item) => {
-                  const docPercent = item.default_percent || 35;
-                  const docNet = Math.round(item.base_price * (docPercent / 100));
-                  const itemAssignments = assignments.filter((a) => a.naryad_id === item.id);
-                  const isQuickEditing = quickEditingId === item.id;
+            {categories.length === 0 && (
+              <p className="text-xs text-slate-400 font-semibold text-center py-6 px-2">{tr('naryadcat.catEmpty')}</p>
+            )}
+          </div>
+        </aside>
 
-                  return (
-                    <tr key={item.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors group">
-                      {/* Code */}
-                      <td className="py-4 px-4 font-mono font-bold text-slate-400 text-[11px]">
-                        {item.id}
-                      </td>
+        {/* RIGHT — procedures table */}
+        <div className="space-y-4">
+          <div className="relative">
+            <Search className="w-4 h-4 text-slate-400 absolute left-4 top-1/2 -translate-y-1/2" />
+            <input value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} placeholder={tr('naryadcat.searchPlaceholder')} className="w-full pl-11 pr-4 py-3 bg-white dark:bg-slate-900 border border-slate-200/80 dark:border-slate-800 rounded-2xl text-sm font-semibold outline-none focus:ring-2 focus:ring-blue-500 shadow-2xs" />
+          </div>
 
-                      {/* Name + Edit Pen right next to name */}
-                      <td className="py-4 px-4">
-                        <div className="flex items-center gap-2">
-                          <span className="font-bold text-slate-900 dark:text-white text-sm">
-                            {item.name}
-                          </span>
-                          <button
-                            onClick={() => handleOpenModal(item)}
-                            className="p-1.5 rounded-xl bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-sky-400 hover:bg-blue-100 dark:hover:bg-blue-900/60 transition-colors shrink-0 shadow-2xs"
-                            title={tr('naryadcat.editItem')}
-                          >
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                        {item.description && (
-                          <div className="text-[11px] text-slate-400 mt-1 line-clamp-1">{item.description}</div>
-                        )}
-                      </td>
-
-                      {/* Category */}
-                      <td className="py-4 px-4">
-                        <span className="px-3 py-1 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 font-bold rounded-xl text-[11px] whitespace-nowrap">
-                          {item.category}
-                        </span>
-                      </td>
-
-                      {/* Base Price + Edit Pen right next to price */}
-                      <td className="py-4 px-4 text-right">
-                        {isQuickEditing ? (
-                          <div className="inline-flex items-center gap-1.5 justify-end">
-                            <input
-                              type="number"
-                              autoFocus
-                              value={quickPriceValue}
-                              onChange={(e) => setQuickPriceValue(Number(e.target.value))}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') handleSaveQuickPrice(item.id);
-                                if (e.key === 'Escape') setQuickEditingId(null);
-                              }}
-                              className="w-32 px-2.5 py-1.5 bg-white dark:bg-slate-900 border-2 border-blue-500 rounded-xl text-xs font-black text-right outline-none shadow-sm"
-                            />
-                            <button
-                              onClick={() => handleSaveQuickPrice(item.id)}
-                              className="p-1.5 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700"
-                              title={tr('common.save')}
-                            >
-                              <Check className="w-4 h-4 stroke-[3]" />
-                            </button>
-                            <button
-                              onClick={() => setQuickEditingId(null)}
-                              className="p-1.5 bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-xl"
-                              title={tr('common.cancel')}
-                            >
-                              <X className="w-4 h-4" />
-                            </button>
-                          </div>
-                        ) : (
-                          <div className="inline-flex items-center gap-2 justify-end">
-                            <span
-                              onClick={() => handleStartQuickPrice(item)}
-                              className={`font-black text-sm cursor-pointer hover:text-blue-600 transition-colors ${
-                                item.base_price === 0 ? 'text-amber-500' : 'text-slate-900 dark:text-white'
-                              }`}
-                              title={tr('naryads.quickEditHint')}
-                            >
-                              {item.base_price.toLocaleString()} {som}
-                            </span>
-                            <button
-                              onClick={() => handleStartQuickPrice(item)}
-                              className="p-1.5 rounded-xl bg-amber-50 dark:bg-amber-950/60 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/60 transition-colors shrink-0 shadow-2xs"
-                              title={tr('naryads.editPrice')}
-                            >
-                              <Edit2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        )}
-                      </td>
-
-                      {/* Doctor % */}
-                      <td className="py-4 px-4 text-center">
-                        <span className="px-3 py-1 bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-sky-400 font-black rounded-full text-xs">
-                          {docPercent}%
-                        </span>
-                      </td>
-
-                      {/* Doctor Net */}
-                      <td className="py-4 px-4 text-right font-black text-emerald-600 dark:text-emerald-400 whitespace-nowrap">
-                        {docNet.toLocaleString()} {som}
-                      </td>
-
-                      {/* Assigned to Doctors */}
-                      <td className="py-4 px-4 text-center">
-                        {itemAssignments.length > 0 ? (
-                          <span className="px-3 py-1 bg-purple-50 dark:bg-purple-950 text-purple-600 dark:text-purple-300 font-bold rounded-full text-[10px] whitespace-nowrap">
-                            {itemAssignments.length} {lng === 'uz' ? 'ta shifokor' : lng === 'en' ? 'doctors' : 'врачей'}
-                          </span>
-                        ) : (
-                          <span className="text-slate-400 text-[10px] font-semibold">{lng === 'uz' ? 'Standart' : lng === 'en' ? 'Standard' : 'Стандарт'}</span>
-                        )}
-                      </td>
-
-                      {/* Action buttons */}
-                      <td className="py-4 px-4 text-center">
-                        <div className="flex items-center justify-center space-x-1.5">
-                          <button
-                            onClick={() => handleOpenModal(item)}
-                            className="inline-flex items-center gap-1 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/60 dark:hover:bg-blue-900/60 text-blue-700 dark:text-blue-300 font-black rounded-xl text-xs transition shadow-2xs"
-                            title={tr('naryadcat.editItem')}
-                          >
-                            <Edit2 className="w-3.5 h-3.5" />
-                            <span>{lng === 'uz' ? 'Tahrirlash' : lng === 'en' ? 'Edit' : 'Изменить'}</span>
-                          </button>
-                          <button
-                            onClick={() => handleDelete(item.id)}
-                            className="p-2 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-500 rounded-xl transition-colors"
-                            title={tr('common.delete')}
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </button>
+          <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200/80 dark:border-slate-800 shadow-2xs overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-slate-50/90 dark:bg-slate-800/60 text-[11px] font-black uppercase tracking-wider text-slate-500 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800">
+                    <th className="py-4 px-4 w-24">{tr('naryadcat.colCode')}</th>
+                    <th className="py-4 px-4">{tr('naryadcat.colName')}</th>
+                    <th className="py-4 px-4 text-right">{tr('naryadcat.colBasePrice')}</th>
+                    <th className="py-4 px-4 text-center w-32">{tr('naryadcat.colDuration')}</th>
+                    <th className="py-4 px-4 text-center w-28">{tr('naryadcat.colActions')}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 dark:divide-slate-800 text-xs">
+                  {filteredCatalog.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="py-16 text-center text-slate-400 font-semibold">
+                        <p className="text-sm font-bold">{tr('naryadcat.noItemsFound')}</p>
+                        <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
+                          <button onClick={openNewProc} className="inline-flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-2xl text-xs font-black shadow-md shadow-blue-500/20"><Plus className="w-4 h-4 stroke-[3]" /><span>{tr('naryadcat.addNaryad')}</span></button>
+                          {searchQuery.trim() === '' && categoryFilter === 'all' && (
+                            <>
+                              <button onClick={() => handleImport('local')} disabled={importing} className="inline-flex items-center gap-2 px-5 py-2.5 bg-emerald-600 text-white rounded-2xl text-xs font-black shadow-md shadow-emerald-500/20 disabled:opacity-50">{lng === 'uz' ? 'Eski narxlarni import qilish' : lng === 'en' ? 'Import old prices' : 'Импорт старых цен'}</button>
+                              <button onClick={() => handleImport('default')} disabled={importing} className="inline-flex items-center gap-2 px-5 py-2.5 bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-200 rounded-2xl text-xs font-black disabled:opacity-50">{lng === 'uz' ? 'Standart ro‘yxat (narx 0)' : lng === 'en' ? 'Standard list (price 0)' : 'Стандартный список (цена 0)'}</button>
+                            </>
+                          )}
                         </div>
                       </td>
                     </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
+                  ) : (
+                    filteredCatalog.map((item) => {
+                      const isQuick = quickEditingId === item.id;
+                      return (
+                        <tr key={item.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition-colors group">
+                          <td className="py-4 px-4 font-mono font-bold text-slate-400 text-[11px]">{item.code || '—'}</td>
+                          <td className="py-4 px-4">
+                            <div className="flex items-center gap-2">
+                              <span className="font-bold text-slate-900 dark:text-white text-sm">{item.name}</span>
+                              <button onClick={() => openEditProc(item)} className="p-1.5 rounded-xl bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-sky-400 hover:bg-blue-100 dark:hover:bg-blue-900/60 transition shrink-0 shadow-2xs opacity-0 group-hover:opacity-100" title={tr('naryadcat.editItem')}><Edit2 className="w-3.5 h-3.5" /></button>
+                            </div>
+                            <div className="text-[11px] text-blue-500/80 dark:text-sky-400/80 font-semibold mt-0.5">{catName(item)}</div>
+                          </td>
+                          <td className="py-4 px-4 text-right">
+                            {isQuick ? (
+                              <div className="inline-flex items-center gap-1.5 justify-end">
+                                <input type="number" autoFocus value={quickPriceValue} onChange={(e) => setQuickPriceValue(Number(e.target.value))} onKeyDown={(e) => { if (e.key === 'Enter') saveQuickPrice(item.id); if (e.key === 'Escape') setQuickEditingId(null); }} className="w-32 px-2.5 py-1.5 bg-white dark:bg-slate-900 border-2 border-blue-500 rounded-xl text-xs font-black text-right outline-none shadow-sm" />
+                                <button onClick={() => saveQuickPrice(item.id)} className="p-1.5 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700" title={tr('common.save')}><Check className="w-4 h-4 stroke-[3]" /></button>
+                                <button onClick={() => setQuickEditingId(null)} className="p-1.5 bg-slate-200 dark:bg-slate-700 text-slate-600 dark:text-slate-300 rounded-xl" title={tr('common.cancel')}><X className="w-4 h-4" /></button>
+                              </div>
+                            ) : (
+                              <span onClick={() => startQuickPrice(item)} className={`font-black text-sm cursor-pointer hover:text-blue-600 transition ${item.base_price === 0 ? 'text-amber-500' : 'text-slate-900 dark:text-white'}`} title={tr('naryads.quickEditHint')}>{item.base_price.toLocaleString()} {som}</span>
+                            )}
+                          </td>
+                          <td className="py-4 px-4 text-center text-slate-500 font-bold">{item.duration_min != null ? `${item.duration_min} ${tr('naryadcat.minShort')}` : '—'}</td>
+                          <td className="py-4 px-4">
+                            <div className="flex items-center justify-center gap-1.5">
+                              <button onClick={() => openEditProc(item)} className="p-2 bg-blue-50 hover:bg-blue-100 dark:bg-blue-950/60 dark:hover:bg-blue-900/60 text-blue-700 dark:text-blue-300 rounded-xl transition shadow-2xs" title={tr('naryadcat.editItem')}><Edit2 className="w-3.5 h-3.5" /></button>
+                              <button onClick={() => handleDeleteProc(item.id)} className="p-2 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-rose-500 rounded-xl transition" title={tr('common.delete')}><Trash2 className="w-4 h-4" /></button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       </div>
 
-      {/* ══════════════════════════════════════════════════════════════════════
-          LARGE SCREEN-WIDE FULL MODAL: ADD / EDIT NARYAD
-          (Screen-wide w-[92vw] max-w-5xl, beautiful 2-col layout)
-         ══════════════════════════════════════════════════════════════════════ */}
-      {isModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 sm:p-6 overflow-y-auto animate-in fade-in duration-200">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl w-full max-w-5xl shadow-2xl border border-slate-200 dark:border-slate-800 p-6 sm:p-8 space-y-6 max-h-[92vh] overflow-y-auto">
-            {/* Header */}
-            <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-5">
-              <div className="flex items-center gap-3">
-                <div className="w-12 h-12 rounded-2xl bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-sky-400 flex items-center justify-center shrink-0">
-                  <Edit2 className="w-6 h-6" />
-                </div>
-                <div>
-                  <h3 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white">
-                    {editingItem ? tr('naryadcat.editItem') : tr('naryadcat.addItem')}
-                  </h3>
-                  <p className="text-xs sm:text-sm text-slate-400 font-medium mt-0.5">
-                    {lng === 'uz'
-                      ? 'Naryad nomi, toifasi, klinika bazaviy narxi va shifokor komissiya foizini sozlash'
-                      : lng === 'en'
-                      ? 'Configure procedure title, category, clinic base price and doctor commission rate'
-                      : 'Настройка названия процедуры, категории, базовой цены клиники и процента врача'}
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => setIsModalOpen(false)}
-                className="p-2.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-2xl text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition"
-              >
-                <X className="w-6 h-6" />
-              </button>
-            </div>
-
-            <form onSubmit={handleSave} className="space-y-6 text-sm">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                {/* Column 1: Procedure Title & Category */}
-                <div className="space-y-5">
-                  <div>
-                    <label className="block text-xs font-black uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-2">
-                      {tr('naryadcat.nameLabel')}
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={form.name}
-                      onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
-                      placeholder={
-                        lng === 'uz'
-                          ? 'Masalan: Tsirkon toj tayyorlash va o‘rnatish'
-                          : lng === 'en'
-                          ? 'e.g.: Zirconia crown preparation & placement'
-                          : 'Например: Изготовление и установка коронки из диоксида циркония'
-                      }
-                      className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-800/60 border border-slate-300 dark:border-slate-700 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 dark:text-white transition"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-black uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-2">
-                      {tr('naryadcat.categoryLabel')}
-                    </label>
-                    <select
-                      value={form.category}
-                      onChange={(e) => setForm((prev) => ({ ...prev, category: e.target.value }))}
-                      className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-800/60 border border-slate-300 dark:border-slate-700 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 dark:text-white transition cursor-pointer"
-                    >
-                      {categories.map((c) => (
-                        <option key={c} value={c}>
-                          {c}
-                        </option>
-                      ))}
-                      {!categories.includes('Диагностика') && <option value="Диагностика">Диагностика</option>}
-                      {!categories.includes('Терапия') && <option value="Терапия">Терапия</option>}
-                      {!categories.includes('Endodontiya') && <option value="Endodontiya">Endodontiya</option>}
-                      {!categories.includes('Gigiyena') && <option value="Gigiyena">Gigiyena</option>}
-                      {!categories.includes('Хирургия') && <option value="Хирургия">Хирургия</option>}
-                      {!categories.includes('Implantologiya') && <option value="Implantologiya">Implantologiya</option>}
-                      {!categories.includes('Ортопедия') && <option value="Ортопедия">Ортопедия</option>}
-                      {!categories.includes('Ортодонтия') && <option value="Ортодонтия">Ортодонтия</option>}
-                      {!categories.includes('Bolalar') && <option value="Bolalar">Bolalar</option>}
-                      {!categories.includes('Parodontologiya') && <option value="Parodontologiya">Parodontologiya</option>}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-black uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-2">
-                      {tr('naryadcat.descLabel')}
-                    </label>
-                    <textarea
-                      value={form.description}
-                      onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
-                      rows={3}
-                      placeholder={
-                        lng === 'uz'
-                          ? 'Muolaja tavsifi, ishlatiladigan materiallar, kafolat muddati...'
-                          : lng === 'en'
-                          ? 'Procedure details, used materials, warranty period...'
-                          : 'Описание услуги, используемые материалы, гарантия...'
-                      }
-                      className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-800/60 border border-slate-300 dark:border-slate-700 rounded-2xl font-medium resize-none outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 dark:text-white transition"
-                    />
-                  </div>
-                </div>
-
-                {/* Column 2: Base Price, Percent, Presets & Revenue Split Card */}
-                <div className="space-y-5">
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <label className="block text-xs font-black uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-2">
-                        {tr('naryadcat.basePriceLabel')}
-                      </label>
-                      <input
-                        type="number"
-                        required
-                        min={0}
-                        step={10000}
-                        value={form.base_price}
-                        onChange={(e) => setForm((prev) => ({ ...prev, base_price: Number(e.target.value) }))}
-                        className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-800/60 border border-slate-300 dark:border-slate-700 rounded-2xl font-black text-lg outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 dark:text-white transition"
-                      />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-black uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-2">
-                        {tr('naryadcat.percentLabel')}
-                      </label>
-                      <input
-                        type="number"
-                        required
-                        min={0}
-                        max={100}
-                        value={form.default_percent}
-                        onChange={(e) => setForm((prev) => ({ ...prev, default_percent: Number(e.target.value) }))}
-                        className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-800/60 border border-slate-300 dark:border-slate-700 rounded-2xl font-black text-lg outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 dark:text-white transition"
-                      />
-                    </div>
-                  </div>
-
-                  {/* Quick suggestions for price */}
-                  <div className="space-y-2">
-                    <span className="text-xs font-bold text-slate-400">{tr('naryadcat.quickPresets')}</span>
-                    <div className="flex flex-wrap gap-2">
-                      {[0, 150000, 300000, 500000, 1000000, 2500000, 5000000].map((val) => (
-                        <button
-                          key={val}
-                          type="button"
-                          onClick={() => setForm((prev) => ({ ...prev, base_price: val }))}
-                          className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition ${
-                            form.base_price === val
-                              ? 'bg-blue-600 text-white border-blue-600'
-                              : 'bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-200 dark:border-slate-700 hover:bg-slate-200'
-                          }`}
-                        >
-                          {val === 0 ? '0 so‘m' : `${(val / 1000).toLocaleString()}k`}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Revenue split calculation card */}
-                  <div className="p-5 bg-gradient-to-br from-emerald-50 to-teal-50 dark:from-emerald-950/40 dark:to-teal-950/40 rounded-3xl border border-emerald-200 dark:border-emerald-900/60 space-y-3">
-                    <h4 className="text-xs font-black uppercase tracking-wider text-emerald-800 dark:text-emerald-300">
-                      {lng === 'uz' ? '1 ta muolajadan taqsimot hisob-kitobi' : lng === 'en' ? 'Revenue split per 1 procedure' : 'Распределение дохода с 1 процедуры'}
-                    </h4>
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="font-bold text-slate-700 dark:text-slate-300">
-                        {tr('naryadcat.doctorShareText')} ({form.default_percent}%):
-                      </span>
-                      <span className="text-lg font-black text-emerald-600 dark:text-emerald-400 tabular-nums">
-                        {calculatedDoctorShare.toLocaleString()} {som}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between text-sm border-t border-emerald-200/80 dark:border-emerald-900/80 pt-2">
-                      <span className="font-bold text-slate-700 dark:text-slate-300">
-                        {tr('naryadcat.clinicShareText')}:
-                      </span>
-                      <span className="text-lg font-black text-slate-900 dark:text-white tabular-nums">
-                        {calculatedClinicShare.toLocaleString()} {som}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Modal Footer */}
-              <div className="flex items-center justify-end space-x-3 pt-5 border-t border-slate-100 dark:border-slate-800">
-                <button
-                  type="button"
-                  onClick={() => setIsModalOpen(false)}
-                  className="px-6 py-3 bg-slate-100 dark:bg-slate-800 text-slate-700 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700 rounded-2xl text-xs sm:text-sm font-bold transition"
-                >
-                  {tr('naryadcat.cancel')}
-                </button>
-                <button
-                  type="submit"
-                  className="flex items-center gap-2 px-8 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-2xl text-xs sm:text-sm font-black shadow-lg shadow-blue-500/25 transition active:scale-95"
-                >
-                  <Save className="w-4 h-4" />
-                  <span>{tr('naryadcat.save')}</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      <ServiceCategoryModal open={catModalOpen} editing={editingCat} onClose={() => setCatModalOpen(false)} onSaved={handleCatSaved} onError={saveErrToast} />
+      <ServiceProcedureModal open={procModalOpen} editing={editingItem} categories={categories} defaultCategoryId={categoryFilter !== 'all' && categoryFilter !== 'uncat' ? categoryFilter : null} onClose={() => setProcModalOpen(false)} onSaved={handleProcSaved} onError={saveErrToast} />
     </div>
   );
 }

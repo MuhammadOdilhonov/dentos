@@ -10,7 +10,7 @@ from .views import (
     global_search, dashboard_stats, pulse_monitor, auth_login, update_profile, serve_dental_media_sample,
     request_login_code, verify_login_code, monthly_plan,
     PatientMediaViewSet, photo_protocol, patient_media_presence, ServiceCatalogItemViewSet,
-    DoctorNaryadRateViewSet
+    DoctorNaryadRateViewSet, ServiceCategoryViewSet
 )
 from . import telegram_auth
 from . import whatsapp_api
@@ -41,6 +41,7 @@ router.register(r'technicians', DentalTechnicianViewSet)
 router.register(r'platform-settings', PlatformSettingViewSet)
 router.register(r'clinics', ClinicTenantViewSet)
 router.register(r'patient-media', PatientMediaViewSet)
+router.register(r'service-categories', ServiceCategoryViewSet)
 router.register(r'service-catalog', ServiceCatalogItemViewSet)
 router.register(r'doctor-naryads', DoctorNaryadRateViewSet)
 

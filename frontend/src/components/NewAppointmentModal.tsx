@@ -228,6 +228,11 @@ export default function NewAppointmentModal({
         title: s.name,
         name: s.name,
         unitPrice: s.price,
+        doctor_id: doctor?.id,
+        percent: s.percent,
+        doctor_share: Math.round(s.price * s.quantity * (s.percent ?? 0)) / 100,
+        clinic_share: Math.round(s.price * s.quantity * (100 - (s.percent ?? 0))) / 100,
+        created_at: new Date().toISOString(),
         teeth: s.teeth || [],
         doctor: doctor?.full_name || '',
         date: 'Bugun',
@@ -235,7 +240,7 @@ export default function NewAppointmentModal({
         isDebt: false,
         quantity: s.quantity
       }));
-      clinicApi.savePatientNaryads(patientId, patientItems);
+      clinicApi.savePatientNaryads(patientId, [...patientItems, ...clinicApi.getPatientNaryads(patientId)]);
     }
 
     onSave({
@@ -408,7 +413,7 @@ export default function NewAppointmentModal({
               </label>
               <select
                 value={selectedDoctorId}
-                onChange={(e) => setSelectedDoctorId(Number(e.target.value))}
+                onChange={(e) => { setSelectedDoctorId(Number(e.target.value)); setAddedServices([]); }}
                 className="w-full text-sm p-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:border-blue-500 text-slate-900 dark:text-white"
               >
                 {doctors.map((doc) => (
@@ -627,8 +632,9 @@ export default function NewAppointmentModal({
       patientBalance={selectedPatient?.balance || 0}
       doctorId={selectedDoctorId}
       doctorName={employees.find(e => e.id === selectedDoctorId)?.full_name}
-      onSave={(items) => {
-        setAddedServices((prev) => [...prev, ...items]);
+      onSave={(items, _total, _debt, _note, doctorId) => {
+        if (doctorId) setSelectedDoctorId(doctorId);
+        setAddedServices((prev) => doctorId === selectedDoctorId ? [...prev, ...items] : items);
         setShowServiceNaryad(false);
       }}
     />
