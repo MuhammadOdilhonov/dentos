@@ -7,7 +7,7 @@ from rest_framework.response import Response
 from .models import Patient, PatientRecord
 
 SECTIONS = {'notes', 'payments', 'treatments', 'naryads', 'checkout', 'xrays', 'scan',
-            'comms', 'tgchat', 'plans', 'cancelled_treatments', 'naryad_log'}
+            'comms', 'tgchat', 'plans', 'cancelled_treatments', 'naryad_log', 'toothChart'}
 
 # Natija turlari (qaytarilgan tuple'ning birinchi elementi).
 _OK, _CONFLICT = 'ok', 'conflict'

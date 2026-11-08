@@ -47,11 +47,13 @@ router.register(r'doctor-naryads', DoctorNaryadRateViewSet)
 
 from .patient_records import patient_record
 from .health import health, logout, me
+from .preferences import user_prefs
 
 urlpatterns = [
     path('health/', health),
     path('auth/logout/', logout),
     path('auth/me/', me),
+    path('me/prefs/', user_prefs),
     path('patient-records/<int:patient_id>/', patient_record),
     path('auth/telegram-bot/', telegram_login.bot_info),
     path('auth/telegram/request/', telegram_login.request_code),

@@ -1135,6 +1135,29 @@ export const clinicApi = {
     }
   },
 
+  // --- Per-account UI sozlamalari (SERVERDA saqlanadi, faqat o'sha akkauntga) ---
+  // Masalan qabullar taqvimidagi shifokor ustunlari tartibi. Demo klinikada yoki
+  // tarmoqsiz — chaqiruvchi localStorage'ga tushadi.
+  async getUserPrefs(): Promise<Record<string, any>> {
+    if (isDemoClinic()) return {};
+    try {
+      const res = await apiFetch(`${API_BASE}/me/prefs/`, { method: 'GET' });
+      if (!res.ok) return {};
+      return await res.json();
+    } catch { return {}; }
+  },
+
+  async saveUserPref(key: string, value: any): Promise<void> {
+    if (isDemoClinic()) return;
+    try {
+      await apiFetch(`${API_BASE}/me/prefs/`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, value }),
+      });
+    } catch { /* localStorage zaxira chaqiruvchida qoladi */ }
+  },
+
   // --- Patient tooth chart (tish formulasi) — har bir bemor uchun alohida saqlanadi ---
   // Qaytadigan qiymat: { [toothNumber]: { status, doctor, doctorId, date } }
   getPatientToothChart(patientId: number): Record<string, any> {

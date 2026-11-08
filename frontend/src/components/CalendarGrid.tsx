@@ -5,6 +5,7 @@ import { Employee, Appointment, WorkplaceItem } from '../lib/types';
 import AppointmentCard from './AppointmentCard';
 import { useI18n } from '../lib/i18n';
 import { useAuth } from '../lib/auth';
+import { clinicApi } from '../lib/api';
 import {
   ChevronLeft,
   ChevronRight,
@@ -59,10 +60,22 @@ export default function CalendarGrid({
 
   React.useEffect(() => {
     if (!orderStorageKey) return;
+    // 1) localStorage — darhol (instant + offline/demo zaxira)
     try {
       const raw = localStorage.getItem(orderStorageKey);
       setDoctorOrder(raw ? JSON.parse(raw) : []);
     } catch { setDoctorOrder([]); }
+    // 2) SERVERDAN — akkauntga saqlangan tartib (boshqa qurilma/brauzerdan ham bir xil)
+    let cancelled = false;
+    clinicApi.getUserPrefs().then((prefs) => {
+      if (cancelled) return;
+      const order = prefs?.calendar_doctor_order;
+      if (Array.isArray(order)) {
+        setDoctorOrder(order);
+        try { localStorage.setItem(orderStorageKey, JSON.stringify(order)); } catch {}
+      }
+    }).catch(() => {});
+    return () => { cancelled = true; };
   }, [orderStorageKey]);
 
   // Ism to'liq, familiya qisqa: "Muhammad Odilxonov" -> "Muhammad O."
@@ -141,6 +154,8 @@ export default function CalendarGrid({
     if (orderStorageKey) {
       try { localStorage.setItem(orderStorageKey, JSON.stringify(ids)); } catch {}
     }
+    // SERVERGA saqlaymiz — faqat shu akkauntga, boshqa qurilmadan ham ko'rinadi
+    clinicApi.saveUserPref('calendar_doctor_order', ids);
   };
 
   // Format date display dynamically by active locale

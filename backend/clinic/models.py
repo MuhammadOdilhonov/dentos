@@ -603,3 +603,23 @@ class DoctorNaryadRate(models.Model):
 
     def __str__(self):
         return f'doctor={self.doctor_id} service={self.service_id} price={self.custom_price}'
+
+
+class UserPreference(models.Model):
+    """Har bir akkauntga xos UI sozlamasi (masalan, qabullar taqvimida shifokor
+    ustunlari tartibi). Faqat o'sha akkauntga tegishli — boshqa foydalanuvchi
+    ko'rmaydi. kind+account_id orqali PlatformUser yoki DentalTechnician'ga
+    bog'lanadi (login cookie'dagi principal bilan bir xil)."""
+    kind = models.CharField(max_length=20)          # 'platform' | 'technician'
+    account_id = models.IntegerField()
+    key = models.CharField(max_length=60)
+    value = models.JSONField(default=dict)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['kind', 'account_id', 'key'], name='unique_user_preference'),
+        ]
+
+    def __str__(self):
+        return f'{self.kind}:{self.account_id} {self.key}'
