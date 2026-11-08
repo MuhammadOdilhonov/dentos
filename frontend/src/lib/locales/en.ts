@@ -941,6 +941,7 @@ export const en = {
     previous: 'Previous',
     next: 'Next',
     fullscreen: 'Fullscreen',
+    dragReorder: 'Drag to reorder',
   },
   settings2: {
     linkPhonePrompt: 'Enter your {name} phone number. The code will arrive in Telegram (or via SMS).',
@@ -1387,6 +1388,8 @@ export const en = {
     discountUzs: 'Discount (UZS)',
     none: 'None',
     discount: 'Discount',
+    remainingDebt: 'Remaining debt',
+    debtClosed: 'Debt closed',
     k152: 'Загрузить рентген-снимок',
     zipRomexisDicom: 'ZIP архив (Romexis КТ), DICOM или изображение',
     crownsOnImplants: 'Crowns on implants',
@@ -1577,6 +1580,7 @@ export const en = {
     tooth: 'Tooth',
     close: 'Close',
     som: 'UZS',
+    enteredBy: 'Entered by',
   },
   scanviewer: {
     renderProgress: 'Rendering {n} STL models…',

@@ -1,15 +1,27 @@
 'use client';
 
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { X } from 'lucide-react';
 import { useI18n } from '../lib/i18n';
+import { useAuth } from '../lib/auth';
+import { clinicApi } from '../lib/api';
 
 interface ToothState {
   status: 'healthy' | 'caries' | 'filling' | 'crown' | 'missing' | 'implant';
   diagnosis?: string;
+  doctor?: string;   // kim kiritdi (ism)
+  doctorId?: string; // kim kiritdi (id)
+  date?: string;     // qachon kiritildi
 }
 
 type Lang = 'uz' | 'ru' | 'en';
+
+// Boshqa DentalChart nusxalari (mini + to'liq) bir xil ma'lumotni ko'rsatishi uchun
+const TOOTH_CHART_SYNC_EVENT = '32desk:toothchart-updated';
+
+interface DentalChartProps {
+  patientId?: number;
+}
 
 
 
@@ -35,19 +47,39 @@ const ToothGlyph: React.FC<{ color: string; missing?: boolean; flip?: boolean }>
   </svg>
 );
 
-export default function DentalChart() {
+export default function DentalChart({ patientId }: DentalChartProps = {}) {
   const { language, tr } = useI18n();
+  const { user } = useAuth();
   const lng = (language as Lang) || 'ru';
 
   const [isPediatric, setIsPediatric] = useState(false);
   const [selectedTooth, setSelectedTooth] = useState<number | null>(null);
-  const [teethData, setTeethData] = useState<Record<number, ToothState>>({
-    17: { status: 'filling' },
-    16: { status: 'crown' },
-    26: { status: 'caries' },
-    38: { status: 'missing' },
-    46: { status: 'implant' }
-  });
+  // Yangi bemorda ranglar BO'LMAYDI — bo'sh boshlanadi, keyin bemorga saqlangani yuklanadi
+  const [teethData, setTeethData] = useState<Record<number, ToothState>>({});
+
+  // Bemor almashganda yoki boshqa nusxada o'zgarganda — saqlangan formulani yuklaymiz
+  const loadChart = useCallback(() => {
+    if (patientId == null) { setTeethData({}); return; }
+    try {
+      const raw = clinicApi.getPatientToothChart(patientId) || {};
+      const parsed: Record<number, ToothState> = {};
+      Object.keys(raw).forEach((k) => { parsed[Number(k)] = raw[k]; });
+      setTeethData(parsed);
+    } catch { setTeethData({}); }
+  }, [patientId]);
+
+  useEffect(() => { loadChart(); }, [loadChart]);
+
+  // Bir sahifadagi boshqa DentalChart nusxasi (mini/to'liq) o'zgartirsa — sinxron yangilanadi
+  useEffect(() => {
+    if (patientId == null) return;
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail;
+      if (!detail || detail.patientId === patientId) loadChart();
+    };
+    window.addEventListener(TOOTH_CHART_SYNC_EVENT, handler);
+    return () => window.removeEventListener(TOOTH_CHART_SYNC_EVENT, handler);
+  }, [patientId, loadChart]);
 
   const upperAdult = [18, 17, 16, 15, 14, 13, 12, 11, 21, 22, 23, 24, 25, 26, 27, 28];
   const lowerAdult = [48, 47, 46, 45, 44, 43, 42, 41, 31, 32, 33, 34, 35, 36, 37, 38];
@@ -60,7 +92,27 @@ export default function DentalChart() {
   const statusOf = (num: number): ToothState['status'] => teethData[num]?.status || 'healthy';
 
   const setToothStatus = (num: number, status: ToothState['status']) => {
-    setTeethData(prev => ({ ...prev, [num]: { status } }));
+    setTeethData(prev => {
+      // 'healthy' = belgini olib tashlash (rang yo'q)
+      const next = { ...prev };
+      if (status === 'healthy') {
+        delete next[num];
+      } else {
+        next[num] = {
+          status,
+          doctor: user?.name || prev[num]?.doctor,
+          doctorId: user?.id || prev[num]?.doctorId,
+          date: new Date().toLocaleDateString(lng === 'uz' ? 'uz-UZ' : lng === 'en' ? 'en-US' : 'ru-RU', { day: 'numeric', month: 'short', year: 'numeric' })
+        };
+      }
+      if (patientId != null) {
+        try {
+          clinicApi.savePatientToothChart(patientId, next as Record<string, any>);
+          window.dispatchEvent(new CustomEvent(TOOTH_CHART_SYNC_EVENT, { detail: { patientId } }));
+        } catch {}
+      }
+      return next;
+    });
     setSelectedTooth(null);
   };
 
@@ -149,6 +201,13 @@ export default function DentalChart() {
               <X className="w-4 h-4" />
             </button>
           </div>
+          {/* Kim kiritgani — doctor + sana */}
+          {teethData[selectedTooth]?.doctor && (
+            <p className="text-[10px] text-slate-400 dark:text-slate-500 mb-2">
+              {tr('dentalchart.enteredBy')}: <span className="font-semibold text-slate-600 dark:text-slate-300">{teethData[selectedTooth]?.doctor}</span>
+              {teethData[selectedTooth]?.date ? ` · ${teethData[selectedTooth]?.date}` : ''}
+            </p>
+          )}
           <p className="text-[11px] font-semibold text-slate-500 dark:text-slate-400 mb-2">{tr('dentalchart.diagnose')}:</p>
           <div className="grid grid-cols-2 gap-1.5">
             {legend.map(st => (

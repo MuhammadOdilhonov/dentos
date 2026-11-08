@@ -942,6 +942,7 @@ export const uz = {
     previous: 'Oldingi',
     next: 'Keyingi',
     fullscreen: 'To‘liq ekran',
+    dragReorder: 'Tartibni o‘zgartirish uchun suring',
   },
   settings2: {
     linkPhonePrompt: '{name} ro‘yxatdan o‘tgan telefon raqamingizni kiriting. Tasdiqlash kodi Telegram ilovangizga (yoki SMS) keladi.',
@@ -1388,6 +1389,8 @@ export const uz = {
     discountUzs: 'Chegirma (so‘m)',
     none: 'Yo‘q',
     discount: 'Chegirma',
+    remainingDebt: 'Qoladigan qarz',
+    debtClosed: 'Qarz yopildi',
     k152: 'Rentgen surati yuklash',
     zipRomexisDicom: 'ZIP arxiv (Romexis KT), DICOM yoki Rasm fayllari',
     crownsOnImplants: 'Implantatdagi koronkalar',
@@ -1578,6 +1581,7 @@ export const uz = {
     tooth: 'Tish',
     close: 'Yopish',
     som: 'so‘m',
+    enteredBy: 'Kiritdi',
   },
   scanviewer: {
     renderProgress: '{n} ta STL render qilinmoqda…',

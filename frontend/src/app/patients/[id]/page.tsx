@@ -2331,13 +2331,20 @@ export default function PatientDetailPage() {
       alert(tr('patientd.k5'));
       return;
     }
-    const discount = Math.max(0, Math.round(Number(newPaymentDiscount) || 0));
     const now = new Date();
     const targetPatientId = patient.id;
-    // Chegirma ham qarzni kamaytiradi (kechiriladi) → balansga amount + discount qo'shiladi
+    // Yo'nalish AVTOMATIK aniqlanadi: balans manfiy bo'lsa (qarz) — qarzni yopadi,
+    // aks holda (0 yoki undan yuqori) — balansga tushadi. Qo'lda tanlash YO'Q.
+    const curBal = Math.round(Number(patient.balance) || 0);
+    const target: 'debt' | 'balance' = curBal < 0 ? 'debt' : 'balance';
+    // Chegirma FAQAT qarzga tegishli (qarzni kamaytiradi). Balansga to'lovda chegirma yo'q.
+    const discount = target === 'debt' ? Math.max(0, Math.round(Number(newPaymentDiscount) || 0)) : 0;
+    // Chegirma ham qarzni kamaytiradi (kechiriladi) → balansga amount + discount qo'shiladi.
+    // Masalan: qarz 500000, to'lov 300000 → balans -200000 (qarz 200000 qoladi).
+    // Agar to'lov + chegirma qarzdan ko'p bo'lsa — ortig'i balansga (+) o'tadi.
     const balanceDelta = amount + discount;
     let desc =
-      newPaymentTarget === 'debt'
+      target === 'debt'
         ? (tr('patientd.k6'))
         : (tr('patientd.k7'));
     if (discount > 0) {
@@ -2359,7 +2366,7 @@ export default function PatientDetailPage() {
       total: amount,
       method: newPaymentMethod,
       operator: CURRENT_OPERATOR,
-      target: newPaymentTarget,
+      target: target,
       description: desc,
       discount: discount || undefined,
       branch_id: branchObj?.id || currentBranchId || null,
@@ -3195,7 +3202,7 @@ export default function PatientDetailPage() {
 
               {/* Card 2: Dental Chart */}
               <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs p-4">
-                <DentalChart />
+                <DentalChart patientId={patientId} />
               </div>
             </div>
           </div>
@@ -3376,7 +3383,7 @@ export default function PatientDetailPage() {
             </div>
 
             {/* Full Anatomical Teeth Diagram */}
-            <DentalChart />
+            <DentalChart patientId={patientId} />
 
             <div className="flex items-center justify-end space-x-2 pt-4 border-t border-slate-100 dark:border-slate-800">
               <button
@@ -6500,7 +6507,8 @@ export default function PatientDetailPage() {
                 </select>
               </div>
 
-              {/* Chegirma (skidka) — qarzni kamaytiradi, direktor/kassa ko'radi */}
+              {/* Chegirma (skidka) — FAQAT qarz bo'lganda ko'rinadi (qarzni kamaytiradi) */}
+              {(Number(patient.balance) || 0) < 0 && (
               <div>
                 <label className="font-semibold text-slate-700 dark:text-slate-300 block mb-1">
                   {tr('patientd.discountUzs')}
@@ -6534,37 +6542,45 @@ export default function PatientDetailPage() {
                   </button>
                 </div>
               </div>
+              )}
 
-              {/* Where the money goes: pay off debt OR add to balance (prepay) */}
-              <div>
-                <label className="font-semibold text-slate-700 dark:text-slate-300 block mb-1">{tk('apply_to')}</label>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setNewPaymentTarget('debt')}
-                    className={`flex-1 px-3 py-2 rounded-lg text-xs font-bold border transition ${newPaymentTarget === 'debt' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'}`}
-                  >
-                    {tk('pay_debt')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setNewPaymentTarget('balance')}
-                    className={`flex-1 px-3 py-2 rounded-lg text-xs font-bold border transition ${newPaymentTarget === 'balance' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-200 dark:border-slate-700'}`}
-                  >
-                    {tk('to_balance')}
-                  </button>
-                </div>
-              </div>
-
-              {/* Summary: who accepts, how much, new balance */}
-              <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-700 space-y-1">
-                <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">{tk('accepted_by')}</span><span className="font-bold">{CURRENT_OPERATOR}</span></div>
-                <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">{tk('payment')}</span><span className="font-bold">{(Math.max(0, Math.round(Number(newPaymentAmount) || 0))).toLocaleString('ru-RU')} · {newPaymentMethod}</span></div>
-                {Math.round(Number(newPaymentDiscount) || 0) > 0 && (
-                  <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">{tr('patientd.discount')}</span><span className="font-bold text-emerald-600">−{Math.max(0, Math.round(Number(newPaymentDiscount) || 0)).toLocaleString('ru-RU')} {tk('uzs')}</span></div>
-                )}
-                <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">{tk('new_balance')}</span><span className="font-bold">{Math.round((Number(patient.balance) || 0) + Math.max(0, Math.round(Number(newPaymentAmount) || 0)) + Math.max(0, Math.round(Number(newPaymentDiscount) || 0))).toLocaleString('ru-RU')} {tk('uzs')}</span></div>
-              </div>
+              {/* Summary: yo'nalish AVTOMATIK — balans manfiy bo'lsa qarzga, aks holda balansga */}
+              {(() => {
+                const curBal = Math.round(Number(patient.balance) || 0);
+                const payAmt = Math.max(0, Math.round(Number(newPaymentAmount) || 0));
+                const hasDebt = curBal < 0;
+                const disc = hasDebt ? Math.max(0, Math.round(Number(newPaymentDiscount) || 0)) : 0;
+                const debt = hasDebt ? -curBal : 0;
+                const newBal = curBal + payAmt + disc;
+                const remainingDebt = newBal < 0 ? -newBal : 0;
+                const toBalance = newBal > 0 ? newBal : 0;
+                const fmt = (n: number) => n.toLocaleString('ru-RU');
+                return (
+                  <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-100 dark:border-slate-700 space-y-1.5">
+                    {/* Rejim belgisi — avtomatik */}
+                    <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold ${hasDebt ? 'bg-rose-100 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300' : 'bg-emerald-100 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300'}`}>
+                      {hasDebt ? tk('pay_debt') : tk('to_balance')}
+                    </span>
+                    <div className="flex justify-between pt-0.5"><span className="text-slate-500 dark:text-slate-400">{tk('accepted_by')}</span><span className="font-bold">{CURRENT_OPERATOR}</span></div>
+                    {hasDebt && (
+                      <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">{tk('current_debt')}</span><span className="font-bold text-rose-600 dark:text-rose-400">{fmt(debt)} {tk('uzs')}</span></div>
+                    )}
+                    <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">{tk('payment')}</span><span className="font-bold">{fmt(payAmt)} · {newPaymentMethod}</span></div>
+                    {disc > 0 && (
+                      <div className="flex justify-between"><span className="text-slate-500 dark:text-slate-400">{tr('patientd.discount')}</span><span className="font-bold text-emerald-600">−{fmt(disc)} {tk('uzs')}</span></div>
+                    )}
+                    {hasDebt ? (
+                      remainingDebt > 0 ? (
+                        <div className="flex justify-between border-t border-slate-200/70 dark:border-slate-700 pt-1.5"><span className="text-slate-500 dark:text-slate-400">{tr('patientd.remainingDebt')}</span><span className="font-black text-rose-600 dark:text-rose-400">{fmt(remainingDebt)} {tk('uzs')}</span></div>
+                      ) : (
+                        <div className="flex justify-between border-t border-slate-200/70 dark:border-slate-700 pt-1.5"><span className="text-slate-500 dark:text-slate-400">{tr('patientd.debtClosed')}</span><span className="font-black text-emerald-600 dark:text-emerald-400">{toBalance > 0 ? `+${fmt(toBalance)} ${tk('uzs')}` : `0 ${tk('uzs')}`}</span></div>
+                      )
+                    ) : (
+                      <div className="flex justify-between border-t border-slate-200/70 dark:border-slate-700 pt-1.5"><span className="text-slate-500 dark:text-slate-400">{tk('new_balance')}</span><span className="font-black text-emerald-700 dark:text-emerald-400">{fmt(newBal)} {tk('uzs')}</span></div>
+                    )}
+                  </div>
+                );
+              })()}
 
               <div className="pt-1 flex justify-end space-x-2">
                 <button

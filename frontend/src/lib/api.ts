@@ -1135,6 +1135,33 @@ export const clinicApi = {
     }
   },
 
+  // --- Patient tooth chart (tish formulasi) — har bir bemor uchun alohida saqlanadi ---
+  // Qaytadigan qiymat: { [toothNumber]: { status, doctor, doctorId, date } }
+  getPatientToothChart(patientId: number): Record<string, any> {
+    if (typeof window !== 'undefined' && !isDemoClinic()) return readPatientRecord(patientId, 'toothChart', {});
+    if (typeof window === 'undefined') return {};
+    try {
+      const stored = localStorage.getItem('32desk_patient_tooth_chart');
+      const map: Record<string, Record<string, any>> = stored ? JSON.parse(stored) : {};
+      return map[patientId] || {};
+    } catch {
+      return {};
+    }
+  },
+
+  savePatientToothChart(patientId: number, chart: Record<string, any>): void {
+    if (typeof window !== 'undefined' && !isDemoClinic()) { savePatientRecord(patientId, 'toothChart', chart); return; }
+    if (typeof window === 'undefined') return;
+    try {
+      const stored = localStorage.getItem('32desk_patient_tooth_chart');
+      const map: Record<string, Record<string, any>> = stored ? JSON.parse(stored) : {};
+      map[patientId] = chart;
+      localStorage.setItem('32desk_patient_tooth_chart', JSON.stringify(map));
+    } catch (e) { if (e instanceof ApiError && !isDemoClinic()) throw e;
+      console.error(e);
+    }
+  },
+
   // --- Patient payments (Оплаты receipts) — persisted per patient with operator/method/target ---
   getPatientPayments(patientId: number): any[] {
     if (typeof window !== 'undefined' && !isDemoClinic()) return readPatientRecord(patientId, 'payments', []);

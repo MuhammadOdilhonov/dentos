@@ -252,13 +252,17 @@ export default function NaryadsPage() {
             {visibleCategories.map((cat) => {
               const active = categoryFilter === cat.id;
               return (
-                <div key={cat.id} className={`group flex items-center gap-1 rounded-xl px-1 ${active ? 'bg-blue-600' : 'hover:bg-slate-100 dark:hover:bg-slate-800'}`}>
-                  <button onClick={() => setCategoryFilter(cat.id)} className={`flex-1 flex items-center justify-between gap-2 px-2 py-2.5 text-sm font-bold text-left ${active ? 'text-white' : 'text-slate-700 dark:text-slate-200'}`}>
-                    <span className="truncate">{cat.name}</span>
-                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-black shrink-0 ${active ? 'bg-blue-500' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>{countFor(cat)}</span>
+                <div key={cat.id} className={`group relative flex items-center rounded-xl ${active ? 'bg-blue-600' : 'hover:bg-slate-100 dark:hover:bg-slate-800'}`}>
+                  <button onClick={() => setCategoryFilter(cat.id)} className={`min-w-0 flex-1 flex items-center justify-between gap-2 px-3 py-2.5 text-sm font-bold text-left ${active ? 'text-white' : 'text-slate-700 dark:text-slate-200'}`}>
+                    <span className="truncate min-w-0">{cat.name}</span>
+                    {/* Soni — ong burchakka taqaladi; hover bo'lganda tahrirlash/o'chirish tugmalari o'rnini egallaydi */}
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full font-black shrink-0 transition-opacity group-hover:opacity-0 ${active ? 'bg-blue-500' : 'bg-slate-100 dark:bg-slate-800 text-slate-500'}`}>{countFor(cat)}</span>
                   </button>
-                  <button onClick={() => openEditCat(cat)} title={tr('naryadcat.catEdit')} className={`p-1.5 rounded-lg shrink-0 opacity-0 group-hover:opacity-100 transition ${active ? 'text-white hover:bg-blue-500' : 'text-blue-600 dark:text-sky-400 hover:bg-blue-50 dark:hover:bg-blue-950/60'}`}><Edit2 className="w-3.5 h-3.5" /></button>
-                  <button onClick={() => handleDeleteCat(cat)} title={tr('common.delete')} className={`p-1.5 rounded-lg shrink-0 opacity-0 group-hover:opacity-100 transition ${active ? 'text-white hover:bg-blue-500' : 'text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/40'}`}><Trash2 className="w-3.5 h-3.5" /></button>
+                  {/* Tahrirlash + o'chirish — soni ustida (ong burchak), faqat hover'da ko'rinadi */}
+                  <div className="absolute right-1.5 top-1/2 -translate-y-1/2 flex items-center gap-0.5 opacity-0 pointer-events-none group-hover:opacity-100 group-hover:pointer-events-auto transition-opacity">
+                    <button onClick={() => openEditCat(cat)} title={tr('naryadcat.catEdit')} className={`p-1.5 rounded-lg ${active ? 'text-white bg-blue-700/60 hover:bg-blue-700' : 'text-blue-600 dark:text-sky-400 bg-white/90 dark:bg-slate-900/90 hover:bg-blue-50 dark:hover:bg-blue-950/60'}`}><Edit2 className="w-3.5 h-3.5" /></button>
+                    <button onClick={() => handleDeleteCat(cat)} title={tr('common.delete')} className={`p-1.5 rounded-lg ${active ? 'text-white bg-blue-700/60 hover:bg-rose-600' : 'text-rose-500 bg-white/90 dark:bg-slate-900/90 hover:bg-rose-50 dark:hover:bg-rose-950/40'}`}><Trash2 className="w-3.5 h-3.5" /></button>
+                  </div>
                 </div>
               );
             })}

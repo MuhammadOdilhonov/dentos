@@ -51,6 +51,29 @@ export default function CalendarGrid({
   const [groupMode, setGroupMode] = useState<'employees' | 'chairs'>('employees');
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
 
+  // Shifokor ustunlarini surib qayta tartiblash — har bir akkaunt uchun saqlanadi
+  const orderStorageKey = user ? `32desk_doc_order_${user.id}` : null;
+  const [doctorOrder, setDoctorOrder] = useState<number[]>([]);
+  const [dragDocId, setDragDocId] = useState<number | null>(null);
+  const [dragOverDocId, setDragOverDocId] = useState<number | null>(null);
+
+  React.useEffect(() => {
+    if (!orderStorageKey) return;
+    try {
+      const raw = localStorage.getItem(orderStorageKey);
+      setDoctorOrder(raw ? JSON.parse(raw) : []);
+    } catch { setDoctorOrder([]); }
+  }, [orderStorageKey]);
+
+  // Ism to'liq, familiya qisqa: "Muhammad Odilxonov" -> "Muhammad O."
+  const shortDocName = (full?: string) => {
+    if (!full) return '';
+    const parts = full.replace(/^(Dr\.?\s*)/i, '').trim().split(/\s+/).filter(Boolean);
+    if (parts.length <= 1) return parts[0] || '';
+    const rest = parts.slice(1).map((p) => `${p[0].toUpperCase()}.`).join(' ');
+    return `${parts[0]} ${rest}`;
+  };
+
   // Live timer for current time red line
   React.useEffect(() => {
     const timer = setInterval(() => setCurrentTime(new Date()), 15000);
@@ -78,15 +101,47 @@ export default function CalendarGrid({
   const isWithinRange = minutesFromStart >= 0 && minutesFromStart <= timeSlots.length * 30;
   const currentTimeFormatted = currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-  // Filter doctors and sort by branch so colleagues of same filial are clustered together
+  // Filter doctors and sort by branch so colleagues of same filial are clustered together.
+  // Agar foydalanuvchi ustunlarni qo'lda surgan bo'lsa — o'sha saqlangan tartib ustun.
   const rawDoctors = employees.filter((e) => e.role === 'doctor');
   const doctors = useMemo(() => {
-    return [...rawDoctors].sort((a, b) => {
+    const branchSort = (a: Employee, b: Employee) => {
       const aBranch = a.branch_name || (typeof a.branch === 'object' ? (a.branch as any)?.name : '') || 'Boshqa';
       const bBranch = b.branch_name || (typeof b.branch === 'object' ? (b.branch as any)?.name : '') || 'Boshqa';
       return aBranch.localeCompare(bBranch);
-    });
-  }, [rawDoctors]);
+    };
+    const base = [...rawDoctors];
+    if (doctorOrder.length > 0) {
+      return base.sort((a, b) => {
+        const ia = doctorOrder.indexOf(a.id);
+        const ib = doctorOrder.indexOf(b.id);
+        if (ia === -1 && ib === -1) return branchSort(a, b);
+        if (ia === -1) return 1; // saqlanmaganlar oxiriga
+        if (ib === -1) return -1;
+        return ia - ib;
+      });
+    }
+    return base.sort(branchSort);
+  }, [rawDoctors, doctorOrder]);
+
+  // Ustunni boshqa ustun ustiga tashlaganda tartibni yangilab, akkauntga saqlaymiz
+  const reorderable = viewMode === 'day' && groupMode === 'employees';
+  const handleReorderDrop = (targetDocId: number) => {
+    const src = dragDocId;
+    setDragDocId(null);
+    setDragOverDocId(null);
+    if (src == null || src === targetDocId) return;
+    const ids = doctors.map((d) => d.id);
+    const from = ids.indexOf(src);
+    const to = ids.indexOf(targetDocId);
+    if (from === -1 || to === -1) return;
+    ids.splice(from, 1);
+    ids.splice(to, 0, src);
+    setDoctorOrder(ids);
+    if (orderStorageKey) {
+      try { localStorage.setItem(orderStorageKey, JSON.stringify(ids)); } catch {}
+    }
+  };
 
   // Format date display dynamically by active locale
   const localeMap = { uz: 'uz-UZ', ru: 'ru-RU', en: 'en-US' };
@@ -224,6 +279,7 @@ export default function CalendarGrid({
     branchName?: string;
     color: string;
     avatar?: string;
+    doctorId?: number;
     appts: Appointment[];
     onSlot: (time: string) => void;
     isToday?: boolean;
@@ -240,6 +296,7 @@ export default function CalendarGrid({
           branchName: (col as any).branchName || '',
           color: col.color || '#0EA5E9',
           avatar: col.avatar,
+          doctorId: col.doctorId,
           appts: appointments.filter((a) => {
             if (!isSameDay(aptDate(a), currentDate)) return false;
             if (groupMode === 'employees') {
@@ -263,6 +320,14 @@ export default function CalendarGrid({
           isToday: isSameDay(d, new Date()),
           perApptColor: true
         }));
+
+  // Ustun kengligi: noutbukda 12 tagacha shifokor ekranga sig'adi (gorizontal scroll yo'q),
+  // 12 tadan ko'p bo'lsa — har biriga 128px beriladi va scroll paydo bo'ladi.
+  const manyDocs = viewMode === 'day' && gridCols.length > 12;
+  const colMinPx = viewMode === 'day' ? (manyDocs ? 128 : 0) : 120;
+  const gridTemplateColumns = `repeat(${gridCols.length}, minmax(${colMinPx}px, 1fr))`;
+  // 80px = chapdagi vaqt ustuni kengligi
+  const gridMinWidthPx = colMinPx > 0 ? 80 + colMinPx * gridCols.length : undefined;
 
   // Dynamic daily/period appointments & financial stats
   const activeDayAppointments = useMemo(() => {
@@ -590,22 +655,32 @@ export default function CalendarGrid({
       ) : (
         <div className="flex-1 overflow-auto relative flex flex-col bg-slate-50/30 dark:bg-slate-900/20">
           {/* Sticky header (doctors/chairs for day, dates for 3-day/week) */}
-          <div className="sticky top-0 z-20 flex bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shadow-xs min-w-[760px]">
+          <div className="sticky top-0 z-30 flex bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shadow-xs" style={{ minWidth: gridMinWidthPx }}>
             <div className="w-20 flex-shrink-0 p-3 bg-slate-100/90 dark:bg-slate-800/90 border-r border-slate-200 dark:border-slate-700/80 flex items-center justify-center text-xs font-bold text-slate-500 dark:text-slate-400">
               <Clock className="w-4 h-4 mr-1 text-slate-400 dark:text-slate-500" />
               <span>{t.time}</span>
             </div>
-            <div className="flex-1 grid" style={{ gridTemplateColumns: `repeat(${gridCols.length}, minmax(${viewMode === 'day' ? 180 : 120}px, 1fr))` }}>
-              {gridCols.map((col) => (
+            <div className="flex-1 grid" style={{ gridTemplateColumns: gridTemplateColumns }}>
+              {gridCols.map((col) => {
+                const canDrag = reorderable && col.doctorId != null;
+                const isDragTarget = canDrag && dragOverDocId === col.doctorId && dragDocId !== col.doctorId;
+                return (
                 <div
                   key={col.key}
-                  className={`p-2.5 border-r border-slate-200 dark:border-slate-800 flex items-center space-x-3 transition ${
-                    col.isToday ? 'bg-blue-50/70 dark:bg-blue-950/30' : 'bg-white dark:bg-slate-900 hover:bg-slate-50/80 dark:hover:bg-slate-800/60'
-                  }`}
+                  draggable={canDrag}
+                  onDragStart={canDrag ? () => setDragDocId(col.doctorId!) : undefined}
+                  onDragOver={canDrag ? (e) => { e.preventDefault(); if (dragOverDocId !== col.doctorId) setDragOverDocId(col.doctorId!); } : undefined}
+                  onDragLeave={canDrag ? () => setDragOverDocId((prev) => (prev === col.doctorId ? null : prev)) : undefined}
+                  onDrop={canDrag ? () => handleReorderDrop(col.doctorId!) : undefined}
+                  onDragEnd={canDrag ? () => { setDragDocId(null); setDragOverDocId(null); } : undefined}
+                  title={canDrag ? tr('calgrid.dragReorder') : undefined}
+                  className={`px-1.5 py-1.5 min-h-[50px] border-r border-slate-200 dark:border-slate-800 flex items-center transition ${canDrag ? 'cursor-grab active:cursor-grabbing' : ''} ${
+                    isDragTarget ? 'ring-2 ring-inset ring-blue-500 bg-blue-50 dark:bg-blue-950/40' : col.isToday ? 'bg-blue-50/70 dark:bg-blue-950/30' : 'bg-white dark:bg-slate-900 hover:bg-slate-50/80 dark:hover:bg-slate-800/60'
+                  } ${dragDocId === col.doctorId ? 'opacity-40' : ''}`}
                 >
                   {viewMode === 'day' ? (
-                    // Shifokor ustuni: LOGO ortda (watermark), TEPADA ism, PASTDA filial
-                    <div className="relative w-full flex flex-col items-center justify-center text-center overflow-hidden rounded-lg py-1">
+                    // Shifokor ustuni — ixcham: avatar + ism (familiya qisqa) + filial·stol bitta qatorda
+                    <div className="relative w-full flex items-center gap-1.5 overflow-hidden rounded-lg px-0.5">
                       {/* orqa fon — avatar yoki rang (watermark) */}
                       {col.avatar ? (
                         // eslint-disable-next-line @next/next/no-img-element
@@ -613,31 +688,37 @@ export default function CalendarGrid({
                       ) : (
                         <div className="absolute inset-0 opacity-10 dark:opacity-20 pointer-events-none" style={{ backgroundColor: col.color }} />
                       )}
-                      {/* tepada kichik avatar + ism */}
-                      <div className="relative z-10 flex flex-col items-center min-w-0 w-full">
-                        {col.avatar ? (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img src={col.avatar} alt={col.headerTop} className="w-9 h-9 rounded-full object-cover ring-2 ring-white dark:ring-slate-800 shadow-sm mb-1" />
-                        ) : (
-                          <div className="w-9 h-9 rounded-full flex items-center justify-center text-white font-black text-sm shadow-sm ring-2 ring-white dark:ring-slate-800 mb-1" style={{ backgroundColor: col.color }}>
-                            {col.headerTop[0]}
-                          </div>
-                        )}
-                        <p className="text-xs font-black text-slate-900 dark:text-white truncate max-w-full leading-tight">{col.headerTop}</p>
-                        {col.headerSub && (
-                          <p className="text-[10px] text-slate-500 dark:text-slate-400 truncate max-w-full">{col.headerSub}</p>
-                        )}
-                        {/* pastda filial */}
-                        {col.branchName && (
-                          <span className="mt-0.5 text-[9px] font-bold text-cyan-700 dark:text-cyan-300 bg-cyan-50 dark:bg-cyan-950/80 px-1.5 py-0.5 rounded-full border border-cyan-200 dark:border-cyan-800 truncate max-w-full">
-                            {col.branchName}
-                          </span>
-                        )}
-                        {col.badge && (
-                          <span className="mt-0.5 text-[9px] font-medium text-blue-600 dark:text-sky-400 bg-blue-50 dark:bg-blue-950/60 px-1.5 py-0.5 rounded-full border border-blue-100 dark:border-blue-900/60 truncate max-w-full">
-                            {col.badge}
-                          </span>
-                        )}
+                      {col.avatar ? (
+                        // eslint-disable-next-line @next/next/no-img-element
+                        <img src={col.avatar} alt={col.headerTop} draggable={false} className="relative z-10 w-7 h-7 rounded-full object-cover ring-2 ring-white dark:ring-slate-800 shadow-sm shrink-0" />
+                      ) : (
+                        <div className="relative z-10 w-7 h-7 rounded-full flex items-center justify-center text-white font-black text-xs shadow-sm ring-2 ring-white dark:ring-slate-800 shrink-0" style={{ backgroundColor: col.color }}>
+                          {col.headerTop[0]}
+                        </div>
+                      )}
+                      <div className="relative z-10 flex flex-col items-start justify-center min-w-0 flex-1 leading-tight">
+                        <p className="text-[11px] font-black text-slate-900 dark:text-white truncate max-w-full" title={col.headerTop}>{shortDocName(col.headerTop)}</p>
+                        {/* Filial faqat "barcha filiallar" ko'rinishida chiqadi — bitta filial ochilganda ortiqcha, shuning uchun yashiriladi */}
+                        {(() => {
+                          const showBranch = !currentBranchId && !!col.branchName;
+                          const showBadge = !!col.badge;
+                          if (!showBranch && !showBadge) return null;
+                          return (
+                            <div className="flex items-center gap-1 max-w-full min-w-0">
+                              {showBranch && (
+                                <span className="text-[9px] font-bold text-cyan-700 dark:text-cyan-300 truncate" title={col.branchName}>
+                                  {col.branchName}
+                                </span>
+                              )}
+                              {showBranch && showBadge && <span className="text-[9px] text-slate-300 dark:text-slate-600 shrink-0">·</span>}
+                              {showBadge && (
+                                <span className="text-[9px] font-semibold text-blue-600 dark:text-sky-400 truncate" title={col.badge}>
+                                  {col.badge}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })()}
                       </div>
                     </div>
                   ) : (
@@ -647,32 +728,37 @@ export default function CalendarGrid({
                     </div>
                   )}
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
 
           {/* Time labels + columns */}
-          <div className="flex relative min-w-[760px] flex-1">
+          <div className="flex relative flex-1" style={{ minWidth: gridMinWidthPx }}>
             <div className="w-20 flex-shrink-0 bg-slate-50/80 dark:bg-slate-900/80 border-r border-slate-200 dark:border-slate-800 select-none relative">
               {isWithinRange && (
                 <div
                   style={{ top: `${currentTopOffset - 9}px` }}
-                  className="absolute left-1 right-1 z-30 bg-red-600 text-white text-[10px] font-mono font-black px-1.5 py-0.5 rounded-md shadow-md flex items-center justify-between pointer-events-none"
+                  className="absolute left-1 right-1 z-20 bg-red-600 text-white text-[10px] font-mono font-black px-1.5 py-0.5 rounded-md shadow-md flex items-center justify-between pointer-events-none"
                 >
                   <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping" />
                   <span>{currentTimeFormatted}</span>
                 </div>
               )}
               {timeSlots.map((time) => (
-                <div key={time} style={{ height: `${SLOT_HEIGHT}px` }} className="border-b border-slate-200/80 dark:border-slate-800/80 flex items-start justify-center pt-1">
-                  <span className={`text-[11px] font-mono ${time.endsWith(':00') ? 'font-bold text-slate-700 dark:text-slate-200' : 'text-slate-400 dark:text-slate-500 font-normal'}`}>
+                <div
+                  key={time}
+                  style={{ height: `${SLOT_HEIGHT}px` }}
+                  className="flex items-start justify-center pt-1 border-b border-slate-200 dark:border-slate-800"
+                >
+                  <span className={`text-[11px] font-mono ${time.endsWith(':00') ? 'font-bold text-slate-700 dark:text-slate-200' : 'font-medium text-slate-500 dark:text-slate-300'}`}>
                     {time}
                   </span>
                 </div>
               ))}
             </div>
 
-            <div className="flex-1 grid relative" style={{ gridTemplateColumns: `repeat(${gridCols.length}, minmax(${viewMode === 'day' ? 180 : 120}px, 1fr))` }}>
+            <div className="flex-1 grid relative" style={{ gridTemplateColumns: gridTemplateColumns }}>
               {isWithinRange && (
                 <div style={{ top: `${currentTopOffset}px` }} className="absolute left-0 right-0 z-20 pointer-events-none flex items-center">
                   <div className="w-2.5 h-2.5 rounded-full bg-red-600 -ml-1 ring-2 ring-white dark:ring-slate-900 shadow-md" />
@@ -687,9 +773,7 @@ export default function CalendarGrid({
                       key={time}
                       style={{ height: `${SLOT_HEIGHT}px` }}
                       onClick={() => col.onSlot(time)}
-                      className={`border-b hover:bg-blue-50/40 dark:hover:bg-blue-900/20 transition-colors cursor-pointer relative group flex items-center justify-center ${
-                        time.endsWith(':00') ? 'border-b-slate-200/70 dark:border-b-slate-800' : 'border-b-slate-100 dark:border-b-slate-800/50'
-                      }`}
+                      className="border-b border-b-slate-200 dark:border-b-slate-800 hover:bg-blue-50/40 dark:hover:bg-blue-900/20 transition-colors cursor-pointer relative group flex items-center justify-center"
                     >
                       <span className="opacity-0 group-hover:opacity-100 transition text-[10px] text-blue-600 dark:text-sky-400 font-bold bg-white/95 dark:bg-slate-800 px-2 py-0.5 rounded-full shadow-xs border border-blue-200 dark:border-slate-700 flex items-center space-x-1">
                         <Plus className="w-3 h-3" />

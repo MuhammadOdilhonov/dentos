@@ -8,7 +8,7 @@ import {
   FlaskConical, CheckSquare, Activity, MessageSquare, Camera, PhoneCall, Building2,
   ArrowRight, PlayCircle, BadgeCheck, Globe, Cloud, MessageCircle, ShieldCheck,
   Stethoscope, Wallet, UserCog, UserCheck, Crown, Wrench, Bot, Send, Check, Sparkles,
-  Phone, Mail, MapPin, Sun, Moon
+  Phone, Mail, MapPin, Sun, Moon, Menu, X
 } from 'lucide-react';
 import { useAuth, UserRole } from '../lib/auth';
 import { useI18n, Language } from '../lib/i18n';
@@ -290,6 +290,7 @@ export default function LandingHomePage() {
   const { language, setLanguage } = useI18n();
   const { isDark, toggleTheme } = useTheme();
   const [showAll, setShowAll] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const lang = (['uz', 'ru', 'en'].includes(language) ? language : 'uz') as 'uz' | 'ru' | 'en';
   const c = CONTENT[lang];
   const li = lang === 'uz' ? 0 : lang === 'ru' ? 1 : 2;
@@ -316,38 +317,80 @@ export default function LandingHomePage() {
     <div className="min-h-screen bg-[#faf8ff] dark:bg-slate-950 text-slate-900 dark:text-white font-sans antialiased selection:bg-blue-700 selection:text-white">
       {/* ─── HEADER ─── */}
       <header className="fixed top-0 w-full z-50 bg-[#faf8ff]/80 dark:bg-slate-950/80 backdrop-blur-xl border-b border-slate-200/60 dark:border-slate-800">
-        <div className="h-20 max-w-7xl mx-auto px-5 lg:px-10 flex items-center justify-between">
-          <Link href="/"><DentalLogo /></Link>
+        <div className="h-16 lg:h-20 max-w-7xl mx-auto px-4 sm:px-5 lg:px-10 flex items-center justify-between gap-2">
+          <Link href="/" onClick={() => setMenuOpen(false)}><DentalLogo /></Link>
           <nav className="hidden lg:flex items-center gap-1 text-sm font-semibold text-slate-600 dark:text-slate-400">
             <a href="#features" className="px-3 py-2 rounded-lg hover:text-blue-700 hover:bg-blue-50 transition">{c.navFeatures}</a>
             <a href="#modules" className="px-3 py-2 rounded-lg hover:text-blue-700 hover:bg-blue-50 transition">{c.navModules}</a>
             <a href="#roles" className="px-3 py-2 rounded-lg hover:text-blue-700 hover:bg-blue-50 transition">{c.navRoles}</a>
             <a href="#contact" className="px-3 py-2 rounded-lg hover:text-blue-700 hover:bg-blue-50 transition">{c.navContact}</a>
           </nav>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2 lg:gap-3">
             <button onClick={toggleTheme} title="Kun / Tun"
-              className="w-9 h-9 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-400 dark:text-amber-300 hover:text-blue-700 dark:hover:text-amber-200 flex items-center justify-center transition">
+              className="w-9 h-9 shrink-0 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-amber-300 hover:text-blue-700 dark:hover:text-amber-200 flex items-center justify-center transition">
               {isDark ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
-            <div className="flex items-center text-xs font-bold bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-0.5">
+            {/* Til almashtirgich — desktopda inline, mobilda menyuda */}
+            <div className="hidden sm:flex items-center text-xs font-bold bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg p-0.5">
               {(['uz', 'ru', 'en'] as Language[]).map((lg) => (
                 <button key={lg} onClick={() => setLanguage(lg)}
-                  className={`px-2 py-1 rounded-md uppercase transition ${language === lg ? 'bg-white dark:bg-slate-900 dark:bg-slate-700 text-blue-700 dark:text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}`}>
+                  className={`px-2 py-1 rounded-md uppercase transition ${language === lg ? 'bg-white dark:bg-slate-700 text-blue-700 dark:text-white shadow-sm' : 'text-slate-500 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'}`}>
                   {lg}
                 </button>
               ))}
             </div>
-            <Link href="/login" className="hidden sm:block text-sm font-semibold text-slate-700 dark:text-slate-200 hover:text-blue-700 px-3 py-2 transition">{c.navLogin}</Link>
+            <Link href="/login" className="hidden lg:block text-sm font-semibold text-slate-700 dark:text-slate-200 hover:text-blue-700 px-3 py-2 transition">{c.navLogin}</Link>
             <button onClick={handleAction}
-              className="px-5 py-2.5 rounded-xl bg-blue-700 hover:bg-blue-800 text-white font-bold text-sm shadow-md shadow-blue-700/20 transition active:scale-[0.98] flex items-center gap-2">
+              className="hidden lg:flex px-5 py-2.5 rounded-xl bg-blue-700 hover:bg-blue-800 text-white font-bold text-sm shadow-md shadow-blue-700/20 transition active:scale-[0.98] items-center gap-2">
               <span>{user ? c.navCabinet : c.navTry}</span>
               <ArrowRight className="w-4 h-4" />
             </button>
+            {/* Mobil menyu tugmasi (hamburger) */}
+            <button onClick={() => setMenuOpen((v) => !v)} aria-label="Menu" aria-expanded={menuOpen}
+              className="lg:hidden w-9 h-9 shrink-0 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:text-blue-700 flex items-center justify-center transition">
+              {menuOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
+            </button>
           </div>
         </div>
+
+        {/* ─── MOBIL MENYU (drawer) ─── */}
+        {menuOpen && (
+          <div className="lg:hidden border-t border-slate-200/70 dark:border-slate-800 bg-[#faf8ff]/95 dark:bg-slate-950/95 backdrop-blur-xl shadow-lg animate-in slide-in-from-top-2 duration-200">
+            <div className="max-w-7xl mx-auto px-4 sm:px-5 py-4 flex flex-col gap-1">
+              {[['#features', c.navFeatures], ['#modules', c.navModules], ['#roles', c.navRoles], ['#contact', c.navContact]].map(([href, label]) => (
+                <a key={href} href={href} onClick={() => setMenuOpen(false)}
+                  className="px-3 py-3 rounded-xl text-sm font-bold text-slate-700 dark:text-slate-200 hover:bg-blue-50 dark:hover:bg-slate-800 hover:text-blue-700 transition">
+                  {label}
+                </a>
+              ))}
+
+              {/* Til almashtirgich — mobilda bu yerda */}
+              <div className="sm:hidden flex items-center gap-1 mt-2 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-1 text-xs font-bold self-start">
+                {(['uz', 'ru', 'en'] as Language[]).map((lg) => (
+                  <button key={lg} onClick={() => setLanguage(lg)}
+                    className={`px-3 py-1.5 rounded-lg uppercase transition ${language === lg ? 'bg-white dark:bg-slate-700 text-blue-700 dark:text-white shadow-sm' : 'text-slate-500 dark:text-slate-400'}`}>
+                    {lg}
+                  </button>
+                ))}
+              </div>
+
+              <div className="mt-3 pt-3 border-t border-slate-200/70 dark:border-slate-800 flex flex-col gap-2">
+                <Link href="/login" onClick={() => setMenuOpen(false)}
+                  className="px-4 py-3 rounded-xl text-center text-sm font-bold text-slate-700 dark:text-slate-200 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 hover:border-blue-400 transition">
+                  {c.navLogin}
+                </Link>
+                <button onClick={() => { setMenuOpen(false); handleAction(); }}
+                  className="px-4 py-3 rounded-xl bg-blue-700 hover:bg-blue-800 text-white font-bold text-sm shadow-md shadow-blue-700/20 transition active:scale-[0.98] flex items-center justify-center gap-2">
+                  <span>{user ? c.navCabinet : c.navTry}</span>
+                  <ArrowRight className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </header>
 
-      <main className="pt-20">
+      <main className="pt-16 lg:pt-20">
         {/* ─── 1. HERO ─── */}
         <section className="relative px-5 lg:px-10 pt-12 pb-24 overflow-hidden bg-gradient-to-br from-[#faf8ff] via-[#f2f3ff] to-white dark:from-slate-950 dark:via-slate-900 dark:to-slate-950">
           <div className="absolute -top-24 -left-24 w-96 h-96 bg-blue-600/10 rounded-full blur-3xl pointer-events-none" />
