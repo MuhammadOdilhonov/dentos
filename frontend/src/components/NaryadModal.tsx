@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { useI18n } from '../lib/i18n';
+import { useBranch } from '../lib/branchContext';
 import { clinicApi } from '../lib/api';
 import { Employee, NaryadCatalogItem, DoctorNaryadAssignment } from '../lib/types';
 import { doctorRate, naryadSplit } from '../lib/naryadPricing';
@@ -83,6 +84,7 @@ export default function NaryadModal({
   onSave
 }: NaryadModalProps) {
   const { language, tk, tr } = useI18n();
+  const { currentBranchId } = useBranch();
   const som = tk('k_11') || 'So‘m';
 
   const [isChildChart, setIsChildChart] = useState(false);
@@ -114,7 +116,7 @@ export default function NaryadModal({
     setCatalogItems([]);
     setDoctorAssignments([]);
     setSelectedDoctorId(doctorId || 0);
-    Promise.all([clinicApi.getEmployees(), clinicApi.getNaryadCatalog(), clinicApi.getDoctorNaryads()])
+    Promise.all([clinicApi.getEmployees(), clinicApi.getNaryadCatalog(currentBranchId), clinicApi.getDoctorNaryads()])
       .then(([employees, catalog, assignments]) => {
         if (cancelled) return;
         const doctors = employees.filter(employee => employee.role === 'doctor' && employee.is_active !== false);
@@ -138,7 +140,7 @@ export default function NaryadModal({
     setNote('');
     setTechNote('');
     return () => { cancelled = true; };
-  }, [isOpen, doctorId, doctorName]);
+  }, [isOpen, doctorId, doctorName, currentBranchId]);
 
   const upperRow = isChildChart ? UPPER_TEETH_CHILD : UPPER_TEETH;
   const lowerRow = isChildChart ? LOWER_TEETH_CHILD : LOWER_TEETH;

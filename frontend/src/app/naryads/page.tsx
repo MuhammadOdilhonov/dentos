@@ -6,6 +6,7 @@ import { ApiError } from '../../lib/http';
 import { NaryadCatalogItem, DoctorNaryadAssignment, Employee, ServiceCategory } from '../../lib/types';
 import { useI18n } from '../../lib/i18n';
 import { useAuth } from '../../lib/auth';
+import { useBranch } from '../../lib/branchContext';
 import ServiceCategoryModal from '../../components/ServiceCategoryModal';
 import ServiceProcedureModal from '../../components/ServiceProcedureModal';
 import {
@@ -25,6 +26,7 @@ type Lang = 'uz' | 'ru' | 'en';
 export default function NaryadsPage() {
   const { language, tr } = useI18n();
   const { user } = useAuth();
+  const { currentBranchId } = useBranch();
   const lng = (language as Lang) || 'ru';
   const som = tr('naryadcat.som');
 
@@ -63,13 +65,13 @@ export default function NaryadsPage() {
     showToast(lng === 'uz' ? 'Saqlanmadi (server xatosi)' : lng === 'en' ? 'Not saved (server error)' : 'Не сохранено (ошибка сервера)');
 
   const loadData = async () => {
-    try { setCatalog(await clinicApi.getNaryadCatalog()); } catch { setCatalog([]); }
-    try { setCategories(await clinicApi.getServiceCategories()); } catch { setCategories([]); }
+    try { setCatalog(await clinicApi.getNaryadCatalog(currentBranchId)); } catch { setCatalog([]); }
+    try { setCategories(await clinicApi.getServiceCategories(currentBranchId)); } catch { setCategories([]); }
     try { setAssignments(await clinicApi.getDoctorNaryads()); } catch { setAssignments([]); }
-    try { setEmployees(await clinicApi.getEmployees()); } catch { setEmployees([]); }
+    try { setEmployees(await clinicApi.getEmployees(currentBranchId || undefined)); } catch { setEmployees([]); }
   };
 
-  useEffect(() => { loadData(); }, [clinicId]);
+  useEffect(() => { loadData(); }, [clinicId, currentBranchId]);
 
   // Naryad shu kategoriyaga tegishlimi (real: category_ref; demo: nom bo'yicha)
   const itemInCategory = (item: NaryadCatalogItem, cat: ServiceCategory) =>

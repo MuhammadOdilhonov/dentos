@@ -31,10 +31,11 @@ export function BranchProvider({ children }: { children: React.ReactNode }) {
   const [currentBranchId, setCurrentBranchId] = useState<number | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Direktor, Direktor o'rinbosari va SuperAdmin hamma filiallarni ko'ra oladi va erkin almashtiradi.
-  // Filial admini yoki shifokor o'z filialiga biriktirilgan bo'lsa, o'sha filial bo'yicha ochiladi.
-  const isSuperOrDirector = user?.role === 'director' || user?.role === 'superadmin' || user?.role === 'deputy_director';
-  const canChangeBranch = isSuperOrDirector;
+  // Direktor va SuperAdmin hamma filiallarni ko'ra oladi va erkin almashtiradi.
+  // Agar Direktor o'rinbosari qaysidir filialga biriktirilgan bo'lsa (user.branchId bor bo'lsa),
+  // u boshqa filialga o'tolmaydi (canChangeBranch = false). Agar biriktirilmagan bo'lsa — barcha filiallarni boshqara oladi.
+  const hasAssignedBranch = Boolean(user?.branchId);
+  const canChangeBranch = user?.role === 'director' || user?.role === 'superadmin' || (user?.role === 'deputy_director' && !hasAssignedBranch);
 
   const loadBranches = useCallback(async () => {
     try {
@@ -121,6 +122,7 @@ export function BranchProvider({ children }: { children: React.ReactNode }) {
   }, [user?.branchId, user?.role, user?.name, user?.username, user?.id]);
 
   const selectBranch = (branchId: number | null) => {
+    if (!canChangeBranch && hasAssignedBranch) return;
     setCurrentBranchId(branchId);
     if (typeof window !== 'undefined') {
       if (branchId === null) {

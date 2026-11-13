@@ -2336,9 +2336,12 @@ export const clinicApi = {
   },
 
   // Warehouse
-  async getWarehouse(overrideClinicId?: number): Promise<WarehouseItem[]> {
+  async getWarehouse(overrideClinicId?: number, branchId?: number | null): Promise<WarehouseItem[]> {
     const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
-    const q = cid ? `?clinic=${cid}` : '';
+    let q = cid ? `?clinic=${cid}` : '';
+    if (branchId !== undefined && branchId !== null) {
+      q += (q ? '&' : '?') + `branch=${branchId}`;
+    }
     const storageKey = getClinicStorageKey('32desk_warehouse', cid);
     let list: WarehouseItem[] = [];
     if (typeof window !== 'undefined') {
@@ -2845,6 +2848,9 @@ export const clinicApi = {
   _mapCatalogRow(row: any): NaryadCatalogItem {
     return {
       id: String(row.id),
+      clinic: row.clinic ?? null,
+      branch: row.branch ?? null,
+      branch_name: row.branch_name || '',
       name: row.name,
       category: row.category || '',
       category_ref: row.category_ref != null ? String(row.category_ref) : null,
@@ -2870,6 +2876,9 @@ export const clinicApi = {
   _mapCategoryRow(row: any): ServiceCategory {
     return {
       id: String(row.id),
+      clinic: row.clinic ?? null,
+      branch: row.branch ?? null,
+      branch_name: row.branch_name || '',
       name: row.name,
       description: row.description || '',
       show_in_calendar: row.show_in_calendar ?? false,
@@ -2879,10 +2888,11 @@ export const clinicApi = {
   },
 
   // --- Service categories (32desk «Услуга») — BAZADA /service-categories/ ---
-  async getServiceCategories(): Promise<ServiceCategory[]> {
+  async getServiceCategories(branchId?: number | null): Promise<ServiceCategory[]> {
     if (typeof window === 'undefined') return [];
     if (isDemoClinic()) return DEMO_SERVICE_CATEGORIES;
-    const rows = await safeFetch<any[]>(`${API_BASE}/service-categories/`, []);
+    const q = branchId !== undefined && branchId !== null ? `?branch=${branchId}` : '';
+    const rows = await safeFetch<any[]>(`${API_BASE}/service-categories/${q}`, []);
     return Array.isArray(rows) ? rows.map((r) => this._mapCategoryRow(r)) : [];
   },
 
@@ -2890,7 +2900,12 @@ export const clinicApi = {
     if (isDemoClinic()) return { ...cat, id: `demo-${Date.now()}` } as ServiceCategory;
     const res = await apiFetch(`${API_BASE}/service-categories/`, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: cat.name, description: cat.description || '', show_in_calendar: !!cat.show_in_calendar }),
+      body: JSON.stringify({
+        name: cat.name,
+        description: cat.description || '',
+        show_in_calendar: !!cat.show_in_calendar,
+        branch: cat.branch ?? null,
+      }),
     });
     const row = await res.json();
     bustApiCache();
@@ -2900,7 +2915,7 @@ export const clinicApi = {
   async updateServiceCategory(id: string, updates: Partial<ServiceCategory>): Promise<ServiceCategory | null> {
     if (isDemoClinic()) return null;
     const body: Record<string, any> = {};
-    for (const k of ['name', 'description', 'show_in_calendar'] as const) {
+    for (const k of ['name', 'description', 'show_in_calendar', 'branch'] as const) {
       if (updates[k] !== undefined) body[k] = updates[k];
     }
     const res = await apiFetch(`${API_BASE}/service-categories/${id}/`, {
@@ -2920,7 +2935,7 @@ export const clinicApi = {
 
   // Klinika serverda sessiya (cookie + X-Clinic-ID) bo'yicha aniqlanadi — shuning
   // uchun bu metodlar klinika argumentini OLMAYDI (chalg'ituvchi bo'lardi).
-  async getNaryadCatalog(): Promise<NaryadCatalogItem[]> {
+  async getNaryadCatalog(branchId?: number | null): Promise<NaryadCatalogItem[]> {
     if (typeof window === 'undefined') return DEFAULT_NARYAD_CATALOG;
     // DEMO: narxlar bilan to'liq katalog. Saqlanmaydi.
     if (isDemoClinic()) {
@@ -2928,7 +2943,8 @@ export const clinicApi = {
     }
     // Backend down bo'lsa [] (bo'sh) — soxta narx ko'rsatmaymiz. Yangi klinikada ham
     // katalog bo'sh bo'lishi normal (direktor to'ldiradi yoki import qiladi).
-    const rows = await safeFetch<any[]>(`${API_BASE}/service-catalog/`, []);
+    const q = branchId !== undefined && branchId !== null ? `?branch=${branchId}` : '';
+    const rows = await safeFetch<any[]>(`${API_BASE}/service-catalog/${q}`, []);
     return Array.isArray(rows) ? rows.map((r) => this._mapCatalogRow(r)) : [];
   },
 
@@ -2949,6 +2965,7 @@ export const clinicApi = {
       body: JSON.stringify({
         name: item.name, category: item.category,
         category_ref: item.category_ref ? Number(item.category_ref) : null,
+        branch: item.branch ?? null,
         code: item.code || '',
         base_price: item.base_price, default_percent: item.default_percent,
         description: item.description || '',
@@ -2970,7 +2987,7 @@ export const clinicApi = {
     const body: Record<string, any> = {};
     for (const k of ['name', 'category', 'code', 'base_price', 'default_percent', 'description',
       'duration_min', 'buffer_min', 'price_fixed', 'duration_fixed', 'show_in_calendar',
-      'package_items', 'diagnoses', 'manipulations', 'reminder_enabled', 'reminder_days'] as const) {
+      'package_items', 'diagnoses', 'manipulations', 'reminder_enabled', 'reminder_days', 'branch'] as const) {
       if (updates[k] !== undefined) body[k] = updates[k];
     }
     if (updates.category_ref !== undefined) body.category_ref = updates.category_ref ? Number(updates.category_ref) : null;

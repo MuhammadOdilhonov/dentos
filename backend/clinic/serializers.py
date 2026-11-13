@@ -83,12 +83,13 @@ class SpecialtySerializer(TenantModelSerializer):
         return attrs
 
 class ServiceCategorySerializer(TenantModelSerializer):
+    branch_name = serializers.CharField(source='branch.name', read_only=True)
     item_count = serializers.SerializerMethodField()
 
     class Meta:
         model = ServiceCategory
-        fields = ['id', 'clinic', 'name', 'description', 'show_in_calendar', 'created_at', 'item_count']
-        read_only_fields = ['created_at', 'item_count']
+        fields = ['id', 'clinic', 'branch', 'branch_name', 'name', 'description', 'show_in_calendar', 'created_at', 'item_count']
+        read_only_fields = ['created_at', 'item_count', 'branch_name']
 
     def get_item_count(self, obj):
         # select_related/annotate ViewSetda; bo'lmasa oddiy count
@@ -98,17 +99,18 @@ class ServiceCategorySerializer(TenantModelSerializer):
 class ServiceCatalogItemSerializer(TenantModelSerializer):
     # O'ng paneldagi kichik kategoriya nomi uchun (faqat o'qish)
     category_name = serializers.SerializerMethodField()
+    branch_name = serializers.CharField(source='branch.name', read_only=True)
 
     class Meta:
         model = ServiceCatalogItem
         fields = [
-            'id', 'clinic', 'name', 'category', 'category_ref', 'category_name',
+            'id', 'clinic', 'branch', 'branch_name', 'name', 'category', 'category_ref', 'category_name',
             'code', 'base_price', 'default_percent', 'description',
             'duration_min', 'buffer_min', 'price_fixed', 'duration_fixed', 'show_in_calendar',
             'package_items', 'diagnoses', 'manipulations', 'reminder_enabled', 'reminder_days',
             'created_at',
         ]
-        read_only_fields = ['created_at', 'category_name']
+        read_only_fields = ['created_at', 'category_name', 'branch_name']
 
     def get_category_name(self, obj):
         if obj.category_ref_id:
@@ -200,6 +202,11 @@ class EmployeeSerializer(TenantModelSerializer):
             raise serializers.ValidationError('Shifokor foizi 0–100 oralig‘ida bo‘lishi kerak.')
         return value
 
+    def update(self, instance, validated_data):
+        if 'password' in validated_data and not validated_data['password']:
+            validated_data.pop('password')
+        return super().update(instance, validated_data)
+
     class Meta:
         model = Employee
         fields = '__all__'
@@ -260,6 +267,8 @@ class ClinicTaskSerializer(TenantModelSerializer):
         return obj.creator_name or ''
 
 class WarehouseItemSerializer(TenantModelSerializer):
+    branch_name = serializers.CharField(source='branch.name', read_only=True)
+
     class Meta:
         model = WarehouseItem
         fields = '__all__'

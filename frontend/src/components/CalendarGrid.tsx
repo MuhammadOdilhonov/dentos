@@ -114,9 +114,33 @@ export default function CalendarGrid({
   const isWithinRange = minutesFromStart >= 0 && minutesFromStart <= timeSlots.length * 30;
   const currentTimeFormatted = currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
+  // Shifokor shu SANADA ishlaydimi: istisno sana (schedule_exceptions) haftalik
+  // grafikdan USTUN. Grafik umuman kiritilmagan bo'lsa — ishlaydi deb hisoblanadi.
+  const sameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  const isDoctorWorkingOn = (doc: Employee, date: Date): boolean => {
+    const iso = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+    const exc = (doc.schedule_exceptions || []).find((e) => e.date === iso);
+    if (exc) return Boolean(exc.is_workday);
+    const details = doc.schedule_details;
+    if (!details || details.length === 0) return true;
+    const dowNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'] as const;
+    const d = details.find((s) => s.day === dowNames[date.getDay()]);
+    if (!d) return true;
+    return Boolean((d.enabled ?? d.is_workday) || (d.intervals && d.intervals.length > 0));
+  };
+
   // Filter doctors and sort by branch so colleagues of same filial are clustered together.
   // Agar foydalanuvchi ustunlarni qo'lda surgan bo'lsa — o'sha saqlangan tartib ustun.
-  const rawDoctors = employees.filter((e) => e.role === 'doctor');
+  const allDoctors = employees.filter((e) => e.role === 'doctor');
+  // KUN ko'rinishida tanlangan sanada ishlamaydigan shifokor ustuni chiqarilmaydi.
+  // Lekin o'sha kuni qabuli bor bo'lsa (ma'lumot nomuvofiqligi) — baribir ko'rsatamiz.
+  const rawDoctors = viewMode === 'day'
+    ? allDoctors.filter((d) =>
+        isDoctorWorkingOn(d, currentDate) ||
+        appointments.some((a) => a.doctor === d.id && sameDay(new Date(a.start_time), currentDate))
+      )
+    : allDoctors;
   const doctors = useMemo(() => {
     const branchSort = (a: Employee, b: Employee) => {
       const aBranch = a.branch_name || (typeof a.branch === 'object' ? (a.branch as any)?.name : '') || 'Boshqa';

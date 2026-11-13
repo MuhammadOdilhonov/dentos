@@ -43,6 +43,7 @@ class Employee(PasswordModel):
     gender = models.CharField(max_length=20, blank=True, default='male') # male / female
     schedule = models.CharField(max_length=255, blank=True, default='Пн-Сб 09:00 - 18:00')
     schedule_details = models.JSONField(default=list, blank=True) # Detailed intervals with assigned chairs
+    schedule_exceptions = models.JSONField(default=list, blank=True) # Date overrides / istisno sanalar: [{date, is_workday, intervals}]
     salary_rate = models.CharField(max_length=100, blank=True, default='0')
     commission_rate = models.DecimalField(max_digits=5, decimal_places=2, default=35.0)
     experience_years = models.PositiveIntegerField(default=3)
@@ -169,6 +170,7 @@ class ClinicTask(models.Model):
 
 class WarehouseItem(models.Model):
     clinic = models.ForeignKey('ClinicTenant', on_delete=models.CASCADE, null=True, blank=True, related_name='warehouse_items')
+    branch = models.ForeignKey('Branch', on_delete=models.SET_NULL, null=True, blank=True, related_name='warehouse_items')
     name = models.CharField(max_length=255)
     category = models.CharField(max_length=100, default='Расходные материалы')
     quantity = models.DecimalField(max_digits=10, decimal_places=2, default=0)
@@ -517,6 +519,7 @@ class ServiceCategory(models.Model):
     foydalanmaydi — frontend demo hardcoded ko'rsatadi.
     """
     clinic = models.ForeignKey(ClinicTenant, on_delete=models.CASCADE, null=True, blank=True, related_name='service_categories')
+    branch = models.ForeignKey('Branch', on_delete=models.SET_NULL, null=True, blank=True, related_name='service_categories')
     name = models.CharField(max_length=160)
     description = models.TextField(blank=True)
     show_in_calendar = models.BooleanField(default=False)
@@ -540,6 +543,7 @@ class ServiceCatalogItem(models.Model):
     DEFAULT_NARYAD_CATALOG ko'rsatadi (saqlanmaydi).
     """
     clinic = models.ForeignKey(ClinicTenant, on_delete=models.CASCADE, null=True, blank=True, related_name='service_catalog')
+    branch = models.ForeignKey('Branch', on_delete=models.SET_NULL, null=True, blank=True, related_name='service_catalog_items')
     name = models.CharField(max_length=500)
     # Eski matnli kategoriya — orqaga moslik (kassa/hisobot `category` ni o'qiydi).
     # category_ref bilan sinxron: serializer category_ref.name ni shu yerga yozadi.

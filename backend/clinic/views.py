@@ -225,7 +225,22 @@ class TenantViewSet(viewsets.ModelViewSet):
         if qs.model is ClinicTenant:
             return qs.filter(pk=user.clinic_id)
         if any(f.name == 'clinic' for f in qs.model._meta.fields):
-            return qs.filter(clinic_id=user.clinic_id)
+            qs = qs.filter(clinic_id=user.clinic_id)
+
+        # Agar foydalanuvchi ma'lum bir filialga biriktirilgan bo'lsa
+        # (masalan deputy_director biror filialga biriktirilgan bo'lsa)
+        # Boshqa filial ma'lumotlarini ko'ra olmaydi!
+        # Agar deputy_director filialga biriktirilmagan bo'lsa (branch_id is None) — barcha filiallarni ko'radi.
+        user_branch_id = getattr(user, 'branch_id', None)
+        user_role = getattr(user, 'role', None)
+        if user_branch_id and user_role in ('deputy_director', 'admin', 'doctor', 'kassa'):
+            if any(f.name == 'branch' for f in qs.model._meta.fields):
+                from django.db.models import Q
+                # O'z filiali + umumiy (branch=null) yozuvlar. Umumiylarni ham yashirsak,
+                # direktor/umumiy xodimlar, umumiy naryadlar va eski (filialsiz) yozuvlar
+                # butunlay ko'rinmay qoladi — bu ma'lumot "yo'qolgan"dek tuyuladi.
+                qs = qs.filter(Q(branch_id=user_branch_id) | Q(branch__isnull=True))
+
         return qs
 
 class EmployeeViewSet(TenantViewSet):
@@ -419,14 +434,22 @@ class ServiceCategoryViewSet(TenantViewSet):
             qs = qs.filter(clinic_id=clinic_id)
         elif not self.request.user.is_superuser:
             return qs.none()
+        branch = self.request.query_params.get('branch')
+        if branch and branch != 'all':
+            from django.db.models import Q
+            qs = qs.filter(Q(branch_id=branch) | Q(branch__isnull=True))
         return qs
 
     def perform_create(self, serializer):
         clinic_id = get_clinic_id(self.request)
+        user = self.request.user
+        branch_id = getattr(user, 'branch_id', None) if getattr(user, 'role', None) == 'deputy_director' else None
+        kwargs = {}
         if clinic_id and not serializer.validated_data.get('clinic'):
-            serializer.save(clinic_id=clinic_id)
-        else:
-            serializer.save()
+            kwargs['clinic_id'] = clinic_id
+        if branch_id and not serializer.validated_data.get('branch'):
+            kwargs['branch_id'] = branch_id
+        serializer.save(**kwargs)
 
     def perform_destroy(self, instance):
         # Kategoriya o'chsa — ICHIDAGI NARYADLAR HAM o'chadi (foydalanuvchi talabi).
@@ -456,14 +479,25 @@ class ServiceCatalogItemViewSet(TenantViewSet):
         category_ref = self.request.query_params.get('category_ref')
         if category_ref:
             qs = qs.filter(category_ref_id=category_ref)
+        branch = self.request.query_params.get('branch')
+        if branch and branch != 'all':
+            from django.db.models import Q
+            qs = qs.filter(Q(branch_id=branch) | Q(branch__isnull=True))
         return qs
 
     def perform_create(self, serializer):
         clinic_id = get_clinic_id(self.request)
+        user = self.request.user
+        branch_id = getattr(user, 'branch_id', None) if getattr(user, 'role', None) == 'deputy_director' else None
+        kwargs = {}
         if clinic_id and not serializer.validated_data.get('clinic'):
-            serializer.save(clinic_id=clinic_id)
-        else:
-            serializer.save()
+            kwargs['clinic_id'] = clinic_id
+        if branch_id and not serializer.validated_data.get('branch'):
+            kwargs['branch_id'] = branch_id
+        cat_ref = serializer.validated_data.get('category_ref')
+        if cat_ref and cat_ref.branch_id and 'branch_id' not in kwargs and not serializer.validated_data.get('branch'):
+            kwargs['branch_id'] = cat_ref.branch_id
+        serializer.save(**kwargs)
 
     @action(detail=False, methods=['post'])
     def bulk_import(self, request):
@@ -843,14 +877,24 @@ class WarehouseItemViewSet(TenantViewSet):
             qs = qs.filter(clinic_id=clinic_id)
         elif not self.request.user.is_superuser:
             return qs.none()
+        branch = self.request.query_params.get('branch')
+        if branch:
+            if branch in ('null', 'none'):
+                qs = qs.filter(branch__isnull=True)
+            elif branch != 'all':
+                qs = qs.filter(branch_id=branch)
         return qs
 
     def perform_create(self, serializer):
         clinic_id = get_clinic_id(self.request)
+        user = self.request.user
+        branch_id = getattr(user, 'branch_id', None) if getattr(user, 'role', None) == 'deputy_director' else None
+        kwargs = {}
         if clinic_id and not serializer.validated_data.get('clinic'):
-            serializer.save(clinic_id=clinic_id)
-        else:
-            serializer.save()
+            kwargs['clinic_id'] = clinic_id
+        if branch_id and not serializer.validated_data.get('branch'):
+            kwargs['branch_id'] = branch_id
+        serializer.save(**kwargs)
 
 class DentalLabOrderViewSet(TenantViewSet):
     queryset = DentalLabOrder.objects.all().select_related('patient', 'doctor').order_by('-created_at')

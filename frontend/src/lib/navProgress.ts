@@ -104,7 +104,13 @@ export class NavProgress {
   // Davriy chaqiriladi (animatsiya + timeout). Faol bo'lmasa — hech narsa.
   tick(): void {
     if (!this.snap.active) return;
-    if (this.now() - this.startedAt > this.hardTimeoutMs) { this.fail(); return; }
+    if (this.now() - this.startedAt > this.hardTimeoutMs) {
+      // Sahifa allaqachon ochilgan (committed) bo'lsa — bu XATO EMAS: fon so'rovlari
+      // (polling va h.k.) cho'zilgan xolos. 100% qilib yashil holatga o'tamiz.
+      // Faqat sahifaning o'zi ochilmagan bo'lsa qizil xato ko'rsatamiz.
+      if (this.snap.committed) { this.finish(); } else { this.fail(); }
+      return;
+    }
     const ceiling = this.snap.committed ? 96 : 90;
     const pct = Math.min(ceiling, this.snap.pct + (ceiling - this.snap.pct) * 0.16 + 0.4);
     this.snap = { ...this.snap, pct };

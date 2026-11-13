@@ -6,6 +6,7 @@ import { clinicApi } from '../../lib/api';
 import { useI18n } from '../../lib/i18n';
 import { useAuth } from '../../lib/auth';
 import PhoneInput from '../../components/PhoneInput';
+import MapPickerModal from '../../components/MapPickerModal';
 import { useRouter } from 'next/navigation';
 import {
   Settings as SettingsIcon,
@@ -238,6 +239,7 @@ export default function SettingsPage() {
   const [branchAddress, setBranchAddress] = useState('');
   const [branchPhone, setBranchPhone] = useState('+998 ');
   const [branchLocationUrl, setBranchLocationUrl] = useState('');
+  const [isMapPickerOpen, setIsMapPickerOpen] = useState(false);
   const [branchUseGlobalTg, setBranchUseGlobalTg] = useState(true);
   const [branchTgPhone, setBranchTgPhone] = useState('');
   const [branchWaPhone, setBranchWaPhone] = useState('');
@@ -2534,15 +2536,26 @@ export default function SettingsPage() {
                 <label className="block font-bold text-slate-700 dark:text-slate-300 mb-1.5">
                   {tr('settings2.mapLinkGoogleYandex')}
                 </label>
-                <div className="relative">
-                  <input
-                    type="url"
-                    placeholder="https://maps.google.com/?q=..."
-                    value={branchLocationUrl}
-                    onChange={(e) => setBranchLocationUrl(e.target.value)}
-                    className="w-full pl-9 pr-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500 font-mono text-xs"
-                  />
-                  <MapPin className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                <div className="flex items-stretch gap-2">
+                  <div className="relative flex-1">
+                    <input
+                      type="url"
+                      placeholder="https://maps.google.com/?q=..."
+                      value={branchLocationUrl}
+                      onChange={(e) => setBranchLocationUrl(e.target.value)}
+                      className="w-full pl-9 pr-3.5 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-sm font-medium outline-none focus:ring-2 focus:ring-blue-500 font-mono text-xs"
+                    />
+                    <MapPin className="w-4 h-4 text-slate-400 absolute left-3 top-3" />
+                  </div>
+                  {/* Kartadan tanlash — interaktiv xarita modali (Leaflet/OSM) */}
+                  <button
+                    type="button"
+                    onClick={() => setIsMapPickerOpen(true)}
+                    className="shrink-0 flex items-center gap-1.5 px-3.5 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-md shadow-blue-500/20 transition"
+                  >
+                    <Globe className="w-4 h-4" />
+                    <span className="hidden sm:inline">{tr('settings2.mapPickBtn')}</span>
+                  </button>
                 </div>
                 <p className="text-[11px] text-slate-400 mt-1">
                   {tr('settings2.locationWillBeAttachedToSms')}
@@ -3248,6 +3261,14 @@ export default function SettingsPage() {
           </div>
         </div>
       )}
+
+      {/* Filial lokatsiyasini xaritadan tanlash */}
+      <MapPickerModal
+        open={isMapPickerOpen}
+        initialUrl={branchLocationUrl}
+        onClose={() => setIsMapPickerOpen(false)}
+        onSelect={(url) => setBranchLocationUrl(url)}
+      />
     </div>
   );
 }

@@ -1,10 +1,12 @@
 'use client';
 
 import React, { useEffect, useState } from 'react';
-import { X, Save, Layers } from 'lucide-react';
+import { X, Save, Layers, Building2 } from 'lucide-react';
 import { clinicApi } from '../lib/api';
 import { ServiceCategory } from '../lib/types';
 import { useI18n } from '../lib/i18n';
+import { useAuth } from '../lib/auth';
+import { useBranch } from '../lib/branchContext';
 
 interface Props {
   open: boolean;
@@ -16,19 +18,29 @@ interface Props {
 
 export default function ServiceCategoryModal({ open, editing, onClose, onSaved, onError }: Props) {
   const { tr } = useI18n();
+  const { user } = useAuth();
+  const { branches, currentBranchId } = useBranch();
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [showInCalendar, setShowInCalendar] = useState(false);
+  const [selectedBranchId, setSelectedBranchId] = useState<number | null>(null);
   const [saving, setSaving] = useState(false);
+
+  // Biriktirilgan direktor o'rinbosari — filial qulflanadi (faqat o'z filialiga yaratadi)
+  const isDeputyAssigned = user?.role === 'deputy_director' && Boolean(user?.branchId);
 
   useEffect(() => {
     if (open) {
       setName(editing?.name || '');
       setDescription(editing?.description || '');
       setShowInCalendar(!!editing?.show_in_calendar);
+      const initBranch = editing
+        ? (editing.branch ?? null)
+        : (isDeputyAssigned ? (user?.branchId ?? null) : (currentBranchId ?? null));
+      setSelectedBranchId(initBranch != null ? Number(initBranch) : null);
       setSaving(false);
     }
-  }, [open, editing]);
+  }, [open, editing, isDeputyAssigned, user?.branchId, currentBranchId]);
 
   if (!open) return null;
 
@@ -37,15 +49,18 @@ export default function ServiceCategoryModal({ open, editing, onClose, onSaved, 
     if (!name.trim() || saving) return;
     setSaving(true);
     try {
+      const branchVal = isDeputyAssigned ? (user?.branchId ?? null) : selectedBranchId;
+      const payload = {
+        name: name.trim(),
+        description: description.trim(),
+        show_in_calendar: showInCalendar,
+        branch: branchVal
+      };
       if (editing) {
-        const updated = await clinicApi.updateServiceCategory(editing.id, {
-          name: name.trim(), description: description.trim(), show_in_calendar: showInCalendar,
-        });
+        const updated = await clinicApi.updateServiceCategory(editing.id, payload);
         if (updated) onSaved(updated, false);
       } else {
-        const created = await clinicApi.createServiceCategory({
-          name: name.trim(), description: description.trim(), show_in_calendar: showInCalendar,
-        });
+        const created = await clinicApi.createServiceCategory(payload);
         onSaved(created, true);
       }
       onClose();
@@ -57,9 +72,12 @@ export default function ServiceCategoryModal({ open, editing, onClose, onSaved, 
   };
 
   return (
-    <div className="fixed inset-0 z-[60] bg-black/60 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto animate-in fade-in duration-200">
-      <div className="bg-white dark:bg-slate-900 rounded-3xl w-full max-w-lg shadow-2xl border border-slate-200 dark:border-slate-800 p-6 sm:p-7 space-y-5 max-h-[92vh] overflow-y-auto">
-        <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-4">
+    <div className="fixed inset-0 z-[70] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={onClose}>
+      <div
+        className="bg-white dark:bg-slate-900 w-full max-w-md rounded-3xl shadow-2xl border border-slate-200 dark:border-slate-800 p-6"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between mb-5">
           <div className="flex items-center gap-3">
             <div className="w-11 h-11 rounded-2xl bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-sky-400 flex items-center justify-center shrink-0">
               <Layers className="w-5 h-5" />
@@ -84,6 +102,25 @@ export default function ServiceCategoryModal({ open, editing, onClose, onSaved, 
               placeholder={tr('naryadcat.catNamePlaceholder')}
               className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-800/60 border border-slate-300 dark:border-slate-700 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 dark:text-white transition"
             />
+          </div>
+
+          {/* Filial — kategoriya qaysi filialga tegishli (bo'sh = barcha filiallar / umumiy) */}
+          <div>
+            <label className="text-xs font-black uppercase tracking-wider text-slate-600 dark:text-slate-300 mb-2 flex items-center gap-1.5">
+              <Building2 className="w-3.5 h-3.5 text-blue-600 dark:text-sky-400" />
+              <span>{tr('staff.branch')}</span>
+            </label>
+            <select
+              value={selectedBranchId ?? ''}
+              disabled={isDeputyAssigned}
+              onChange={(e) => setSelectedBranchId(e.target.value ? Number(e.target.value) : null)}
+              className="w-full px-4 py-3 bg-slate-50 dark:bg-slate-800/60 border border-slate-300 dark:border-slate-700 rounded-2xl font-bold outline-none focus:ring-2 focus:ring-blue-500 text-slate-900 dark:text-white transition disabled:opacity-60 cursor-pointer"
+            >
+              <option value="">{tr('staff.allBranches')}</option>
+              {branches.map((b) => (
+                <option key={b.id} value={b.id}>🏢 {b.name}</option>
+              ))}
+            </select>
           </div>
 
           <div>

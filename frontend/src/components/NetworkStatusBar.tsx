@@ -89,6 +89,8 @@ export default function NetworkStatusBar() {
   const pendingSaves = useRef(0);
   const stuckRef = useRef<{ on: boolean; text: string }>({ on: false, text: '' });
   const slowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // recompute'ni NavProgress emit ichidan chaqirish uchun (nav tugaganda bar DARHOL yashil bo'lsin)
+  const recomputeRef = useRef<() => void>(() => {});
 
   // ── Navigatsiya progress kontrolleri (test qilinadigan yadro) ──
   const navRef = useRef<NavProgress | null>(null);
@@ -107,6 +109,9 @@ export default function NetworkStatusBar() {
         ...(isErr ? { stuck: true, stuckText: snap.label } : {}),
       }));
       if (isErr) stuckRef.current = { on: true, text: snap.label };
+      // Navigatsiya tugagach (yoki xato) — statusni DARHOL qayta hisoblaymiz:
+      // aks holda "... ochilmoqda" yozuvi va sariq rang keyingi so'rovgacha osilib qoladi.
+      if (!snap.active) setTimeout(() => recomputeRef.current(), 0);
       // Tik faqat FAOL navigatsiya davomida (keraksiz doimiy timer yo'q).
       if (snap.active && !navTicker.current) {
         navTicker.current = setInterval(() => navRef.current?.tick(), 120);
@@ -215,7 +220,28 @@ export default function NetworkStatusBar() {
 
   useEffect(() => {
     const conn: any = (navigator as any).connection || (navigator as any).mozConnection || (navigator as any).webkitConnection;
-    const readMbps = () => (conn && typeof conn.downlink === 'number' ? conn.downlink : null);
+    // navigator.connection.downlink brauzerda 10 Mbps bilan CHEKLANGAN va qo'pol taxmin —
+    // shuning uchun avval so'nggi yuklangan resurslardan REAL tezlikni o'lchaymiz,
+    // ma'lumot yetmasa downlink'ka qaytamiz.
+    try { if (performance.setResourceTimingBufferSize) performance.setResourceTimingBufferSize(500); } catch {}
+    const measureMbps = (): number | null => {
+      try {
+        const entries = performance.getEntriesByType('resource') as PerformanceResourceTiming[];
+        const now = performance.now();
+        // So'nggi 15s ichida yuklangan, hajmi sezilarli (>20KB) resurslar bo'yicha
+        const recent = entries.filter((e) => e.responseEnd > now - 15000 && e.transferSize > 20000 && e.duration > 30);
+        if (recent.length === 0) return null;
+        let bits = 0; let timeMs = 0;
+        for (const e of recent) { bits += e.transferSize * 8; timeMs += e.duration; }
+        if (timeMs <= 0) return null;
+        return bits / (timeMs / 1000) / 1e6; // Mbps
+      } catch { return null; }
+    };
+    const readMbps = () => {
+      const measured = measureMbps();
+      if (measured != null && measured > 0) return measured;
+      return conn && typeof conn.downlink === 'number' ? conn.downlink : null;
+    };
 
     const recompute = () => {
       setSt((old) => {
@@ -238,6 +264,7 @@ export default function NetworkStatusBar() {
     };
 
     const setStuck = (on: boolean, text = '') => { stuckRef.current = { on, text }; recompute(); };
+    recomputeRef.current = recompute;
 
     const armSlowWatch = () => {
       if (slowTimer.current) return;
@@ -248,6 +275,12 @@ export default function NetworkStatusBar() {
     const disarmSlowWatch = () => {
       if (slowTimer.current && active.current === 0 && pendingSaves.current === 0) {
         clearTimeout(slowTimer.current); slowTimer.current = null;
+      }
+      // Barcha so'rovlar tugadi — "Ulanish sekin" ogohlantirishi o'z-o'zidan yo'qolsin
+      // (yuklash tugagandan keyin ham sariq/stuck holat osilib qolmasin).
+      if (active.current === 0 && pendingSaves.current === 0 && stuckRef.current.on
+          && !navErr.current && stuckRef.current.text.startsWith('Ulanish sekin')) {
+        setStuck(false);
       }
     };
 

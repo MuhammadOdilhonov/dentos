@@ -24,6 +24,7 @@ import {
   SpecialtyItem,
   EmployeeDaySchedule,
   EmployeeScheduleInterval,
+  EmployeeScheduleException,
   Branch,
   specialtyLabel
 } from '../lib/types';
@@ -105,11 +106,18 @@ export default function EmployeeFullModal({
 
   // Tab 2: График
   const [scheduleList, setScheduleList] = useState<EmployeeDaySchedule[]>([]);
+  // Sana bo'yicha istisnolar: haftalik grafikdan ustun (masalan 23-noyabr ishga chiqadi / 24-noyabr dam)
+  const [scheduleExceptions, setScheduleExceptions] = useState<EmployeeScheduleException[]>([]);
+  const [excDate, setExcDate] = useState('');
+  const [excWorkday, setExcWorkday] = useState(true);
 
   // Tab 3: Доступ
   const [canLogin, setCanLogin] = useState(true);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [passwordConfirm, setPasswordConfirm] = useState('');
+  // Tahrirlashda parol FAQAT shu tugma bosilib, yangi parol kiritilsa yuboriladi
+  const [showPasswordChange, setShowPasswordChange] = useState(false);
   const [isPersonalNaryad, setIsPersonalNaryad] = useState(false);
   const [commissionRate, setCommissionRate] = useState<number>(35);
   // Oylik (so'm) — admin / direktor o'rinbosari / kassir uchun (shifokorda odatda 0)
@@ -191,11 +199,21 @@ export default function EmployeeFullModal({
         );
       }
 
-      // Access
+      // Istisno sanalar
+      setScheduleExceptions(
+        Array.isArray(employeeToEdit.schedule_exceptions) ? employeeToEdit.schedule_exceptions : []
+      );
+      setExcDate('');
+      setExcWorkday(true);
+
+      // Access — parol HECH QACHON formaga oldindan yozilmaydi (tahrirlashda
+      // faqat "Parolni o'zgartirish" bosilib yangi parol kiritilsa yuboriladi)
       setCanLogin(employeeToEdit.can_login ?? true);
       setUsername(employeeToEdit.username || '');
       setRole(employeeToEdit.role || 'doctor');
-      setPassword(employeeToEdit.password || '123456');
+      setPassword('');
+      setPasswordConfirm('');
+      setShowPasswordChange(false);
       setIsPersonalNaryad(employeeToEdit.naryad_type === 'personal');
       setCommissionRate(Number(employeeToEdit.commission_rate) || 0);
       setSalaryRate(Number(employeeToEdit.salary_rate) || 0);
@@ -235,10 +253,16 @@ export default function EmployeeFullModal({
         }))
       );
 
+      setScheduleExceptions([]);
+      setExcDate('');
+      setExcWorkday(true);
+
       setCanLogin(true);
       setUsername('');
       setRole('doctor');
       setPassword('123456');
+      setPasswordConfirm('');
+      setShowPasswordChange(true); // yangi xodimda parol maydoni ochiq turadi
       setIsPersonalNaryad(false);
       setCommissionRate(35);
       setSalaryRate(0);
@@ -404,6 +428,14 @@ export default function EmployeeFullModal({
       return;
     }
 
+    // Tahrirlashda yangi parol kiritilgan bo'lsa — tasdiq bilan mos kelishi shart
+    const wantsPasswordChange = Boolean(employeeToEdit) && showPasswordChange && password.trim().length > 0;
+    if (wantsPasswordChange && password.trim() !== passwordConfirm.trim()) {
+      alert(tr('employee.passwordMismatch'));
+      setActiveTab('access');
+      return;
+    }
+
     setIsSaving(true);
     try {
       const full = `${firstName.trim()} ${lastName.trim()}`.trim();
@@ -462,6 +494,11 @@ export default function EmployeeFullModal({
           : `${firstName.toLowerCase().replace(/[^a-z0-9]/g, '') || 'staff'}`
       );
 
+      // Istisno sanalar — faqat shifokorga tegishli, sana bo'yicha tartiblangan
+      const cleanExceptions = role === 'doctor'
+        ? [...scheduleExceptions].sort((a, b) => (a.date < b.date ? -1 : 1))
+        : [];
+
       const payload: Partial<Employee> = {
         clinic: employeeToEdit?.clinic || user?.clinicId || undefined,
         full_name: full,
@@ -488,17 +525,46 @@ export default function EmployeeFullModal({
         assigned_chairs: assignedChairsList,
         schedule: scheduleSummary,
         schedule_details: scheduleDetailsFinal,
+        schedule_exceptions: cleanExceptions,
         can_login: canLogin,
         username: finalUsername,
         role,
-        password: password.trim() || '123456',
         naryad_type: role === 'doctor' ? (isPersonalNaryad ? 'personal' : 'clinic') : 'clinic',
         commission_rate: commissionRate || 0,
         salary_rate: salaryRate || 0,
         is_active: employeeToEdit?.is_active ?? true
       };
 
-      await onSave(payload);
+      if (employeeToEdit) {
+        // DIRTY CHECKING: faqat O'ZGARGAN maydonlar PATCH qilinadi — qolgan
+        // ma'lumotlar (parol, rang, telefon, jins...) tasodifan ustidan yozilmaydi.
+        const orig = employeeToEdit as any;
+        const norm = (v: any): string => {
+          if (v === undefined || v === null || v === '') return '';
+          if (typeof v === 'object') {
+            const s = JSON.stringify(v);
+            return s === '[]' || s === '{}' ? '' : s; // bo'sh ro'yxat = kiritilmagan
+          }
+          return String(v);
+        };
+        const changed: Partial<Employee> = {};
+        for (const [k, v] of Object.entries(payload)) {
+          if (k === 'clinic') continue; // klinika o'zgarmaydi — header orqali ketadi
+          if (norm(v) !== norm(orig[k])) (changed as any)[k] = v;
+        }
+        // Parol FAQAT foydalanuvchi yangi parol kiritganda yuboriladi;
+        // aks holda backendga UMUMAN bormaydi — joriy parol saqlanadi.
+        if (wantsPasswordChange) (changed as any).password = password.trim();
+        if (Object.keys(changed).length === 0) {
+          onClose();
+          return;
+        }
+        (changed as any).clinic = payload.clinic; // updateEmployee X-Clinic-ID uchun ishlatadi
+        await onSave(changed);
+      } else {
+        (payload as any).password = password.trim() || '123456';
+        await onSave(payload);
+      }
       onClose();
     } catch (err) {
       console.error(err);
@@ -1147,6 +1213,93 @@ export default function EmployeeFullModal({
                     </div>
                   ))}
                 </div>
+
+                {/* ── Istisno kunlar (sana bo'yicha) — haftalik grafikdan USTUN ── */}
+                <div className="p-4 rounded-2xl bg-amber-50/60 dark:bg-amber-950/20 border border-amber-200/80 dark:border-amber-800/50 space-y-3">
+                  <div className="flex items-center gap-2">
+                    <Calendar className="w-4 h-4 text-amber-600 dark:text-amber-400" />
+                    <div>
+                      <h4 className="text-xs font-black uppercase tracking-wider text-amber-800 dark:text-amber-300">
+                        {tr('employee.exceptionsTitle')}
+                      </h4>
+                      <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-0.5">
+                        {tr('employee.exceptionsHint')}
+                      </p>
+                    </div>
+                  </div>
+
+                  {!isRestricted && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <input
+                        type="date"
+                        value={excDate}
+                        onChange={(e) => setExcDate(e.target.value)}
+                        className="px-3 py-2 bg-white dark:bg-slate-900 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-bold outline-none focus:ring-2 focus:ring-amber-500"
+                      />
+                      <div className="flex items-center rounded-xl border border-slate-300 dark:border-slate-700 overflow-hidden text-xs font-bold">
+                        <button
+                          type="button"
+                          onClick={() => setExcWorkday(true)}
+                          className={`px-3 py-2 transition ${excWorkday ? 'bg-emerald-600 text-white' : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300'}`}
+                        >
+                          {tr('employee.exceptionWorkday')}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setExcWorkday(false)}
+                          className={`px-3 py-2 transition ${!excWorkday ? 'bg-rose-600 text-white' : 'bg-white dark:bg-slate-900 text-slate-600 dark:text-slate-300'}`}
+                        >
+                          {tr('employee.exceptionDayOff')}
+                        </button>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={!excDate}
+                        onClick={() => {
+                          if (!excDate) return;
+                          setScheduleExceptions((prev) => [
+                            ...prev.filter((x) => x.date !== excDate),
+                            { date: excDate, is_workday: excWorkday }
+                          ]);
+                          setExcDate('');
+                        }}
+                        className="flex items-center gap-1.5 px-4 py-2 rounded-xl bg-amber-600 hover:bg-amber-700 disabled:opacity-50 text-white text-xs font-bold transition"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        {tr('employee.exceptionAdd')}
+                      </button>
+                    </div>
+                  )}
+
+                  {scheduleExceptions.length === 0 ? (
+                    <p className="text-[11px] italic text-slate-400">{tr('employee.exceptionEmpty')}</p>
+                  ) : (
+                    <div className="flex flex-wrap gap-2">
+                      {[...scheduleExceptions].sort((a, b) => (a.date < b.date ? -1 : 1)).map((exc) => (
+                        <span
+                          key={exc.date}
+                          className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl text-[11px] font-bold border ${
+                            exc.is_workday
+                              ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300 border-emerald-300 dark:border-emerald-800'
+                              : 'bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300 border-rose-300 dark:border-rose-800'
+                          }`}
+                        >
+                          <span>{exc.date}</span>
+                          <span>· {exc.is_workday ? tr('employee.exceptionWorkday') : tr('employee.exceptionDayOff')}</span>
+                          {!isRestricted && (
+                            <button
+                              type="button"
+                              onClick={() => setScheduleExceptions((prev) => prev.filter((x) => x.date !== exc.date))}
+                              className="ml-0.5 hover:opacity-70"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          )}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
             )}
 
@@ -1208,21 +1361,75 @@ export default function EmployeeFullModal({
                   </div>
                 </div>
 
-                {/* Row 2: Задать новый пароль */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
-                      {tk('set_new_password')}
-                    </label>
-                    <input
-                      type="password"
-                      placeholder="••••••••"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-900/60 border border-slate-300 dark:border-slate-700 rounded-xl text-sm font-medium focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
-                    />
+                {/* Row 2: Parol — tahrirlashda FAQAT "Parolni o'zgartirish" tugmasi orqali.
+                    Tugma bosilmasa parol backendga umuman yuborilmaydi (joriy parol saqlanadi). */}
+                {employeeToEdit && !showPasswordChange ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                        {tk('set_new_password')}
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setShowPasswordChange(true)}
+                        className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-blue-300 dark:border-blue-800 bg-blue-50 dark:bg-blue-950/40 hover:bg-blue-100 dark:hover:bg-blue-950/70 text-sm font-bold text-blue-700 dark:text-sky-300 transition"
+                      >
+                        <Lock className="w-4 h-4" />
+                        <span>{tr('employee.changePasswordBtn')}</span>
+                      </button>
+                      <p className="text-[11px] text-slate-400 mt-1.5">{tr('employee.passwordKeepHint')}</p>
+                    </div>
                   </div>
-                </div>
+                ) : employeeToEdit ? (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                        {tr('employee.newPasswordLabel')}
+                      </label>
+                      <input
+                        type="password"
+                        placeholder="••••••••"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-900/60 border border-slate-300 dark:border-slate-700 rounded-xl text-sm font-medium focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                        {tr('employee.confirmPasswordLabel')}
+                      </label>
+                      <input
+                        type="password"
+                        placeholder="••••••••"
+                        value={passwordConfirm}
+                        onChange={(e) => setPasswordConfirm(e.target.value)}
+                        className={`w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-900/60 border rounded-xl text-sm font-medium focus:ring-2 focus:border-transparent outline-none transition ${
+                          password && passwordConfirm && password !== passwordConfirm
+                            ? 'border-rose-400 dark:border-rose-700 focus:ring-rose-500'
+                            : 'border-slate-300 dark:border-slate-700 focus:ring-blue-500'
+                        }`}
+                      />
+                      {password && passwordConfirm && password !== passwordConfirm && (
+                        <p className="text-[11px] text-rose-500 font-semibold mt-1">{tr('employee.passwordMismatch')}</p>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5">
+                        {tk('set_new_password')}
+                      </label>
+                      <input
+                        type="password"
+                        placeholder="••••••••"
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-900/60 border border-slate-300 dark:border-slate-700 rounded-xl text-sm font-medium focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition"
+                      />
+                    </div>
+                  </div>
+                )}
 
                 {/* Row 3: Naryadlar (Klinika bilan birga yoki shaxsiy) & Shifokor foizi (%) - FAQAT SHIFOKOR UCHUN */}
                 {role === 'doctor' && (

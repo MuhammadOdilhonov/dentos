@@ -76,6 +76,12 @@ export interface EmployeeScheduleInterval {
   chair?: string;
 }
 
+export interface EmployeeScheduleException {
+  date: string; // YYYY-MM-DD
+  is_workday: boolean;
+  intervals?: EmployeeScheduleInterval[];
+}
+
 export interface EmployeeDaySchedule {
   day: 'monday' | 'tuesday' | 'wednesday' | 'thursday' | 'friday' | 'saturday' | 'sunday';
   labelUz: string;
@@ -112,6 +118,7 @@ export interface Employee {
   birth_date?: string;
   schedule?: string;
   schedule_details?: EmployeeDaySchedule[];
+  schedule_exceptions?: EmployeeScheduleException[];
   working_hours?: string;
   assigned_chairs?: string[];
   certificates?: DoctorCertificate[];
@@ -287,6 +294,9 @@ export interface TreatmentPlanStage {
 // Service group / category (32desk «Услуга») — left panel, managed by the Director
 export interface ServiceCategory {
   id: string;
+  clinic?: number | null;
+  branch?: number | null;
+  branch_name?: string;
   name: string;
   description?: string;
   show_in_calendar?: boolean;
@@ -305,6 +315,9 @@ export interface NaryadPackageItem {
 // Service / Naryad catalog item managed by the Director
 export interface NaryadCatalogItem {
   id: string;
+  clinic?: number | null;
+  branch?: number | null;
+  branch_name?: string;
   name: string;
   category: string;              // legacy text (kept in sync with category_ref name)
   category_ref?: string | null;  // FK → ServiceCategory
@@ -394,6 +407,8 @@ export interface ClinicTask {
 export interface WarehouseItem {
   id: number;
   clinic?: number | null;
+  branch?: number | null;
+  branch_name?: string;
   name: string;
   category: string;
   quantity: number;

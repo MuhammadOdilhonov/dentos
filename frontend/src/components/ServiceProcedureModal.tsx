@@ -79,10 +79,12 @@ export default function ServiceProcedureModal({ open, editing, categories, defau
     e.preventDefault();
     if (!canSave || saving) return;
     setSaving(true);
+    const selectedCategory = categories.find((c) => String(c.id) === String(categoryRef));
     const payload: Partial<NaryadCatalogItem> = {
       name: name.trim(),
       code: code.trim(),
       category_ref: categoryRef || null,
+      branch: selectedCategory ? (selectedCategory.branch ?? null) : (editing?.branch ?? null),
       base_price: num(basePrice),
       description: description.trim(),
       duration_min: durationMin === '' ? null : Math.max(0, Math.round(num(durationMin))),

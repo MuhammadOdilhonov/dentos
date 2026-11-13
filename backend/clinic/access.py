@@ -36,6 +36,7 @@ class AccountPrincipal:
         self.role = 'technician' if kind == 'technician' else account.role
         self.is_superuser = self.role == 'superadmin'
         self.clinic_id = getattr(account, 'clinic_id', None)
+        self.branch_id = getattr(account, 'branch_id', None)
 
 class AccountAuthentication(BaseAuthentication):
     def authenticate(self, request):

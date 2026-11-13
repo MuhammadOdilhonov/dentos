@@ -4,13 +4,19 @@ import React, { useState, useEffect } from 'react';
 import { clinicApi } from '../../lib/api';
 import { WarehouseItem } from '../../lib/types';
 import { useI18n } from '../../lib/i18n';
+import { useAuth } from '../../lib/auth';
+import { useBranch } from '../../lib/branchContext';
 import {
   Package, Plus, AlertTriangle, CheckCircle2, Search,
-  ArrowDownCircle, ArrowUpCircle, X, Trash2, Edit3, DollarSign, RefreshCw
+  ArrowDownCircle, ArrowUpCircle, X, Trash2, Edit3, DollarSign, RefreshCw, Building2
 } from 'lucide-react';
 
 export default function WarehousePage() {
   const { tr } = useI18n();
+  const { user } = useAuth();
+  const { branches, currentBranchId, canChangeBranch } = useBranch();
+  // Biriktirilgan direktor o'rinbosari — faqat o'z filiali ombori
+  const isDeputyAssigned = user?.role === 'deputy_director' && Boolean(user?.branchId);
   const [items, setItems] = useState<WarehouseItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState('');
@@ -24,6 +30,10 @@ export default function WarehousePage() {
   const [stockAmount, setStockAmount] = useState<number>(1);
   const [stockNote, setStockNote] = useState<string>('');
 
+  // Filial filtri — global tanlangan filial bilan sinxron ochiladi (null = barcha filiallar)
+  const [branchFilter, setBranchFilter] = useState<number | null>(null);
+  const [branchFilterInit, setBranchFilterInit] = useState(false);
+
   // Edit / Add Form State
   const [formItem, setFormItem] = useState<Partial<WarehouseItem>>({
     name: '',
@@ -31,9 +41,21 @@ export default function WarehousePage() {
     quantity: 10,
     unit: 'шт',
     min_quantity: 5,
-    cost: 50000
+    cost: 50000,
+    branch: null
   });
   const [isEditing, setIsEditing] = useState(false);
+
+  // Global filial konteksti yuklangach — ombor filtrini unga moslaymiz (bir marta)
+  useEffect(() => {
+    if (branchFilterInit) return;
+    if (currentBranchId != null) {
+      setBranchFilter(Number(currentBranchId));
+      setBranchFilterInit(true);
+    } else if (branches.length > 0) {
+      setBranchFilterInit(true);
+    }
+  }, [currentBranchId, branches, branchFilterInit]);
 
   const loadWarehouse = async () => {
     setLoading(true);
@@ -51,6 +73,9 @@ export default function WarehousePage() {
     loadWarehouse();
   }, []);
 
+  const defaultFormBranch = () =>
+    isDeputyAssigned ? Number(user?.branchId) : (branchFilter ?? (currentBranchId != null ? Number(currentBranchId) : null));
+
   const handleOpenAdd = () => {
     setIsEditing(false);
     setFormItem({
@@ -59,7 +84,8 @@ export default function WarehousePage() {
       quantity: 10,
       unit: 'шт',
       min_quantity: 5,
-      cost: 50000
+      cost: 50000,
+      branch: defaultFormBranch()
     });
     setIsAddModalOpen(true);
   };
@@ -73,7 +99,8 @@ export default function WarehousePage() {
       quantity: item.quantity,
       unit: item.unit,
       min_quantity: item.min_quantity,
-      cost: item.cost
+      cost: item.cost,
+      branch: item.branch ?? null
     });
     setIsAddModalOpen(true);
   };
@@ -82,6 +109,7 @@ export default function WarehousePage() {
     e.preventDefault();
     if (!formItem.name?.trim()) return;
 
+    const branchVal = isDeputyAssigned ? Number(user?.branchId) : (formItem.branch ?? null);
     if (isEditing && selectedItem) {
       const updated = await clinicApi.updateWarehouseItem(selectedItem.id, {
         name: formItem.name,
@@ -89,7 +117,8 @@ export default function WarehousePage() {
         quantity: Number(formItem.quantity) || 0,
         unit: formItem.unit || 'шт',
         min_quantity: Number(formItem.min_quantity) || 5,
-        cost: Number(formItem.cost) || 0
+        cost: Number(formItem.cost) || 0,
+        branch: branchVal
       });
       if (updated) {
         setItems(prev => prev.map(i => String(i.id) === String(selectedItem.id) ? { ...i, ...updated } : i));
@@ -101,7 +130,8 @@ export default function WarehousePage() {
         quantity: Number(formItem.quantity) || 0,
         unit: formItem.unit || 'шт',
         min_quantity: Number(formItem.min_quantity) || 5,
-        cost: Number(formItem.cost) || 0
+        cost: Number(formItem.cost) || 0,
+        branch: branchVal
       });
       if (created) {
         setItems(prev => [created, ...prev.filter(i => String(i.id) !== String(created.id))]);
@@ -142,15 +172,25 @@ export default function WarehousePage() {
 
   const categories = ['All', ...Array.from(new Set(items.map((i) => i.category).filter(Boolean)))];
 
-  const filteredItems = items.filter((item) => {
+  // Filial bo'yicha ko'rinadigan tovarlar: tanlangan filialniki + umumiy (branch=null)
+  const branchItems = branchFilter != null
+    ? items.filter((i) => i.branch == null || Number(i.branch) === branchFilter)
+    : items;
+
+  const filteredItems = branchItems.filter((item) => {
     const matchesSearch = item.name.toLowerCase().includes(search.toLowerCase());
     const matchesCat = categoryFilter === 'All' || categoryFilter === 'Все' || item.category === categoryFilter;
     return matchesSearch && matchesCat;
   });
 
-  const lowStockCount = items.filter((i) => Number(i.quantity) > 0 && Number(i.quantity) <= Number(i.min_quantity)).length;
-  const outOfStockCount = items.filter((i) => Number(i.quantity) <= 0).length;
-  const totalValue = items.reduce((acc, curr) => acc + (Number(curr.quantity) || 0) * (Number(curr.cost) || 0), 0);
+  const lowStockCount = branchItems.filter((i) => Number(i.quantity) > 0 && Number(i.quantity) <= Number(i.min_quantity)).length;
+  const outOfStockCount = branchItems.filter((i) => Number(i.quantity) <= 0).length;
+  const totalValue = branchItems.reduce((acc, curr) => acc + (Number(curr.quantity) || 0) * (Number(curr.cost) || 0), 0);
+
+  const branchLabel = (b?: number | null, bName?: string) => {
+    if (b == null) return tr('staff.allBranches'); // umumiy tovar — barcha filiallarda ko'rinadi
+    return bName || branches.find((x) => x.id === Number(b))?.name || `#${b}`;
+  };
 
   return (
     <div className="space-y-6">
@@ -187,7 +227,7 @@ export default function WarehousePage() {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
           <div className="text-xs font-bold text-slate-400 uppercase tracking-wider">{tr('warehouse.totalTypes')}</div>
-          <div className="text-2xl font-black text-slate-900 dark:text-white mt-1">{items.length}</div>
+          <div className="text-2xl font-black text-slate-900 dark:text-white mt-1">{branchItems.length}</div>
           <div className="text-[11px] text-slate-500 mt-1">{tr('warehouse.totalTypesSub')}</div>
         </div>
         <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-sm">
@@ -214,15 +254,34 @@ export default function WarehousePage() {
 
       {/* Filter and Search Bar */}
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 bg-white dark:bg-slate-900 p-3 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-sm">
-        <div className="relative flex-1 max-w-md">
-          <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
-          <input
-            type="text"
-            placeholder={tr('warehouse.searchPlaceholder')}
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            className="w-full text-xs pl-9 pr-4 py-2 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 rounded-xl outline-none focus:border-cyan-500 text-slate-900 dark:text-white"
-          />
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 flex-1">
+          <div className="relative flex-1 max-w-md">
+            <Search className="w-4 h-4 absolute left-3 top-3 text-slate-400" />
+            <input
+              type="text"
+              placeholder={tr('warehouse.searchPlaceholder')}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="w-full text-xs pl-9 pr-4 py-2 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 rounded-xl outline-none focus:border-cyan-500 text-slate-900 dark:text-white"
+            />
+          </div>
+          {/* Filial bo'yicha filter — biriktirilgan o'rinbosarda qulflangan */}
+          {branches.length > 0 && (
+            <div className="relative">
+              <Building2 className="w-4 h-4 absolute left-3 top-2.5 text-cyan-500 pointer-events-none" />
+              <select
+                value={branchFilter ?? ''}
+                disabled={isDeputyAssigned}
+                onChange={(e) => setBranchFilter(e.target.value ? Number(e.target.value) : null)}
+                className="text-xs pl-9 pr-8 py-2 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 rounded-xl outline-none focus:border-cyan-500 text-slate-900 dark:text-white font-bold cursor-pointer disabled:opacity-60"
+              >
+                <option value="">{tr('staff.allBranches')}</option>
+                {branches.map((b) => (
+                  <option key={b.id} value={b.id}>{b.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
         <div className="flex items-center space-x-2 overflow-x-auto pb-1 sm:pb-0">
           {categories.map((cat) => (
@@ -248,6 +307,7 @@ export default function WarehousePage() {
             <thead>
               <tr className="border-b border-slate-200 dark:border-slate-800 bg-slate-50/60 dark:bg-slate-800/30 text-[11px] font-bold text-slate-400 uppercase tracking-wider">
                 <th className="py-3.5 px-4">{tr('warehouse.colName')}</th>
+                <th className="py-3.5 px-4">{tr('staff.branch')}</th>
                 <th className="py-3.5 px-4">{tr('warehouse.colCategory')}</th>
                 <th className="py-3.5 px-4">{tr('warehouse.colQty')}</th>
                 <th className="py-3.5 px-4">{tr('warehouse.colMinLimit')}</th>
@@ -260,7 +320,7 @@ export default function WarehousePage() {
             <tbody className="divide-y divide-slate-100 dark:divide-slate-800/60 text-xs">
               {filteredItems.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="text-center py-8 text-slate-400">
+                  <td colSpan={9} className="text-center py-8 text-slate-400">
                     {tr('warehouse.noItems')}
                   </td>
                 </tr>
@@ -276,6 +336,16 @@ export default function WarehousePage() {
                     <tr key={item.id} className="hover:bg-slate-50/80 dark:hover:bg-slate-800/40 transition">
                       <td className="py-3.5 px-4 font-bold text-slate-900 dark:text-white">
                         {item.name}
+                      </td>
+                      <td className="py-3.5 px-4">
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold ${
+                          item.branch == null
+                            ? 'bg-slate-100 dark:bg-slate-800 text-slate-500 dark:text-slate-400'
+                            : 'bg-cyan-50 dark:bg-cyan-950/60 text-cyan-700 dark:text-cyan-300'
+                        }`}>
+                          <Building2 className="w-3 h-3" />
+                          {branchLabel(item.branch, item.branch_name)}
+                        </span>
                       </td>
                       <td className="py-3.5 px-4">
                         <span className="px-2 py-0.5 rounded-md text-[10px] font-semibold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">
@@ -374,6 +444,22 @@ export default function WarehousePage() {
               </button>
             </div>
             <form onSubmit={handleSaveItem} className="space-y-3">
+              {branches.length > 0 && (
+                <div>
+                  <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">{tr('staff.branch')}</label>
+                  <select
+                    value={formItem.branch ?? ''}
+                    disabled={isDeputyAssigned}
+                    onChange={(e) => setFormItem({ ...formItem, branch: e.target.value ? Number(e.target.value) : null })}
+                    className="w-full text-xs p-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none text-slate-900 dark:text-white font-bold cursor-pointer disabled:opacity-60"
+                  >
+                    <option value="">{tr('staff.allBranches')}</option>
+                    {branches.map((b) => (
+                      <option key={b.id} value={b.id}>🏢 {b.name}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
               <div>
                 <label className="text-xs font-bold text-slate-700 dark:text-slate-300 block mb-1">{tr('warehouse.itemNameLabel')}</label>
                 <input
