@@ -5,10 +5,13 @@ import React, { useState, useEffect, useRef, useMemo } from 'react';
 import Link from 'next/link';
 import { useParams } from 'next/navigation';
 import { clinicApi, isDemoClinic } from '../../../lib/api';
-import { Patient, Employee, Appointment, ClinicTask, NaryadLogEntry, TreatmentProcedureItem, TreatmentPlanStage, NaryadCatalogItem, DentalLabOrder } from '../../../lib/types';
+import { Patient, Employee, Appointment, ClinicTask, NaryadLogEntry, TreatmentProcedureItem, TreatmentPlanStage, TreatmentPlan, TreatmentPlanVariant, NaryadCatalogItem, DentalLabOrder } from '../../../lib/types';
 import { PaidInvoiceModal, InvoiceItem } from '../../../components/PaidInvoiceModal';
 import { ActiveCheckoutModal, CheckoutItem } from '../../../components/ActiveCheckoutModal';
 import DentalChart from '../../../components/DentalChart';
+import DentalToothSvg from '../../../components/DentalToothSvg';
+import TreatmentPlanBuilderModal from '../../../components/TreatmentPlanBuilderModal';
+import TreatmentPlanPrintModal from '../../../components/TreatmentPlanPrintModal';
 import PatientEditModal from '../../../components/PatientEditModal';
 import NaryadModal, { NaryadCartItem } from '../../../components/NaryadModal';
 import LabOrderFullModal from '../../../components/LabOrderFullModal';
@@ -32,6 +35,7 @@ const KeynoteDentalPhotoProtocol = dynamic(() => import('../../../components/Key
   ),
 });
 import { dentalMediaStore } from '../../../lib/dentalMediaStore';
+import { getLocalizedPlanTitle, getLocalizedVariantName, getLocalizedStageTitle } from '../../../lib/treatmentPlanHelpers';
 import { useI18n } from '../../../lib/i18n';
 import { useAuth } from '../../../lib/auth';
 import { useBranch } from '../../../lib/branchContext';
@@ -889,8 +893,32 @@ export default function PatientDetailPage() {
     setIsAddTaskModalOpen(false);
   };
 
-  // Tab: План лечения state
+  // Tab: План лечения state (Supports multiple stacked plans)
+  const [patientAllPlans, setPatientAllPlans] = useState<TreatmentPlan[]>([]);
+  const [expandedPlanId, setExpandedPlanId] = useState<string | number | null>(null);
+  const [planForPrint, setPlanForPrint] = useState<TreatmentPlan | null>(null);
+  const [planViewModes, setPlanViewModes] = useState<Record<string | number, 'teeth' | 'list'>>({});
+  const [groupServicesMap, setGroupServicesMap] = useState<Record<string | number, boolean>>({});
+  const [activeVariantsMap, setActiveVariantsMap] = useState<Record<string | number, string | number>>({});
+  const [editingPlanTitleId, setEditingPlanTitleId] = useState<string | number | null>(null);
+  const [editingPlanTitleInput, setEditingPlanTitleInput] = useState<string>('');
   const [treatmentPlans, setTreatmentPlans] = useState<TreatmentPlanStage[]>([]);
+  const [planVariants, setPlanVariants] = useState<TreatmentPlanVariant[]>([]);
+  const [activePlanVariantId, setActivePlanVariantId] = useState<string | number>('v-1');
+  const [isEditingSavedPlanTitle, setIsEditingSavedPlanTitle] = useState(false);
+  const [editingSavedTitleText, setEditingSavedTitleText] = useState('');
+  const [planTitle, setPlanTitle] = useState('Kompleks davolash');
+  const [planFreezePrices, setPlanFreezePrices] = useState(false);
+  const [planViewMode, setPlanViewMode] = useState<'teeth' | 'list'>('teeth');
+  const [isPlanBuilderOpen, setIsPlanBuilderOpen] = useState(false);
+  const [isPlanPrintOpen, setIsPlanPrintOpen] = useState(false);
+  const [planToEdit, setPlanToEdit] = useState<TreatmentPlan | null>(null);
+  const [groupServicesInList, setGroupServicesInList] = useState(false);
+  const [selectedProcsForNaryad, setSelectedProcsForNaryad] = useState<Record<string, boolean>>({});
+  const [procedureDoctors, setProcedureDoctors] = useState<Record<string, string>>({});
+  const [naryadInitialCartItems, setNaryadInitialCartItems] = useState<NaryadCartItem[]>([]);
+  const [selectedNaryadDoctorId, setSelectedNaryadDoctorId] = useState<number | undefined>(undefined);
+  const [selectedNaryadDoctorName, setSelectedNaryadDoctorName] = useState<string | undefined>(undefined);
   const [planDiscountPercent, setPlanDiscountPercent] = useState<number>(0);
   const [planPaidAmount, setPlanPaidAmount] = useState<number>(0);
   const [addingProcStageId, setAddingProcStageId] = useState<number | null>(null);
@@ -1113,6 +1141,350 @@ export default function PatientDetailPage() {
   };
 
   const [planStatus, setPlanStatus] = useState<string>('Согласован с пациентом');
+
+  const currentPlanObject: TreatmentPlan = useMemo(() => {
+    return {
+      id: planToEdit?.id || `plan-${patientId}`,
+      patient_id: patientId,
+      title: planTitle || 'Kompleks davolash',
+      freeze_prices: planFreezePrices,
+      status: (planStatus as any) || 'Согласован с пациентом',
+      stages: treatmentPlans,
+      variants: planVariants.length > 0 ? planVariants : undefined,
+      active_variant_id: activePlanVariantId,
+      curator: participants[0]?.full_name || '',
+      created_at: patient?.created_at || new Date().toISOString()
+    };
+  }, [planToEdit, patientId, planTitle, planFreezePrices, planStatus, treatmentPlans, planVariants, activePlanVariantId, participants, patient]);
+
+  const handleSelectVariant = (vId: string | number) => {
+    setActivePlanVariantId(vId);
+    const targetV = planVariants.find(v => v.id === vId);
+    if (targetV && targetV.stages) {
+      setTreatmentPlans(targetV.stages);
+    }
+  };
+
+  const handleSaveTreatmentPlan = (savedPlan: TreatmentPlan) => {
+    if (!patient) return;
+    setPatientAllPlans((prev) => {
+      const existsIdx = prev.findIndex((p) => String(p.id) === String(savedPlan.id));
+      let next: TreatmentPlan[];
+      if (existsIdx !== -1) {
+        // Tahrirlangan rejani o'z joyida yangilash
+        next = prev.map((p, idx) => (idx === existsIdx ? savedPlan : p));
+      } else {
+        // YANGI reja yaratilganda — TEPASIDAN QO'SHILADI! Eskilari pasga tushadi
+        next = [savedPlan, ...prev];
+      }
+      try {
+        localStorage.setItem(`32desk_treatment_plans_list_${patient.id}`, JSON.stringify(next));
+        if (next[0]) {
+          localStorage.setItem(`32desk_treatment_full_plan_${patient.id}`, JSON.stringify(next[0]));
+          const stagesToSave = next[0].stages || [];
+          setTimeout(() => {
+            clinicApi.saveTreatmentPlans(patient.id, stagesToSave);
+          }, 0);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+      return next;
+    });
+    if (savedPlan.active_variant_id) {
+      setActiveVariantsMap((prev) => ({ ...prev, [String(savedPlan.id)]: savedPlan.active_variant_id! }));
+    }
+    setTreatmentPlans(savedPlan.stages || []);
+    setPlanVariants(savedPlan.variants || []);
+    setActivePlanVariantId(savedPlan.active_variant_id || 'v-1');
+    setExpandedPlanId(savedPlan.id);
+    setPlanToEdit(null);
+    setIsPlanBuilderOpen(false);
+  };
+
+  const handleAddNewPlan = () => {
+    if (!patient) return;
+    const newId = Date.now();
+    const docName = (participants[0]?.full_name) || (user?.name) || 'Врач';
+    const defaultVariantName = language === 'uz' ? '1-variant' : language === 'en' ? 'Variant 1' : 'Вариант 1';
+    const defaultTitle = tk('tp_without_title') || (language === 'uz' ? 'Nomsiz reja' : language === 'en' ? 'Untitled plan' : 'Без названия');
+    const newPlan: TreatmentPlan = {
+      id: newId,
+      patient: patient.id,
+      title: defaultTitle,
+      created_at: new Date().toISOString(),
+      doctor_name: docName,
+      stages: [],
+      variants: [
+        { id: 'v-1', name: defaultVariantName, stages: [] }
+      ],
+      active_variant_id: 'v-1'
+    };
+    setPatientAllPlans((prev) => {
+      const next = [newPlan, ...prev];
+      try {
+        localStorage.setItem(`32desk_treatment_plans_list_${patient.id}`, JSON.stringify(next));
+        localStorage.setItem(`32desk_treatment_full_plan_${patient.id}`, JSON.stringify(next[0]));
+        setTimeout(() => {
+          clinicApi.saveTreatmentPlans(patient.id, next[0].stages || []);
+        }, 0);
+      } catch (e) {
+        console.error(e);
+      }
+      return next;
+    });
+    setExpandedPlanId(newId);
+  };
+
+  const handleRenamePlan = (planId: number | string, newTitle: string) => {
+    if (!patient) return;
+    setPatientAllPlans((prev) => {
+      const next = prev.map((p) => (String(p.id) === String(planId) ? { ...p, title: newTitle } : p));
+      try {
+        localStorage.setItem(`32desk_treatment_plans_list_${patient.id}`, JSON.stringify(next));
+        if (next[0]) {
+          localStorage.setItem(`32desk_treatment_full_plan_${patient.id}`, JSON.stringify(next[0]));
+        }
+      } catch (e) {
+        console.error(e);
+      }
+      return next;
+    });
+  };
+
+  const formatPlanDate = (dateStr?: string) => {
+    if (!dateStr) return language === 'uz' ? 'Bugun' : language === 'en' ? 'Today' : 'Сегодня';
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return dateStr;
+    const now = new Date();
+    const isToday = d.toDateString() === now.toDateString();
+    const timeStr = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    if (isToday) {
+      if (language === 'uz') return `Bugun, soat ${timeStr} da`;
+      if (language === 'en') return `Today, at ${timeStr}`;
+      return `Сегодня, в ${timeStr}`;
+    }
+    const day = d.getDate();
+    const monthRu = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'][d.getMonth()];
+    const monthUz = ['yanvar', 'fevral', 'mart', 'aprel', 'may', 'iyun', 'iyul', 'avgust', 'sentabr', 'oktabr', 'noyabr', 'dekabr'][d.getMonth()];
+    const monthEn = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()];
+    if (language === 'uz') return `${day}-${monthUz}, soat ${timeStr} da`;
+    if (language === 'en') return `${monthEn} ${day}, at ${timeStr}`;
+    return `${day} ${monthRu}, в ${timeStr}`;
+  };
+
+  const getPlanTeethSummary = (p: TreatmentPlan): string => {
+    const teethSet = new Set<string>();
+    const scanStages = (stages?: TreatmentPlanStage[]) => {
+      (stages || []).forEach(s => {
+        (s.procedures || []).forEach(proc => {
+          if (proc.teeth) {
+            String(proc.teeth).split(',').forEach(t => {
+              const clean = t.trim();
+              if (clean) teethSet.add(clean);
+            });
+          }
+        });
+      });
+    };
+    scanStages(p.stages);
+    (p.variants || []).forEach(v => scanStages(v.stages));
+    const sorted = Array.from(teethSet).sort((a, b) => Number(a) - Number(b));
+    return sorted.join(', ');
+  };
+
+  const handleDeletePlanById = (planId: number | string) => {
+    if (!patient) return;
+    if (confirm(tk('tp_delete_confirm') || 'Ushbu davolash rejasini o‘chirib tashlashni xohlaysizmi?')) {
+      setPatientAllPlans((prev) => {
+        const next = prev.filter((p) => String(p.id) !== String(planId));
+        try {
+          localStorage.setItem(`32desk_treatment_plans_list_${patient.id}`, JSON.stringify(next));
+          if (next.length > 0) {
+            localStorage.setItem(`32desk_treatment_full_plan_${patient.id}`, JSON.stringify(next[0]));
+            const stagesToSave = next[0].stages || [];
+            setTimeout(() => {
+              clinicApi.saveTreatmentPlans(patient.id, stagesToSave);
+            }, 0);
+          } else {
+            localStorage.removeItem(`32desk_treatment_plans_list_${patient.id}`);
+            localStorage.removeItem(`32desk_treatment_full_plan_${patient.id}`);
+            setTimeout(() => {
+              clinicApi.saveTreatmentPlans(patient.id, []);
+            }, 0);
+          }
+        } catch (e) {
+          console.error(e);
+        }
+        return next;
+      });
+    }
+  };
+
+  const handleSelectProcedureDoctor = (planId: string | number, procId: string | number, docName: string, docId?: number | string) => {
+    setProcedureDoctors(prev => ({ ...prev, [String(procId)]: docName }));
+    setSelectedProcsForNaryad(prev => ({ ...prev, [String(procId)]: true }));
+    const today = new Date().toISOString().slice(0, 10);
+
+    setPatientAllPlans(prev => {
+      const next = prev.map(plan => {
+        if (String(plan.id) !== String(planId)) return plan;
+        const updateStages = (stages: TreatmentPlanStage[]) =>
+          stages.map(s => ({
+            ...s,
+            procedures: (s.procedures || []).map(p => {
+              if (String(p.id) === String(procId)) {
+                return { ...p, doctor: docName, doctor_id: docId, date: today };
+              }
+              return p;
+            })
+          }));
+
+        return {
+          ...plan,
+          stages: updateStages(plan.stages || []),
+          variants: (plan.variants || []).map(v => ({
+            ...v,
+            stages: updateStages(v.stages || [])
+          }))
+        };
+      });
+
+      try {
+        localStorage.setItem(`32desk_treatment_plans_list_${patient?.id}`, JSON.stringify(next));
+      } catch (e) {
+        console.error(e);
+      }
+      return next;
+    });
+  };
+
+  const handleToggleProcSelection = (procId: string | number) => {
+    setSelectedProcsForNaryad(prev => ({
+      ...prev,
+      [String(procId)]: !prev[String(procId)]
+    }));
+  };
+
+  const handleCancelProcedureNaryad = async (planId: number | string, proc: TreatmentProcedureItem) => {
+    const reason = prompt(
+      language === 'uz'
+        ? 'Ushbu xizmatni naryad (karzinka)dan o‘chirish sababini kiriting:'
+        : language === 'en'
+        ? 'Enter reason for removing from work order / cart:'
+        : 'Укажите причину удаления из наряда (корзины):'
+    );
+    if (!reason || !reason.trim()) return;
+
+    // 1. Karzinkadan mos naryadni topish
+    const naryadItem = patientNaryads.find(
+      (n) => (proc.naryad_id && n.id === proc.naryad_id) ||
+             (n.name === proc.title && (proc.teeth ? n.teeth?.includes(String(proc.teeth).trim()) : true))
+    );
+
+    if (naryadItem) {
+      // 2. Karzinkadan o'chirish va naryad jurnaliga yozish
+      await handleRemoveNaryad(naryadItem.id, reason.trim());
+    }
+
+    // 3. Plan ichidagi xizmatni tozalash: doctor olib tashlanadi, is_ordered false bo'ladi, ptichka ochiladi
+    setPatientAllPlans((prev) => {
+      const next = prev.map((plan) => {
+        if (String(plan.id) !== String(planId)) return plan;
+        const updateStages = (stages: TreatmentPlanStage[]) =>
+          stages.map((stage) => ({
+            ...stage,
+            procedures: (stage.procedures || []).map((p) => {
+              if (String(p.id) === String(proc.id)) {
+                return {
+                  ...p,
+                  is_ordered: false,
+                  naryad_id: undefined,
+                  doctor: '',
+                  doctor_id: undefined
+                };
+              }
+              return p;
+            })
+          }));
+
+        return {
+          ...plan,
+          stages: updateStages(plan.stages || []),
+          variants: (plan.variants || []).map((v) => ({
+            ...v,
+            stages: updateStages(v.stages || [])
+          }))
+        };
+      });
+
+      try {
+        localStorage.setItem(`32desk_treatment_plans_list_${patient?.id}`, JSON.stringify(next));
+        if (next[0]) {
+          localStorage.setItem(`32desk_treatment_full_plan_${patient?.id}`, JSON.stringify(next[0]));
+          const stagesToSave = next[0].stages || [];
+          setTimeout(() => {
+            clinicApi.saveTreatmentPlans(patient!.id, stagesToSave);
+          }, 0);
+        }
+      } catch (e) {
+        console.error(e);
+      }
+      return next;
+    });
+
+    setProcedureDoctors((prev) => {
+      const updated = { ...prev };
+      delete updated[String(proc.id)];
+      return updated;
+    });
+    setSelectedProcsForNaryad((prev) => {
+      const updated = { ...prev };
+      delete updated[String(proc.id)];
+      return updated;
+    });
+  };
+
+  const handleTransferToNaryadForPlan = (plan: TreatmentPlan) => {
+    if (!patient) return;
+    const selectedList: TreatmentProcedureItem[] = [];
+    const activeVarId = activeVariantsMap[String(plan.id)] || plan.active_variant_id;
+    const activeVar = (plan.variants || []).find(v => String(v.id) === String(activeVarId));
+    const stagesToScan = (activeVar?.stages && activeVar.stages.length > 0) ? activeVar.stages : (plan.stages || []);
+
+    stagesToScan.forEach(s => {
+      (s.procedures || []).forEach(p => {
+        if (selectedProcsForNaryad[String(p.id)] && !p.is_ordered) {
+          selectedList.push(p);
+        }
+      });
+    });
+
+    if (selectedList.length === 0) {
+      alert(tk('plan_select_procs_first') || 'Iltimos, avval naryadga qo‘shish uchun xizmatlarni tanlang');
+      return;
+    }
+
+    const firstDocName = selectedList.find(p => p.doctor)?.doctor || procedureDoctors[String(selectedList[0]?.id)];
+    const docEmp = allEmployees.find(e => e.full_name === firstDocName);
+    const doctorCommission = docEmp?.commission_rate != null ? Number(docEmp.commission_rate) : 0;
+
+    const cartItems: NaryadCartItem[] = selectedList.map(p => ({
+      id: String(p.id),
+      name: p.title,
+      price: Math.max(0, Number(p.price) || 0),
+      quantity: Math.max(1, Math.round(Number(p.quantity) || 1)),
+      teeth: p.teeth ? String(p.teeth).split(',').map(s => s.trim()).filter(Boolean) : [],
+      category: p.category,
+      percent: doctorCommission,
+      percentSource: 'doctor'
+    }));
+
+    setSelectedNaryadDoctorId(docEmp?.id);
+    setSelectedNaryadDoctorName(firstDocName || undefined);
+    setNaryadInitialCartItems(cartItems);
+    setShowNaryadModal(true);
+  };
 
   const handleExecuteProcedureToTreatment = (stageId: number, proc: TreatmentProcedureItem) => {
     if (!patient) return;
@@ -1350,80 +1722,59 @@ export default function PatientDetailPage() {
       // Restore bekor qilingan davolash/naryad ID'lari (baza yoki demo localStorage)
       setCancelledTreatmentIds(clinicApi.getCancelledTreatments(p.id));
 
-      // Restore persisted treatment plans (32desk format)
-      const loadedPlans = clinicApi.getTreatmentPlans(p.id);
-      if (loadedPlans && loadedPlans.length > 0) {
-        setTreatmentPlans(loadedPlans);
-      } else if (isDemoClinic()) {
-        const initialPlan: TreatmentPlanStage[] = [
-          {
-            id: 1,
-            title: 'Этап 1: Профессиональная гигиена и санация',
-            description: 'Ультразвуковой скейлинг, удаление пигментированного налета Air-Flow, глубокое фторирование эмали.',
-            cost: 600000,
-            status: 'Выполнено',
-            doctor: emps.find((e) => e.role === 'doctor')?.full_name || 'Мирислом Абдуллаев',
-            procedures: [
-              {
-                id: 'proc-101',
-                title: 'Комплексная гигиена полости рта (Air-Flow + УЗ скейлинг)',
-                teeth: 'Все',
-                quantity: 1,
-                price: 600000,
-                doctor: 'Мирислом Абдуллаев'
-              }
-            ]
-          },
-          {
-            id: 2,
-            title: 'Этап 2: Терапевтическое лечение',
-            description: 'Лечение кариеса дентина, фотополимерная реставрация, эндодонтическое лечение корневых каналов.',
-            cost: 1200000,
-            status: 'В процессе',
-            doctor: emps.find((e) => e.role === 'doctor')?.full_name || '',
-            procedures: [
-              {
-                id: 'proc-102',
-                title: 'Кариес дентина, световая реставрация Estelite Asteria',
-                teeth: '16',
-                quantity: 1,
-                price: 450000,
-                doctor: ''
-              },
-              {
-                id: 'proc-103',
-                title: 'Эндодонтическая обработка и 3D обтурация корневых каналов',
-                teeth: '25',
-                quantity: 1,
-                price: 750000,
-                doctor: ''
-              }
-            ]
-          },
-          {
-            id: 3,
-            title: 'Этап 3: Ортопедия и протезирование',
-            description: 'Изготовление и фиксация анатомических циркониевых коронок Prettau.',
-            cost: 3600000,
-            status: 'Запланировано',
-            doctor: emps.find((e) => e.role === 'doctor')?.full_name || '',
-            procedures: [
-              {
-                id: 'proc-104',
-                title: 'Анатомическая коронка на диоксиде циркония Prettau',
-                teeth: '15, 16',
-                quantity: 2,
-                price: 1800000,
-                doctor: ''
-              }
-            ]
+      // Restore persisted treatment plans (32desk format - multiple stacked plans)
+      try {
+        const listStored = localStorage.getItem(`32desk_treatment_plans_list_${p.id}`);
+        if (listStored) {
+          const parsedList: TreatmentPlan[] = JSON.parse(listStored);
+          if (Array.isArray(parsedList) && parsedList.length > 0) {
+            setPatientAllPlans(parsedList);
+            setExpandedPlanId(parsedList[0].id);
+            const first = parsedList[0];
+            setPlanTitle(first.title || 'Kompleks davolash');
+            setPlanFreezePrices(Boolean(first.freeze_prices));
+            setTreatmentPlans(first.stages || []);
+            setPlanVariants(first.variants || [{ id: 'v-1', name: 'Variant 1', stages: first.stages || [] }]);
+            setActivePlanVariantId(first.active_variant_id || first.variants?.[0]?.id || 'v-1');
+          } else {
+            setPatientAllPlans([]);
           }
-        ];
-        setTreatmentPlans(initialPlan);
-        clinicApi.saveTreatmentPlans(p.id, initialPlan);
-      } else {
-        // REAL klinika, reja yo'q — oldingi bemor rejasi EKRANDA qolib ketmasin.
+        } else {
+          const fullStored = localStorage.getItem(`32desk_treatment_full_plan_${p.id}`);
+          if (fullStored) {
+            const parsedFull = JSON.parse(fullStored);
+            setPatientAllPlans([parsedFull]);
+            setPlanTitle(parsedFull.title || 'Kompleks davolash');
+            setPlanFreezePrices(Boolean(parsedFull.freeze_prices));
+            setTreatmentPlans(parsedFull.stages || []);
+            setPlanVariants(parsedFull.variants || [{ id: 'v-1', name: 'Variant 1', stages: parsedFull.stages || [] }]);
+            setActivePlanVariantId(parsedFull.active_variant_id || parsedFull.variants?.[0]?.id || 'v-1');
+          } else {
+            const loadedPlans = clinicApi.getTreatmentPlans(p.id);
+            if (loadedPlans && loadedPlans.length > 0) {
+              const synthPlan: TreatmentPlan = {
+                id: Date.now(),
+                patient: p.id,
+                title: 'Kompleks davolash',
+                stages: loadedPlans,
+                variants: [{ id: 'v-1', name: 'Variant 1', stages: loadedPlans }],
+                active_variant_id: 'v-1'
+              };
+              setPatientAllPlans([synthPlan]);
+              setTreatmentPlans(loadedPlans);
+              setPlanVariants(synthPlan.variants!);
+              setActivePlanVariantId('v-1');
+            } else {
+              setPatientAllPlans([]);
+              setTreatmentPlans([]);
+              setPlanVariants([]);
+            }
+          }
+        }
+      } catch {
+        setPatientAllPlans([]);
         setTreatmentPlans([]);
+        setPlanVariants([]);
       }
       loadPatientTasks(p.id);
     }
@@ -2451,6 +2802,58 @@ export default function PatientDetailPage() {
         ...prev
       ]);
     }
+    // Mark ordered procedures in patient plans & clear selectedProcsForNaryad
+    const orderedProcIds = Object.keys(selectedProcsForNaryad).filter((id) => selectedProcsForNaryad[id]);
+    if (orderedProcIds.length > 0) {
+      setPatientAllPlans((prev) => {
+        const next = prev.map((plan) => {
+          const updateStages = (stages: TreatmentPlanStage[]) =>
+            stages.map((stage) => ({
+              ...stage,
+              procedures: (stage.procedures || []).map((p) => {
+                if (orderedProcIds.includes(String(p.id))) {
+                  const matchedNaryad = newNaryadItems.find(
+                    (ni) => ni.name === p.title && (p.teeth ? ni.teeth.includes(String(p.teeth).trim()) : true)
+                  );
+                  return {
+                    ...p,
+                    is_ordered: true,
+                    naryad_id: matchedNaryad?.id,
+                    doctor: docName || p.doctor,
+                    doctor_id: docId || p.doctor_id
+                  };
+                }
+                return p;
+              })
+            }));
+
+          return {
+            ...plan,
+            stages: updateStages(plan.stages || []),
+            variants: (plan.variants || []).map((v) => ({
+              ...v,
+              stages: updateStages(v.stages || [])
+            }))
+          };
+        });
+
+        try {
+          localStorage.setItem(`32desk_treatment_plans_list_${patient.id}`, JSON.stringify(next));
+          if (next[0]) {
+            localStorage.setItem(`32desk_treatment_full_plan_${patient.id}`, JSON.stringify(next[0]));
+            const stagesToSave = next[0].stages || [];
+            setTimeout(() => {
+              clinicApi.saveTreatmentPlans(patient.id, stagesToSave);
+            }, 0);
+          }
+        } catch (e) {
+          console.error(e);
+        }
+        return next;
+      });
+      setSelectedProcsForNaryad({});
+    }
+
     setShowNaryadModal(false);
   };
 
@@ -3625,645 +4028,595 @@ export default function PatientDetailPage() {
         </div>
       )}
 
-      {/* TAB 4: ПЛАН ЛЕЧЕНИЯ (Comprehensive Toshkent Markaziy Treatment Plan with Stages, Procedures, KPIs & Execution) */}
+      {/* TAB 4: ПЛАН ЛЕЧЕНИЯ (32Desk-style Treatment Plans List) */}
       {activeTab === 'План лечения' && (
-        <div className="space-y-5">
-          <div className="bg-white dark:bg-slate-900 rounded-3xl border border-slate-200 dark:border-slate-800 shadow-2xs p-6 space-y-5 text-slate-900 dark:text-white">
-            {/* Header: Title, Curator, Status & Main Actions */}
-            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-5 border-b border-slate-100 dark:border-slate-800">
-              <div className="space-y-1">
-                <div className="flex items-center gap-2">
-                  <div className="w-9 h-9 rounded-xl bg-blue-100 dark:bg-blue-950/80 text-blue-600 dark:text-sky-400 flex items-center justify-center font-bold">
-                    <ClipboardList className="w-5 h-5" />
-                  </div>
-                  <h3 className="text-base font-black text-slate-900 dark:text-white">
-                    {tr('patientd.fullDentalPlan')}
-                  </h3>
-                </div>
-                <div className="flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-slate-400 pl-11">
-                  <span>
-                    {tk('curator_label')}: <strong className="text-slate-700 dark:text-slate-200">{participants[0]?.full_name || ''}</strong>
-                  </span>
-                  <span>•</span>
-                  <div className="flex items-center gap-1.5">
-                    <span>{tk('status_word')}:</span>
-                    <select
-                      value={planStatus}
-                      onChange={(e) => setPlanStatus(e.target.value)}
-                      className="px-2 py-0.5 rounded-lg bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-bold text-blue-600 dark:text-sky-400 outline-none"
-                    >
-                      <option value="Согласован с пациентом">{tr('patientd.k35')}</option>
-                      <option value="На согласовании">{tr('patientd.k36')}</option>
-                      <option value="В процессе">{tr('patientd.k37')}</option>
-                      <option value="Завершен">{tr('patientd.k38')}</option>
-                    </select>
-                  </div>
-                </div>
-              </div>
+        <div className="space-y-4">
+          {/* Top Right: "Добавить план лечения" button (Matching 32Desk Images 1, 2, 3) */}
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={handleAddNewPlan}
+              className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-xs transition flex items-center gap-1.5 cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>{tk('tp_add_plan') || 'Добавить план лечения'}</span>
+            </button>
+          </div>
 
-              <div className="flex flex-wrap items-center gap-2.5">
+          {patientAllPlans.length === 0 ? (
+            /* ── EMPTY STATE (No plan created yet) ── */
+            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs p-12 text-center space-y-3">
+              <p className="text-xs text-slate-400 font-medium">
+                {tk('tp_empty_desc') || 'Пока ничего'}
+              </p>
+              <div>
                 <button
                   type="button"
-                  onClick={() => window.print()}
-                  className="px-3.5 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl text-xs font-bold flex items-center gap-1.5 transition"
+                  onClick={handleAddNewPlan}
+                  className="px-4 py-2 border border-blue-500 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40 rounded-xl text-xs font-bold transition cursor-pointer"
                 >
-                  <Printer className="w-4 h-4" />
-                  <span>{tk('print_plan')}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={handleAddStage}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-sm transition flex items-center gap-1.5"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>{tr('patientd.addNewStage')}</span>
+                  {tk('tp_add_treatment') || 'Добавить лечение'}
                 </button>
               </div>
             </div>
+          ) : (
+            /* ── LIST OF PLANS (STACKED: NEWEST ON TOP, PREVIOUS BELOW) ── */
+            <div className="space-y-4">
+              {patientAllPlans.map((plan, planIdx) => {
+                const planIdStr = String(plan.id);
+                const isExpanded = (expandedPlanId === null && planIdx === 0) || String(expandedPlanId) === planIdStr;
 
-            {/* Total Plan Summary KPIs — 100% dynamic calculation */}
-            {(() => {
-              const totalCost = treatmentPlans.reduce(
-                (sum, s) => sum + (s.cost || s.procedures?.reduce((pSum, p: any) => pSum + ((Number(p.price) || 0) * (Number(p.quantity) || 1)), 0) || 0),
-                0
-              );
-              const discountSum = Math.round((totalCost * (planDiscountPercent || 0)) / 100);
-              const paidTotal = Math.min(totalCost, invoices.filter(i => i.status === 'Оплачен').reduce((s, i) => s + i.paid, 0));
-              const remaining = Math.max(0, totalCost - discountSum - paidTotal);
+                const planTeeth = getPlanTeethSummary(plan);
+                const planDoctor = plan.doctor_name || (patient as any)?.doctor || (participants[0]?.full_name) || 'Мухаммад Одилхонов';
+                const doctorInitials = planDoctor
+                  .split(' ')
+                  .map((w: string) => w[0])
+                  .filter(Boolean)
+                  .slice(0, 2)
+                  .join('')
+                  .toUpperCase() || 'МО';
 
-              return (
-                <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-                  <div className="p-4 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-100 dark:border-slate-800">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{tk('total_cost')}</p>
-                    <p className="text-base font-black text-slate-900 dark:text-white mt-1">
-                      {totalCost.toLocaleString('ru-RU')} {tk('currency_som')}
-                    </p>
-                    <p className="text-[10px] text-slate-400 mt-0.5">{treatmentPlans.length} {tr('patientd.k39')}</p>
-                  </div>
-
-                  <div className="p-4 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-100 dark:border-slate-800">
-                    <div className="flex items-center justify-between">
-                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{tk('patient_discount')}</p>
-                      <select
-                        value={planDiscountPercent}
-                        onChange={(e) => setPlanDiscountPercent(Number(e.target.value))}
-                        className="text-[11px] font-bold text-emerald-600 bg-transparent outline-none cursor-pointer"
-                      >
-                        <option value={0}>0%</option>
-                        <option value={3}>3%</option>
-                        <option value={5}>5%</option>
-                        <option value={10}>10%</option>
-                        <option value={15}>15%</option>
-                      </select>
-                    </div>
-                    <p className="text-base font-black text-emerald-600 mt-1">
-                      {discountSum.toLocaleString('ru-RU')} {tk('currency_som')}
-                    </p>
-                    <p className="text-[10px] text-emerald-500 mt-0.5">{planDiscountPercent}% {tr('patientd.k40')}</p>
-                  </div>
-
-                  <div className="p-4 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-100 dark:border-slate-800">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{tk('paid')}</p>
-                    <p className="text-base font-black text-blue-600 dark:text-sky-400 mt-1">
-                      {paidTotal.toLocaleString('ru-RU')} {tk('currency_som')}
-                    </p>
-                    <p className="text-[10px] text-slate-400 mt-0.5">{tr('patientd.k41')}</p>
-                  </div>
-
-                  <div className="p-4 bg-slate-50 dark:bg-slate-800/60 rounded-2xl border border-slate-100 dark:border-slate-800">
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">{tk('remaining_to_pay')}</p>
-                    <p className={`text-base font-black mt-1 ${remaining > 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
-                      {remaining.toLocaleString('ru-RU')} {tk('currency_som')}
-                    </p>
-                    <p className="text-[10px] text-slate-400 mt-0.5">{remaining > 0 ? (tr('patientd.k42')) : (tr('patientd.k43'))}</p>
-                  </div>
-                </div>
-              );
-            })()}
-
-            {/* Stages List (Bosqichlar va Muolajalar jadvali) */}
-            <div className="space-y-4 pt-2">
-              {treatmentPlans.length === 0 ? (
-                <div className="p-10 text-center text-slate-400 border border-dashed border-slate-200 dark:border-slate-800 rounded-2xl">
-                  <p className="text-sm font-semibold">{tr('patientd.k44')}</p>
-                  <button
-                    type="button"
-                    onClick={handleAddStage}
-                    className="mt-3 px-4 py-2 bg-blue-600 text-white rounded-xl text-xs font-bold shadow-sm"
-                  >
-                    + {tr('patientd.k45')}
-                  </button>
-                </div>
-              ) : (
-                treatmentPlans.map((stage, stageIdx) => {
-                  const stageCost = (stage.procedures || []).reduce(
-                    (s: number, p: any) => s + ((Number(p.price) || 0) * (Number(p.quantity) || 1)),
-                    0
-                  );
-
+                // If collapsed, render clean 32Desk collapsed bar (Screenshot 1, 2, 3)
+                if (!isExpanded) {
                   return (
                     <div
-                      key={stage.id}
-                      className="rounded-2xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden shadow-xs hover:border-blue-200 dark:hover:border-blue-900 transition"
+                      key={plan.id}
+                      onClick={() => setExpandedPlanId(plan.id)}
+                      className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 hover:border-blue-400 dark:hover:border-blue-600 shadow-2xs p-4 flex items-center justify-between transition cursor-pointer group"
                     >
-                      {/* Stage Top Bar */}
-                      <div className="p-4 bg-slate-50/80 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-3">
-                        <div className="flex items-center gap-3">
-                          <span className={`w-3 h-3 rounded-full flex-shrink-0 ${
-                            stage.status === 'Выполнено'
-                              ? 'bg-emerald-500 ring-4 ring-emerald-100 dark:ring-emerald-950'
-                              : stage.status === 'В процессе'
-                              ? 'bg-amber-500 ring-4 ring-amber-100 dark:ring-amber-950'
-                              : stage.status === 'Отменено'
-                              ? 'bg-rose-500 ring-4 ring-rose-100 dark:ring-rose-950'
-                              : 'bg-blue-500 ring-4 ring-blue-100 dark:ring-blue-950'
-                          }`} />
-                          <div>
-                            <input
-                              type="text"
-                              value={stage.title}
-                              onChange={(e) => handleUpdateStage(stage.id, { title: e.target.value })}
-                              className="font-black text-sm bg-transparent border-b border-transparent hover:border-slate-300 dark:hover:border-slate-700 focus:border-blue-500 outline-none text-slate-900 dark:text-white"
-                            />
-                            {stage.description && (
-                              <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{stage.description}</p>
-                            )}
-                          </div>
+                      <div className="space-y-1">
+                        <div className="text-xs font-bold text-slate-800 dark:text-slate-200 group-hover:text-blue-600 transition">
+                          {formatPlanDate(plan.created_at)}
                         </div>
+                        <div className="text-xs text-slate-400 font-mono">
+                          {planTeeth ? `${tk('tooth_word') || 'Зубы'} ${planTeeth}` : (tk('tooth_word') || 'Зубы')}
+                        </div>
+                      </div>
 
-                        <div className="flex flex-wrap items-center gap-2.5">
-                          {/* Stage Status Selector */}
-                          <select
-                            value={stage.status}
-                            onChange={(e) => handleUpdateStage(stage.id, { status: e.target.value as any })}
-                            className={`px-2.5 py-1 rounded-xl text-xs font-bold border outline-none ${
-                              stage.status === 'Выполнено'
-                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/60 dark:text-emerald-300 dark:border-emerald-800'
-                                : stage.status === 'В процессе'
-                                ? 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/60 dark:text-amber-300 dark:border-amber-800'
-                                : stage.status === 'Отменено'
-                                ? 'bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/60 dark:text-rose-300 dark:border-rose-800'
-                                : 'bg-slate-50 text-slate-700 border-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:border-slate-700'
-                            }`}
-                          >
-                            <option value="Запланировано">{tr('patientd.k46')}</option>
-                            <option value="В процессе">{tr('patientd.k32')}</option>
-                            <option value="Выполнено">{tr('patientd.k47')}</option>
-                            <option value="Отменено">{tr('patientd.k48')}</option>
-                          </select>
+                      <div className="flex items-center gap-2.5">
+                        <div className="w-7 h-7 rounded-full bg-blue-100 dark:bg-blue-900/60 text-blue-700 dark:text-blue-300 font-black text-[11px] flex items-center justify-center border border-blue-200 dark:border-blue-800">
+                          {doctorInitials}
+                        </div>
+                        <span className="text-xs font-semibold text-slate-700 dark:text-slate-300">
+                          {planDoctor}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                }
 
-                          {/* Stage Doctor Selector */}
-                          <select
-                            value={stage.doctor}
-                            onChange={(e) => handleUpdateStage(stage.id, { doctor: e.target.value })}
-                            className="px-2.5 py-1 rounded-xl text-xs font-semibold bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 outline-none"
-                          >
-                            {allEmployees.filter((e) => e.role === 'doctor').map((doc) => (
-                              <option key={doc.id} value={doc.full_name}>{doc.full_name}</option>
-                            ))}
-                          </select>
+                // If expanded, render the full 32Desk plan card
+                const currentViewMode = planViewModes[planIdStr] || 'teeth';
+                const isGrouped = Boolean(groupServicesMap[planIdStr]);
+                const defaultVarName = language === 'uz' ? '1-variant' : language === 'en' ? 'Variant 1' : 'Вариант 1';
+                const variants = (plan.variants && plan.variants.length > 0)
+                  ? plan.variants
+                  : [{ id: 'v-1', name: defaultVarName, stages: plan.stages || [] }];
+                const activeVarId = activeVariantsMap[planIdStr] || plan.active_variant_id || variants[0]?.id || 'v-1';
+                const activeVariant = variants.find(v => String(v.id) === String(activeVarId)) || variants[0];
+                const activeStages = (activeVariant?.stages && activeVariant.stages.length > 0)
+                  ? activeVariant.stages
+                  : (plan.stages || []);
 
-                          {/* Stage Subtotal */}
-                          <div className="px-3 py-1 bg-slate-100 dark:bg-slate-800 rounded-xl text-xs font-mono font-bold text-slate-900 dark:text-white">
-                            {stageCost.toLocaleString('ru-RU')} {tk('currency_som')}
-                          </div>
+                const grandTotal = activeStages.reduce(
+                  (sum, s) => sum + (s.cost || (s.procedures || []).reduce((pSum, p) => pSum + ((Number(p.price) || 0) * (Number(p.quantity) || 1)), 0) || 0),
+                  0
+                );
 
-                          {/* Add procedure button */}
+                const hasProcs = activeStages.some(s => (s.procedures || []).length > 0);
+
+                // Count selected non-ordered procedures for Naryad transfer
+                const selectedCount = activeStages.reduce((cnt, s) => {
+                  return cnt + (s.procedures || []).filter(p => selectedProcsForNaryad[String(p.id)] && !p.is_ordered).length;
+                }, 0);
+
+                const isEditingTitle = editingPlanTitleId === plan.id;
+
+                return (
+                  <div
+                    key={plan.id}
+                    className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-2xs p-5 space-y-4 text-slate-900 dark:text-white"
+                  >
+                    {/* Header Toolbar (matching 32Desk Screenshots 1, 2, 3) */}
+                    <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-100 dark:border-slate-800">
+                      <div className="flex flex-wrap items-center gap-3">
+                        {/* View Mode Toggle: По зубам vs Список */}
+                        <div className="inline-flex items-center p-0.5 bg-slate-100 dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
                           <button
                             type="button"
-                            onClick={() => handleOpenAddProcedure(stage.id)}
-                            className="px-3 py-1 bg-blue-50 dark:bg-blue-950/70 hover:bg-blue-100 text-blue-600 dark:text-sky-300 rounded-xl text-xs font-bold flex items-center gap-1 border border-blue-200 dark:border-blue-800 transition"
+                            onClick={() => setPlanViewModes(prev => ({ ...prev, [planIdStr]: 'teeth' }))}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                              currentViewMode === 'teeth'
+                                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                                : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+                            }`}
                           >
-                            <Plus className="w-3.5 h-3.5" />
-                            <span>{tr('patientd.k49')}</span>
+                            {tk('tp_by_teeth') || 'По зубам'}
                           </button>
+                          <button
+                            type="button"
+                            onClick={() => setPlanViewModes(prev => ({ ...prev, [planIdStr]: 'list' }))}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                              currentViewMode === 'list'
+                                ? 'bg-white dark:bg-slate-900 text-slate-900 dark:text-white shadow-xs'
+                                : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
+                            }`}
+                          >
+                            {tk('tp_table_list') || 'Список'}
+                          </button>
+                        </div>
 
-                          {/* Delete Stage button */}
+                        {/* If in list mode, show "Сгруппировать" toggle right next to tabs (Image 1) */}
+                        {currentViewMode === 'list' && (
+                          <label className="flex items-center gap-2 cursor-pointer text-xs font-semibold text-slate-600 dark:text-slate-300">
+                            <span>{tk('tp_group_services') || 'Сгруппировать'}</span>
+                            <input
+                              type="checkbox"
+                              checked={isGrouped}
+                              onChange={(e) => setGroupServicesMap(prev => ({ ...prev, [planIdStr]: e.target.checked }))}
+                              className="w-4 h-4 rounded text-blue-600 accent-blue-600 cursor-pointer"
+                            />
+                          </label>
+                        )}
+
+                        {/* Plan Name with inline edit pencil */}
+                        <div className="flex items-center gap-2">
+                          {isEditingTitle ? (
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="text"
+                                autoFocus
+                                value={editingPlanTitleInput}
+                                onChange={(e) => setEditingPlanTitleInput(e.target.value)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter') {
+                                    const trimmed = editingPlanTitleInput.trim();
+                                    if (trimmed) handleRenamePlan(plan.id, trimmed);
+                                    setEditingPlanTitleId(null);
+                                  }
+                                }}
+                                onBlur={() => {
+                                  const trimmed = editingPlanTitleInput.trim();
+                                  if (trimmed) handleRenamePlan(plan.id, trimmed);
+                                  setEditingPlanTitleId(null);
+                                }}
+                                className="px-2 py-1 text-xs font-bold bg-white dark:bg-slate-800 border border-blue-500 rounded-lg outline-none text-slate-900 dark:text-white"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  const trimmed = editingPlanTitleInput.trim();
+                                  if (trimmed) handleRenamePlan(plan.id, trimmed);
+                                  setEditingPlanTitleId(null);
+                                }}
+                                className="p-1 rounded-lg bg-blue-50 dark:bg-blue-950 text-blue-600 dark:text-sky-400 hover:bg-blue-100 cursor-pointer"
+                              >
+                                <Check className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          ) : (
+                            <div
+                              onClick={() => {
+                                setEditingPlanTitleInput(getLocalizedPlanTitle(plan.title, language));
+                                setEditingPlanTitleId(plan.id);
+                              }}
+                              className="group flex items-center gap-1.5 cursor-pointer"
+                              title={tk('tp_rename_variant') || 'Reja nomini o‘zgartirish'}
+                            >
+                              <span className="text-sm font-bold text-slate-800 dark:text-slate-200 group-hover:text-blue-600 transition">
+                                {getLocalizedPlanTitle(plan.title, language)}
+                              </span>
+                              <Edit2 className="w-3.5 h-3.5 text-slate-400 group-hover:text-blue-600 transition" />
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Freeze prices indicator */}
+                        {plan.freeze_prices && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 dark:bg-amber-950/70 text-amber-700 dark:text-amber-300 border border-amber-200 dark:border-amber-800/80 flex items-center gap-1">
+                            <Lock className="w-2.5 h-2.5" />
+                            <span>{tk('tp_freeze_prices') || 'Зафиксированные цены'}</span>
+                          </span>
+                        )}
+
+                        {/* Add to Naryad button - prominent when items are checked */}
+                        {selectedCount > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => handleTransferToNaryadForPlan(plan)}
+                            className="px-3 py-1 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-xs animate-in fade-in"
+                          >
+                            <ShoppingCart className="w-3.5 h-3.5" />
+                            <span>{tk('tp_add_to_naryad') || 'Добавить в наряд'}</span>
+                            <span className="px-1.5 py-0.2 rounded-full bg-white/20 text-white text-[10px] font-black">
+                              {selectedCount}
+                            </span>
+                          </button>
+                        )}
+                      </div>
+
+                      {/* Right Actions: Print (if has procs), Edit Plan, Delete (Matching 32Desk) */}
+                      <div className="flex items-center gap-1.5">
+                        {/* Print button (only if has procs) */}
+                        {hasProcs && (
                           <button
                             type="button"
                             onClick={() => {
-                              if (confirm(tr('patientd.k50'))) {
-                                handleRemoveStage(stage.id);
-                              }
+                              setPlanForPrint({
+                                ...plan,
+                                stages: activeStages,
+                                variants
+                              });
+                              setIsPlanPrintOpen(true);
                             }}
-                            className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/50 transition"
-                            title="Удалить этап"
+                            className="p-1.5 text-slate-400 hover:text-slate-700 dark:hover:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                            title={tk('tp_print') || 'Печать'}
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
+                            <Printer className="w-4 h-4" />
+                          </button>
+                        )}
+
+                        {/* Edit Plan button */}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPlanToEdit({
+                              ...plan,
+                              stages: activeStages,
+                              variants,
+                              active_variant_id: activeVarId
+                            });
+                            setIsPlanBuilderOpen(true);
+                          }}
+                          className="p-1.5 text-slate-400 hover:text-blue-600 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                          title={tk('tp_edit_plan') || 'Редактировать'}
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
+
+                        {/* Delete button (trash red icon) */}
+                        <button
+                          type="button"
+                          onClick={() => handleDeletePlanById(plan.id)}
+                          className="p-1.5 text-rose-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/40 transition cursor-pointer"
+                          title={tk('tp_delete_forever') || 'Удалить'}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+
+                        {/* Collapse button */}
+                        <button
+                          type="button"
+                          onClick={() => setExpandedPlanId(null)}
+                          className="p-1.5 text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition cursor-pointer"
+                          title={tk('collapse') || 'Свернуть'}
+                        >
+                          <ChevronUp className="w-4 h-4" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Variant Selector Tabs (32Desk Image 2: Вариант 1  Вариант 2  Вариант 3) */}
+                    {variants.length > 0 && (
+                      <div className="flex items-center gap-4 border-b border-slate-100 dark:border-slate-800 pb-2">
+                        {variants.map((v, vIdx) => {
+                          const isSelected = String(v.id) === String(activeVarId);
+                          const localizedVName = getLocalizedVariantName(v.name, vIdx + 1, language);
+                          return (
+                            <button
+                              key={v.id}
+                              type="button"
+                              onClick={() => setActiveVariantsMap(prev => ({ ...prev, [planIdStr]: v.id }))}
+                              className={`text-xs transition cursor-pointer ${
+                                isSelected
+                                  ? 'font-bold text-slate-900 dark:text-white border-b-2 border-blue-600 pb-1'
+                                  : 'font-normal text-slate-400 hover:text-slate-700 dark:hover:text-slate-200'
+                              }`}
+                            >
+                              {localizedVName}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+
+                    {/* Empty Variant State: "Пока ничего" + "Добавить лечение" (Matching 32Desk Image 3) */}
+                    {!hasProcs ? (
+                      <div className="py-14 text-center space-y-3">
+                        <p className="text-xs text-slate-400 font-medium">
+                          {tk('tp_empty_desc') || 'Пока ничего'}
+                        </p>
+                        <div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setPlanToEdit({
+                                ...plan,
+                                stages: activeStages,
+                                variants,
+                                active_variant_id: activeVarId
+                              });
+                              setIsPlanBuilderOpen(true);
+                            }}
+                            className="px-4 py-2 border border-blue-500 text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-950/40 rounded-xl text-xs font-bold transition cursor-pointer"
+                          >
+                            {tk('tp_add_treatment') || 'Добавить лечение'}
                           </button>
                         </div>
                       </div>
+                    ) : (
+                      <>
+                        {/* ── MODE 1: ПО ЗУБАМ (Matching 32Desk Image 2) ── */}
+                        {currentViewMode === 'teeth' && (
+                          <div className="space-y-4">
+                            {activeStages.map((stage, sIdx) => {
+                              const stageProcs = stage.procedures || [];
+                              if (stageProcs.length === 0) return null;
 
-                      {/* Procedures Table */}
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-left text-xs">
-                          <thead>
-                            <tr className="bg-slate-50/50 dark:bg-slate-800/30 text-slate-500 dark:text-slate-400 border-b border-slate-100 dark:border-slate-800 font-bold">
-                              <th className="py-2.5 px-4 w-10">#</th>
-                              <th className="py-2.5 px-4 w-24">{tr('patientd.k24')}</th>
-                              <th className="py-2.5 px-4">{tr('patientd.k51')}</th>
-                              <th className="py-2.5 px-4 w-20 text-center">{tr('patientd.k52')}</th>
-                              <th className="py-2.5 px-4 w-32 text-right">{tr('patientd.k53')}</th>
-                              <th className="py-2.5 px-4 w-32 text-right">{tr('patientd.k54')}</th>
-                              <th className="py-2.5 px-4 w-40">{tr('patientd.k55')}</th>
-                              <th className="py-2.5 px-4 w-44 text-center">{tr('patientd.k56')}</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                            {(!stage.procedures || stage.procedures.length === 0) ? (
-                              <tr>
-                                <td colSpan={8} className="py-6 text-center text-slate-400 text-xs">
-                                  {tr('patientd.k57')}
-                                </td>
-                              </tr>
-                            ) : (
-                              stage.procedures.map((proc: any, pIdx: number) => {
-                                const pCost = (Number(proc.price) || 0) * (Number(proc.quantity) || 1);
-                                return (
-                                  <tr key={proc.id || pIdx} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/40 transition">
-                                    <td className="py-3 px-4 font-mono text-slate-400">{pIdx + 1}</td>
-                                    <td className="py-3 px-4">
-                                      {proc.teeth ? (
-                                        <span className="px-2 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/80 text-blue-700 dark:text-sky-300 font-black text-[11px] border border-blue-200 dark:border-blue-800">
-                                          #{proc.teeth}
-                                        </span>
-                                      ) : (
-                                        <span className="text-slate-400">—</span>
-                                      )}
-                                    </td>
-                                    <td className="py-3 px-4">
-                                      <span className="font-bold text-slate-800 dark:text-slate-200">{localizeProc(proc)}</span>
-                                    </td>
-                                    <td className="py-3 px-4 text-center font-bold">{proc.quantity || 1}</td>
-                                    <td className="py-3 px-4 text-right font-mono text-slate-600 dark:text-slate-400">
-                                      {(Number(proc.price) || 0).toLocaleString('ru-RU')}
-                                    </td>
-                                    <td className="py-3 px-4 text-right font-mono font-bold text-slate-900 dark:text-white">
-                                      {pCost.toLocaleString('ru-RU')} {tk('currency_som')}
-                                    </td>
-                                    <td className="py-3 px-4 text-slate-600 dark:text-slate-400">{proc.doctor || stage.doctor}</td>
-                                    <td className="py-3 px-4 text-center">
-                                      <div className="flex items-center justify-center gap-1.5">
-                                        {/* Execute to Treatment */}
-                                        <button
-                                          type="button"
-                                          onClick={() => handleExecuteProcedureToTreatment(stage.id, proc)}
-                                          className="px-2.5 py-1 bg-emerald-50 dark:bg-emerald-950/70 hover:bg-emerald-100 text-emerald-700 dark:text-emerald-300 rounded-lg text-[11px] font-bold border border-emerald-200 dark:border-emerald-800 transition flex items-center gap-1"
-                                          title={tr('patientd.k58')}
+                              return (
+                                <div key={stage.id} className="flex items-start gap-4">
+                                  {/* Left vertical stage label (32Desk Image 2: "Этап 1") */}
+                                  <div className="w-16 shrink-0 pt-3 text-right">
+                                    <span className="text-xs font-bold text-slate-400">
+                                      {getLocalizedStageTitle(stage.title, sIdx + 1, language)}
+                                    </span>
+                                  </div>
+
+                                  {/* Right: Stage procedures list */}
+                                  <div className="flex-1 divide-y divide-slate-100 dark:divide-slate-800">
+                                    {stageProcs.map((proc, pIdx) => {
+                                      const isOrdered = Boolean(proc.is_ordered);
+                                      const isChecked = isOrdered || Boolean(selectedProcsForNaryad[String(proc.id)]);
+                                      const currentDoc = proc.doctor || procedureDoctors[String(proc.id)] || '';
+                                      const procTotal = (Number(proc.price) || 0) * (Number(proc.quantity) || 1);
+
+                                      return (
+                                        <div
+                                          key={`${proc.id}-${pIdx}`}
+                                          className={`py-3 flex flex-col md:flex-row md:items-center justify-between gap-3 ${
+                                            isOrdered ? 'bg-slate-50/50 dark:bg-slate-800/20 rounded-xl px-2' : ''
+                                          }`}
                                         >
-                                          <Check className="w-3 h-3" />
-                                          <span>{tr('patientd.k59')}</span>
-                                        </button>
+                                          {/* Service Title */}
+                                          <div className="flex-1 min-w-0 pr-4">
+                                            <p className={`text-xs font-medium ${isOrdered ? 'text-slate-600 dark:text-slate-300' : 'text-slate-900 dark:text-white'}`}>
+                                              {proc.title}
+                                            </p>
+                                            {proc.teeth && (
+                                              <span className="text-[10px] text-blue-600 dark:text-sky-400 font-mono">
+                                                {tk('tooth_word') || 'Зубы'}: {proc.teeth}
+                                              </span>
+                                            )}
+                                          </div>
 
-                                        {/* Delete procedure */}
-                                        <button
-                                          type="button"
-                                          onClick={() => handleRemoveProcedureFromStage(stage.id, proc.id)}
-                                          className="p-1 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 dark:hover:bg-rose-950/50 transition"
-                                          title="Удалить услугу"
+                                          {/* Duration / Min */}
+                                          <div className="w-20 text-xs text-slate-400 shrink-0">
+                                            {proc.duration || '60 мин.'}
+                                          </div>
+
+                                          {/* Price */}
+                                          <div className="w-32 text-right font-mono text-xs text-slate-700 dark:text-slate-300 shrink-0">
+                                            {procTotal.toLocaleString('ru-RU')} {tk('currency_som') || 'Сум'}
+                                          </div>
+
+                                          {/* Doctor selection combobox */}
+                                          <div className="w-44 shrink-0">
+                                            {isOrdered ? (
+                                              <div className="w-full text-xs px-2.5 py-1.5 bg-slate-100 dark:bg-slate-800/70 border border-slate-200 dark:border-slate-800 rounded-lg text-slate-400 dark:text-slate-500 font-medium truncate cursor-not-allowed select-none">
+                                                {proc.doctor || '—'}
+                                              </div>
+                                            ) : (
+                                              <select
+                                                value={currentDoc}
+                                                onChange={(e) => {
+                                                  const docName = e.target.value;
+                                                  const docObj = allEmployees.find(d => d.full_name === docName);
+                                                  handleSelectProcedureDoctor(plan.id, proc.id, docName, docObj?.id);
+                                                }}
+                                                className="w-full text-xs px-2.5 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:ring-1 focus:ring-blue-500 text-slate-800 dark:text-slate-200 cursor-pointer"
+                                              >
+                                                <option value="">—</option>
+                                                {allEmployees
+                                                  .filter(e => e.role === 'doctor' || e.role === 'director' || e.role === 'deputy_director')
+                                                  .map(d => (
+                                                    <option key={d.id} value={d.full_name}>
+                                                      {d.full_name}
+                                                    </option>
+                                                  ))}
+                                              </select>
+                                            )}
+                                          </div>
+
+                                          {/* Checkbox (circle) */}
+                                          <div className="shrink-0 flex items-center justify-center pl-2">
+                                            {isOrdered ? (
+                                              <input
+                                                type="checkbox"
+                                                checked={true}
+                                                onChange={() => handleCancelProcedureNaryad(plan.id, proc)}
+                                                className="w-4 h-4 rounded-full accent-slate-400 opacity-60 cursor-pointer"
+                                                title={tk('tp_cancel_naryad_tooltip') || 'Naryaddan o‘chirish uchun bosing'}
+                                              />
+                                            ) : (
+                                              <input
+                                                type="checkbox"
+                                                checked={isChecked}
+                                                onChange={() => handleToggleProcSelection(proc.id)}
+                                                className="w-4 h-4 rounded-full text-blue-600 accent-blue-600 cursor-pointer"
+                                              />
+                                            )}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              );
+                            })}
+
+                            {/* Card Footer: Всего · X Сум (Matching 32Desk Image 2) */}
+                            <div className="pt-4 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between font-black text-sm">
+                              <span className="text-slate-900 dark:text-white">
+                                {tk('tp_total') || 'Всего'}
+                              </span>
+                              <span className="font-mono text-slate-900 dark:text-white">
+                                {grandTotal.toLocaleString('ru-RU')} {tk('currency_som') || 'Сум'}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+
+                        {/* ── MODE 2: СПИСОК (Matching 32Desk Image 1) ── */}
+                        {currentViewMode === 'list' && (
+                          <div className="space-y-4">
+                            <table className="w-full text-left text-xs">
+                              <thead>
+                                <tr className="border-b border-slate-200 dark:border-slate-800 text-[10px] font-bold text-slate-400 uppercase tracking-wider">
+                                  <th className="py-2.5 px-3 w-16"></th>
+                                  <th className="py-2.5 px-3 w-28">{tk('tp_column_teeth') || 'ЗУБЫ'}</th>
+                                  <th className="py-2.5 px-3">{tk('tp_column_service') || 'УСЛУГА'}</th>
+                                  <th className="py-2.5 px-3 text-center w-28">{tk('tp_column_qty') || 'КОЛИЧЕСТВО'}</th>
+                                  <th className="py-2.5 px-3 text-right w-36">{tk('tp_column_price') || 'СТОИМОСТЬ'}</th>
+                                  <th className="py-2.5 px-3 text-right w-36">{tk('tp_column_total') || 'ВСЕГО'}</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                                {activeStages.map((stage, sIdx) => {
+                                  const stageProcs = stage.procedures || [];
+                                  if (stageProcs.length === 0) return null;
+
+                                  let rows: { teeth: string; title: string; qty: number; price: number; total: number }[] = [];
+
+                                  if (isGrouped) {
+                                    const map: Record<string, { teeth: Set<string>; title: string; qty: number; price: number }> = {};
+                                    stageProcs.forEach(p => {
+                                      const key = `${p.title}_${p.price}`;
+                                      if (!map[key]) {
+                                        map[key] = { teeth: new Set(), title: p.title, qty: 0, price: Number(p.price) || 0 };
+                                      }
+                                      map[key].qty += (Number(p.quantity) || 1);
+                                      if (p.teeth) {
+                                        String(p.teeth).split(',').forEach(t => map[key].teeth.add(t.trim()));
+                                      }
+                                    });
+                                    rows = Object.values(map).map(m => ({
+                                      teeth: Array.from(m.teeth).join(', ') || '—',
+                                      title: m.title,
+                                      qty: m.qty,
+                                      price: m.price,
+                                      total: m.qty * m.price
+                                    }));
+                                  } else {
+                                    rows = stageProcs.map(p => ({
+                                      teeth: p.teeth ? String(p.teeth).trim() : '—',
+                                      title: p.title,
+                                      qty: Number(p.quantity) || 1,
+                                      price: Number(p.price) || 0,
+                                      total: (Number(p.price) || 0) * (Number(p.quantity) || 1)
+                                    }));
+                                  }
+
+                                  return rows.map((row, rIdx) => (
+                                    <tr key={rIdx} className="hover:bg-slate-50/60 dark:hover:bg-slate-800/40">
+                                      {rIdx === 0 ? (
+                                        <td
+                                          rowSpan={rows.length}
+                                          className="py-3 px-2 text-center align-middle font-bold text-slate-400 text-xs border-r border-slate-100 dark:border-slate-800 bg-slate-50/40 dark:bg-slate-900/40"
                                         >
-                                          <Trash2 className="w-3.5 h-3.5" />
-                                        </button>
-                                      </div>
-                                    </td>
-                                  </tr>
-                                );
-                              })
-                            )}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  );
-                })
-              )}
-            </div>
-          </div>
+                                          <span className="[writing-mode:vertical-lr] rotate-180 inline-block tracking-wider">
+                                            {getLocalizedStageTitle(stage.title, sIdx + 1, language)}
+                                          </span>
+                                        </td>
+                                      ) : null}
 
-          {/* MODAL: ADD PROCEDURE TO STAGE */}
-          {addingProcStageId !== null && (
-            <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4">
-              <div className="bg-white dark:bg-slate-900 rounded-3xl max-w-lg w-full shadow-2xl border border-slate-200 dark:border-slate-800 p-6 space-y-4 text-slate-900 dark:text-white">
-                <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-800">
-                  <div className="flex items-center gap-2">
-                    <div className="w-8 h-8 rounded-xl bg-blue-100 dark:bg-blue-950/80 text-blue-600 dark:text-sky-400 flex items-center justify-center">
-                      <Plus className="w-4 h-4" />
-                    </div>
-                    <h3 className="text-sm font-bold">
-                      {tr('patientd.k60')}
-                    </h3>
+                                      <td className="py-3 px-3 font-mono font-medium text-slate-600 dark:text-slate-300">
+                                        {row.teeth}
+                                      </td>
+                                      <td className="py-3 px-3 font-medium text-slate-900 dark:text-white">
+                                        {row.title}
+                                      </td>
+                                      <td className="py-3 px-3 text-center font-bold text-slate-700 dark:text-slate-300">
+                                        {row.qty}
+                                      </td>
+                                      <td className="py-3 px-3 text-right font-mono text-slate-600 dark:text-slate-300">
+                                        {row.price.toLocaleString('ru-RU')} {tk('currency_som') || 'Сум'}
+                                      </td>
+                                      <td className="py-3 px-3 text-right font-mono font-bold text-slate-900 dark:text-white">
+                                        {row.total.toLocaleString('ru-RU')} {tk('currency_som') || 'Сум'}
+                                      </td>
+                                    </tr>
+                                  ));
+                                })}
+                              </tbody>
+                            </table>
+
+                            {/* Card Footer: Всего · X Сум (Matching 32Desk Image 1) */}
+                            <div className="pt-4 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between font-black text-sm">
+                              <span className="text-slate-900 dark:text-white">
+                                {tk('tp_total') || 'Всего'}
+                              </span>
+                              <span className="font-mono text-slate-900 dark:text-white">
+                                {grandTotal.toLocaleString('ru-RU')} {tk('currency_som') || 'Сум'}
+                              </span>
+                            </div>
+                          </div>
+                        )}
+                      </>
+                    )}
                   </div>
-                  <button
-                    onClick={() => setAddingProcStageId(null)}
-                    className="p-1.5 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                </div>
-
-                <div className="space-y-3.5 text-xs">
-                  {/* Tooth number */}
-                  <div>
-                    <label className="block font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                      {tr('patientd.k27')}
-                    </label>
-                    <input
-                      type="text"
-                      value={procTeeth}
-                      onChange={(e) => setProcTeeth(e.target.value)}
-                      placeholder="Masalan: 16, 21, 26..."
-                      className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:border-blue-500 font-bold"
-                    />
-                    <div className="flex flex-wrap gap-1 mt-1.5">
-                      {['16', '15', '14', '11', '21', '24', '25', '26', '36', '46'].map((t) => (
-                        <button
-                          key={t}
-                          type="button"
-                          onClick={() => setProcTeeth(t)}
-                          className="px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 hover:bg-blue-50 text-[10px] font-bold text-slate-700 dark:text-slate-300"
-                        >
-                          #{t}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Procedure Title */}
-                  <div>
-                    <label className="block font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                      {tr('patientd.k61')}
-                    </label>
-                    <input
-                      type="text"
-                      value={procCustomTitle}
-                      onChange={(e) => setProcCustomTitle(e.target.value)}
-                      placeholder="Xizmat nomini kiriting..."
-                      className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:border-blue-500 font-semibold"
-                    />
-                    {/* Quick Presets */}
-                    <div className="flex flex-wrap gap-1.5 mt-2">
-                      {[
-                        { title: 'Кариес дентина (световая пломба Estelite)', price: 450000 },
-                        { title: 'Лечение пульпита и пломбирование каналов', price: 750000 },
-                        { title: 'Комплексная гигиена полости рта (Air-Flow)', price: 600000 },
-                        { title: 'Анатомическая циркониевая коронка Prettau', price: 1800000 },
-                        { title: 'Удаление зуба сложное (ретинированный)', price: 650000 },
-                        { title: 'Установка имплантата Dentium SuperLine', price: 4200000 }
-                      ].map((preset, idx) => (
-                        <button
-                          key={idx}
-                          type="button"
-                          onClick={() => {
-                            setProcCustomTitle(preset.title);
-                            setProcPrice(preset.price);
-                          }}
-                          className="px-2 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-blue-950/60 text-slate-700 dark:text-slate-200 hover:text-blue-600 dark:hover:text-sky-400 rounded-lg text-[11px] font-medium transition"
-                        >
-                          {preset.title}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Quantity & Price */}
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                        {tr('patientd.k62')}
-                      </label>
-                      <input
-                        type="number"
-                        min="1"
-                        value={procQty}
-                        onChange={(e) => setProcQty(Math.max(1, Number(e.target.value) || 1))}
-                        className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:border-blue-500 font-bold"
-                      />
-                    </div>
-                    <div>
-                      <label className="block font-semibold text-slate-600 dark:text-slate-300 mb-1">
-                        {tr('patientd.k29')}
-                      </label>
-                      <input
-                        type="number"
-                        step="10000"
-                        value={procPrice}
-                        onChange={(e) => setProcPrice(Math.max(0, Number(e.target.value) || 0))}
-                        className="w-full p-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:border-blue-500 font-bold"
-                      />
-                    </div>
-                  </div>
-
-                  <div className="p-3 bg-slate-50 dark:bg-slate-800/70 rounded-xl border border-slate-100 dark:border-slate-700 flex justify-between items-center text-xs">
-                    <span className="text-slate-500">{tr('patientd.k63')}</span>
-                    <span className="font-black text-sm text-slate-900 dark:text-white font-mono">
-                      {((procPrice || 0) * (procQty || 1)).toLocaleString('ru-RU')} {tk('currency_som')}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100 dark:border-slate-800">
-                  <button
-                    type="button"
-                    onClick={() => setAddingProcStageId(null)}
-                    className="px-4 py-2 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-xs font-semibold transition"
-                  >
-                    {tr('patientd.k11')}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleSaveProcedureToStage}
-                    className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-xs transition flex items-center gap-1.5"
-                  >
-                    <CheckCircle2 className="w-4 h-4" />
-                    <span>{tr('patientd.k64')}</span>
-                  </button>
-                </div>
-              </div>
+                );
+              })}
             </div>
           )}
 
-          {/* ══ KATTA MODAL: Yangi bosqich (Этап) tuzish — 32desk uslubi ══ */}
-          {showStageModal && (
-            <div className="fixed inset-0 z-[60] bg-slate-900/50 backdrop-blur-sm flex items-stretch sm:items-center justify-center sm:p-6 overflow-y-auto" onClick={() => setShowStageModal(false)}>
-              <div
-                onClick={(e) => e.stopPropagation()}
-                className="bg-white dark:bg-slate-900 w-full sm:rounded-3xl sm:max-w-5xl sm:min-h-0 min-h-screen shadow-2xl border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white flex flex-col sm:max-h-[92vh]"
-              >
-                {/* Header */}
-                <div className="flex items-center justify-between px-6 py-4 border-b border-slate-100 dark:border-slate-800 shrink-0">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-2xl bg-blue-600 text-white flex items-center justify-center shadow-sm">
-                      <Layers className="w-5 h-5" />
-                    </div>
-                    <div>
-                      <h3 className="text-base font-black">{tr('patientd.k65')}</h3>
-                      <p className="text-xs text-slate-400">{patient?.full_name}</p>
-                    </div>
-                  </div>
-                  <button onClick={() => setShowStageModal(false)} className="p-2 text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition">
-                    <X className="w-5 h-5" />
-                  </button>
-                </div>
+          {/* Builder Modal */}
+          {isPlanBuilderOpen && (
+            <TreatmentPlanBuilderModal
+              isOpen={isPlanBuilderOpen}
+              onClose={() => setIsPlanBuilderOpen(false)}
+              patientId={patientId}
+              patientName={patient?.full_name || ''}
+              planToEdit={planToEdit}
+              onSave={handleSaveTreatmentPlan}
+            />
+          )}
 
-                {/* Body */}
-                <div className="flex-1 overflow-y-auto p-6 space-y-5">
-                  {/* Bosqich sarlavhasi + izoh */}
-                  <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                    <div className="lg:col-span-2 space-y-3">
-                      <div>
-                        <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 mb-1.5 uppercase tracking-wide">{tr('patientd.k66')}</label>
-                        <input
-                          type="text"
-                          value={stageTitle}
-                          onChange={(e) => setStageTitle(e.target.value)}
-                          placeholder={tr('patientd.k67')}
-                          className="w-full p-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:border-blue-500 font-bold"
-                        />
-                      </div>
-                      <div>
-                        <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 mb-1.5 uppercase tracking-wide">{tr('patientd.k68')}</label>
-                        <textarea
-                          value={stageDesc}
-                          onChange={(e) => setStageDesc(e.target.value)}
-                          rows={2}
-                          placeholder={tr('patientd.k69')}
-                          className="w-full p-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:border-blue-500 text-sm resize-none"
-                        />
-                      </div>
-                    </div>
-                    <div className="space-y-3">
-                      <div>
-                        <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 mb-1.5 uppercase tracking-wide">{tr('patientd.k55')}</label>
-                        <select
-                          value={stageDoctor}
-                          onChange={(e) => setStageDoctor(e.target.value)}
-                          className="w-full p-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:border-blue-500 font-semibold text-sm"
-                        >
-                          {allEmployees.filter((e) => e.role === 'doctor').map((doc) => (
-                            <option key={doc.id} value={doc.full_name}>{doc.full_name}</option>
-                          ))}
-                          {allEmployees.filter((e) => e.role === 'doctor').length === 0 && (
-                            <option value="">—</option>
-                          )}
-                        </select>
-                      </div>
-                      <div>
-                        <label className="block text-xs font-bold text-slate-500 dark:text-slate-400 mb-1.5 uppercase tracking-wide">{tr('patientd.k70')}</label>
-                        <select
-                          value={stageStatus}
-                          onChange={(e) => setStageStatus(e.target.value as TreatmentPlanStage['status'])}
-                          className="w-full p-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none focus:border-blue-500 font-semibold text-sm"
-                        >
-                          <option value="Запланировано">{tr('patientd.k46')}</option>
-                          <option value="В процессе">{tr('patientd.k32')}</option>
-                          <option value="Выполнено">{tr('patientd.k47')}</option>
-                          <option value="Отменено">{tr('patientd.k48')}</option>
-                        </select>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Muolajalar (xizmatlar) qo'shish */}
-                  <div className="border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden">
-                    <div className="px-4 py-3 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800 flex items-center gap-2">
-                      <ClipboardList className="w-4 h-4 text-blue-600 dark:text-sky-400" />
-                      <h4 className="text-sm font-bold">{tr('patientd.k71')}</h4>
-                      <span className="ml-auto text-xs font-mono font-bold text-slate-500">{stageProcs.length}</span>
-                    </div>
-
-                    {/* Qo'shish formasi (bir qator) */}
-                    <div className="p-4 grid grid-cols-1 md:grid-cols-12 gap-2 items-end bg-white dark:bg-slate-900">
-                      <div className="md:col-span-2">
-                        <label className="block text-[11px] font-semibold text-slate-500 mb-1">{tr('patientd.k24')}</label>
-                        <input type="text" value={spTeeth} onChange={(e) => setSpTeeth(e.target.value)} placeholder="16, 21" className="w-full p-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500 text-sm font-bold" />
-                      </div>
-                      <div className="md:col-span-5">
-                        <label className="block text-[11px] font-semibold text-slate-500 mb-1">{tr('patientd.k72')}</label>
-                        <input type="text" value={spTitle} onChange={(e) => setSpTitle(e.target.value)} placeholder={tr('patientd.k73')} className="w-full p-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500 text-sm" />
-                      </div>
-                      <div className="md:col-span-1">
-                        <label className="block text-[11px] font-semibold text-slate-500 mb-1">{tr('patientd.k74')}</label>
-                        <input type="number" min="1" value={spQty} onChange={(e) => setSpQty(Math.max(1, Number(e.target.value) || 1))} className="w-full p-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500 text-sm font-bold" />
-                      </div>
-                      <div className="md:col-span-2">
-                        <label className="block text-[11px] font-semibold text-slate-500 mb-1">{tr('patientd.k53')}</label>
-                        <input type="number" step="10000" value={spPrice} onChange={(e) => setSpPrice(Math.max(0, Number(e.target.value) || 0))} className="w-full p-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none focus:border-blue-500 text-sm font-bold" />
-                      </div>
-                      <div className="md:col-span-2">
-                        <button type="button" onClick={handleAddProcToStageDraft} className="w-full py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold flex items-center justify-center gap-1 transition">
-                          <Plus className="w-3.5 h-3.5" />
-                          <span>{tr('patientd.k75')}</span>
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Tez shablonlar */}
-                    <div className="px-4 pb-3 flex flex-wrap gap-1.5 bg-white dark:bg-slate-900">
-                      {[
-                        { title: 'Кариес дентина (световая пломба Estelite)', price: 450000 },
-                        { title: 'Лечение пульпита и пломбирование каналов', price: 750000 },
-                        { title: 'Комплексная гигиена (Air-Flow + УЗ)', price: 600000 },
-                        { title: 'Циркониевая коронка Prettau', price: 1800000 },
-                        { title: 'Удаление зуба (сложное)', price: 650000 },
-                        { title: 'Имплантат Dentium SuperLine', price: 4200000 }
-                      ].map((preset, idx) => (
-                        <button key={idx} type="button" onClick={() => { setSpTitle(preset.title); setSpPrice(preset.price); }} className="px-2.5 py-1 bg-slate-100 dark:bg-slate-800 hover:bg-blue-50 dark:hover:bg-blue-950/60 text-slate-700 dark:text-slate-200 hover:text-blue-600 dark:hover:text-sky-400 rounded-lg text-[11px] font-medium transition">
-                          {preset.title}
-                        </button>
-                      ))}
-                    </div>
-
-                    {/* Qo'shilgan muolajalar ro'yxati */}
-                    <div className="border-t border-slate-100 dark:border-slate-800">
-                      {stageProcs.length === 0 ? (
-                        <div className="py-8 text-center text-slate-400 text-xs">{tr('patientd.k76')}</div>
-                      ) : (
-                        <table className="w-full text-left text-xs">
-                          <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                            {stageProcs.map((p, i) => (
-                              <tr key={p.id}>
-                                <td className="py-2.5 px-4 font-mono text-slate-400 w-8">{i + 1}</td>
-                                <td className="py-2.5 px-2 w-16">{p.teeth ? <span className="px-2 py-0.5 rounded-md bg-blue-50 dark:bg-blue-950/80 text-blue-700 dark:text-sky-300 font-black text-[11px] border border-blue-200 dark:border-blue-800">#{p.teeth}</span> : <span className="text-slate-400">—</span>}</td>
-                                <td className="py-2.5 px-2 font-bold text-slate-800 dark:text-slate-200">{p.title}</td>
-                                <td className="py-2.5 px-2 text-center font-bold w-12">×{p.quantity}</td>
-                                <td className="py-2.5 px-2 text-right font-mono text-slate-600 dark:text-slate-400 w-28">{((Number(p.price) || 0) * (Number(p.quantity) || 1)).toLocaleString('ru-RU')} {tk('currency_som')}</td>
-                                <td className="py-2.5 px-3 text-right w-10">
-                                  <button type="button" onClick={() => setStageProcs((prev) => prev.filter((x) => x.id !== p.id))} className="p-1 text-slate-400 hover:text-rose-500 rounded transition">
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      )}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Footer */}
-                <div className="flex items-center justify-between gap-3 px-6 py-4 border-t border-slate-100 dark:border-slate-800 shrink-0">
-                  <div className="text-sm">
-                    <span className="text-slate-500">{tr('patientd.k77')} </span>
-                    <span className="font-black text-base text-slate-900 dark:text-white font-mono">
-                      {stageProcs.reduce((s, p) => s + (Number(p.price) || 0) * (Number(p.quantity) || 1), 0).toLocaleString('ru-RU')} {tk('currency_som')}
-                    </span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button type="button" onClick={() => setShowStageModal(false)} className="px-4 py-2.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-xl text-sm font-semibold transition">
-                      {tr('patientd.k11')}
-                    </button>
-                    <button type="button" onClick={handleSaveStageModal} className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-sm font-bold shadow-sm transition flex items-center gap-1.5">
-                      <CheckCircle2 className="w-4 h-4" />
-                      <span>{tr('patientd.k78')}</span>
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
+          {/* Print Modal */}
+          {isPlanPrintOpen && patient && (
+            <TreatmentPlanPrintModal
+              isOpen={isPlanPrintOpen}
+              onClose={() => setIsPlanPrintOpen(false)}
+              plan={planForPrint || currentPlanObject}
+              patient={patient}
+              branch={branches.find(b => b.id === currentBranchId) || currentBranch}
+              clinicLogo="/logo.png"
+              clinicName={user?.clinicName || 'Dentos Clinic'}
+              customPrintNote={typeof window !== 'undefined' ? (localStorage.getItem('32desk_treatment_plan_print_note') || undefined) : undefined}
+            />
           )}
         </div>
       )}
+
 
       {/* TAB 5: ЗАМЕТКИ (Eslatmalar) */}
       {activeTab === 'Заметки' && (
@@ -7487,13 +7840,19 @@ export default function PatientDetailPage() {
       {/* NARYAD / CART MODAL - full 32desk-style panel */}
       <NaryadModal
         isOpen={showNaryadModal}
-        onClose={() => setShowNaryadModal(false)}
+        onClose={() => {
+          setShowNaryadModal(false);
+          setNaryadInitialCartItems([]);
+          setSelectedNaryadDoctorId(undefined);
+          setSelectedNaryadDoctorName(undefined);
+        }}
         patientName={patient.full_name}
         patientPhone={patient.phone}
         patientBalance={patient.balance}
-        doctorId={participants[0]?.id}
-        doctorName={participants[0]?.full_name || newNaryadDoctor}
+        doctorId={selectedNaryadDoctorId || participants[0]?.id}
+        doctorName={selectedNaryadDoctorName || participants[0]?.full_name || newNaryadDoctor}
         doctorPercent={participants[0]?.commission_rate}
+        initialItems={naryadInitialCartItems}
         onSave={handleNaryadSave}
       />
 

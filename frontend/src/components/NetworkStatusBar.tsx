@@ -392,7 +392,7 @@ export default function NetworkStatusBar() {
   return (
     <>
       <div
-        className="fixed top-0 left-0 right-0 z-[99999] flex items-center justify-between gap-2 px-3 text-white select-none"
+        className="fixed top-0 left-0 right-0 z-40 flex items-center justify-between gap-2 px-3 text-white select-none"
         style={{ height: 'var(--netbar-h)', background: 'rgba(9,14,28,0.94)', backdropFilter: 'blur(8px)',
                  borderTop: `3px solid ${color}`, boxShadow: '0 1px 4px rgba(0,0,0,.25)' }}
         role="status" aria-live="polite"
@@ -427,7 +427,7 @@ export default function NetworkStatusBar() {
       </div>
 
       {st.stuck && (
-        <div className="fixed left-1/2 -translate-x-1/2 z-[99998] pointer-events-none" style={{ top: 'var(--netbar-h)' }}>
+        <div className="fixed left-1/2 -translate-x-1/2 z-39 pointer-events-none" style={{ top: 'var(--netbar-h)' }}>
           <button
             onClick={handleRetry}
             className="pointer-events-auto mt-1.5 flex items-center gap-2 px-4 py-1.5 rounded-full text-[12px] font-bold

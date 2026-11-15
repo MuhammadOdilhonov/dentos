@@ -131,8 +131,11 @@ export default function CalendarGrid({
   };
 
   // Filter doctors and sort by branch so colleagues of same filial are clustered together.
-  // Agar foydalanuvchi ustunlarni qo'lda surgan bo'lsa — o'sha saqlangan tartib ustun.
-  const allDoctors = employees.filter((e) => e.role === 'doctor');
+  // Shifokorlar va qabul olib boruvchi direktor o'rinbosarlari (kreslo yoki faol grafigi bor) kalendarda chiqadi.
+  const isClinicalStaff = (e: Employee) =>
+    e.role === 'doctor' ||
+    (e.role === 'deputy_director' && (Boolean(e.chair && e.chair.trim()) || (Array.isArray(e.schedule_details) && e.schedule_details.some((s) => (s.enabled ?? s.is_workday) && s.intervals && s.intervals.length > 0))));
+  const allDoctors = employees.filter(isClinicalStaff);
   // KUN ko'rinishida tanlangan sanada ishlamaydigan shifokor ustuni chiqarilmaydi.
   // Lekin o'sha kuni qabuli bor bo'lsa (ma'lumot nomuvofiqligi) — baribir ko'rsatamiz.
   const rawDoctors = viewMode === 'day'

@@ -24,6 +24,7 @@ import {
   MessageSquareText,
   Plus,
   Edit2,
+  FileText,
   Sparkles,
   ShieldAlert,
   Wrench,
@@ -58,13 +59,13 @@ const WP_COLORS = [
 ];
 
 export default function SettingsPage() {
-  const { language, tr } = useI18n();
+  const { language, tr, tk } = useI18n();
   const { user, updateCurrentUser } = useAuth();
   const router = useRouter();
 
-  // Faqat direktor uchun
+  // Faqat direktor va direktor o'rinbosari uchun
   useEffect(() => {
-    if (user && user.role !== 'director') router.replace('/');
+    if (user && user.role !== 'director' && user.role !== 'deputy_director') router.replace('/');
   }, [user, router]);
 
 
@@ -451,7 +452,8 @@ export default function SettingsPage() {
     setEditingWp(null);
     setWpName('');
     setWpColor('#3B82F6');
-    setWpBranchId(branches.length > 0 ? branches[0].id : '');
+    const defaultBranch = user?.branchId ? Number(user.branchId) : (branches.length > 0 ? branches[0].id : '');
+    setWpBranchId(defaultBranch);
     setIsWpModalOpen(true);
   };
 
@@ -673,6 +675,30 @@ export default function SettingsPage() {
     const next = templates.filter((t) => t.id !== id);
     setTemplates(next);
     clinicApi.saveMessageTemplates(next);
+  };
+
+  // Davolash rejasi chop etish izohi (Примечание к плану лечения / Согласие пациента)
+  const [planPrintNote, setPlanPrintNote] = useState<string>(() => {
+    try {
+      return (
+        localStorage.getItem('32desk_treatment_plan_print_note') ||
+        'С планом лечения ознакомлен и согласен. Мне понятен план, объем лечения, возможные осложнения на всех этапах лечения, возможность возникновения дополнительного обследования, изменение сроков лечения, дополнительной оплаты. Я получил ответы на все вопросы относительно предстоящего лечения и доверяю квалификации врачей. Цены действительны в течение 180 дней с момента проведенной консультации.'
+      );
+    } catch {
+      return '';
+    }
+  });
+  const [planNoteSaving, setPlanNoteSaving] = useState(false);
+  const [planNoteFeedback, setPlanNoteFeedback] = useState<string | null>(null);
+
+  const handleSavePlanPrintNote = () => {
+    setPlanNoteSaving(true);
+    try {
+      localStorage.setItem('32desk_treatment_plan_print_note', planPrintNote.trim());
+      setPlanNoteFeedback('Davolash rejasi chop etish izohi muvaffaqiyatli saqlandi!');
+      setTimeout(() => setPlanNoteFeedback(null), 3500);
+    } catch {}
+    setPlanNoteSaving(false);
   };
 
   const PLACEHOLDERS: { token: string; uz: string; ru: string; en: string }[] = [
@@ -1481,6 +1507,44 @@ export default function SettingsPage() {
                 ))}
               </div>
             )}
+
+            {/* ── DAVOLASH REJASI CHOP ETISH IZOHI (PRIMECHANIE) ── */}
+            <div className="mt-8 pt-6 border-t border-slate-200 dark:border-slate-800 space-y-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <h3 className="text-sm font-black text-slate-900 dark:text-white flex items-center gap-2">
+                    <FileText className="w-4 h-4 text-blue-600 dark:text-sky-400" />
+                    <span>{tk('tp_settings_note') || 'Davolash rejasi chop etish izohi (Примечание)'}</span>
+                  </h3>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                    {tk('tp_settings_note_desc') || 'Reja chop etilganda sahifa pastida chiqadigan kafolat va shartlar matni'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleSavePlanPrintNote}
+                  disabled={planNoteSaving}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition shadow-xs flex items-center gap-1.5 disabled:opacity-50"
+                >
+                  <Check className="w-4 h-4" />
+                  <span>{planNoteSaving ? 'Saqlanmoqda...' : 'Saqlash'}</span>
+                </button>
+              </div>
+
+              {planNoteFeedback && (
+                <div className="p-3 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 rounded-xl text-xs font-semibold border border-emerald-200 dark:border-emerald-800">
+                  {planNoteFeedback}
+                </div>
+              )}
+
+              <textarea
+                rows={3}
+                value={planPrintNote}
+                onChange={(e) => setPlanPrintNote(e.target.value)}
+                placeholder="С планом лечения ознакомлен и согласен. Мне понятен план, объем лечения, возможные осложнения на всех этапах лечения..."
+                className="w-full p-3.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-medium text-slate-900 dark:text-white outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
           </div>
           )}
 

@@ -278,6 +278,12 @@ export interface TreatmentProcedureItem {
   quantity: number;
   price: number;
   doctor?: string;
+  doctor_id?: number | string;
+  category?: string;
+  date?: string;
+  duration?: string;
+  is_ordered?: boolean;
+  naryad_id?: number | string;
 }
 
 export interface TreatmentPlanStage {
@@ -288,6 +294,28 @@ export interface TreatmentPlanStage {
   status: 'Выполнено' | 'В процессе' | 'Запланировано' | 'Отменено';
   doctor: string;
   procedures: TreatmentProcedureItem[];
+}
+
+export interface TreatmentPlanVariant {
+  id: string | number;
+  name: string;
+  stages: TreatmentPlanStage[];
+}
+
+export interface TreatmentPlan {
+  id: string | number;
+  patient?: number | string;
+  patient_id?: number | string;
+  title: string;
+  freeze_prices?: boolean;
+  status?: 'Согласован' | 'Согласован с пациентом' | 'На согласовании' | 'В процессе' | 'Завершен' | 'Запланировано';
+  stages: TreatmentPlanStage[];
+  variants?: TreatmentPlanVariant[];
+  active_variant_id?: string | number;
+  curator?: string;
+  doctor_name?: string;
+  created_at?: string;
+  notes?: string;
 }
 
 

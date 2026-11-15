@@ -84,14 +84,32 @@ export default function NaryadsPage() {
     [catalog, categories]
   );
 
+  const branchCategories = useMemo(() => {
+    if (currentBranchId == null) return categories;
+    return categories.filter((c) => c.branch == null || Number(c.branch) === Number(currentBranchId));
+  }, [categories, currentBranchId]);
+
   const visibleCategories = useMemo(() => {
     const q = catSearch.toLowerCase().trim();
-    return q ? categories.filter((c) => c.name.toLowerCase().includes(q)) : categories;
-  }, [categories, catSearch]);
+    return q ? branchCategories.filter((c) => c.name.toLowerCase().includes(q)) : branchCategories;
+  }, [branchCategories, catSearch]);
 
   const filteredCatalog = useMemo(() => {
     const q = searchQuery.toLowerCase().trim();
     return catalog.filter((item) => {
+      // Filial tekshiruvi: Agar ma'lum filial tanlangan bo'lsa, boshqa filial naryadlari CHIQMAYDI
+      if (currentBranchId != null) {
+        if (item.branch != null && Number(item.branch) !== Number(currentBranchId)) {
+          return false;
+        }
+        if (item.category_ref) {
+          const cat = categories.find((c) => String(c.id) === String(item.category_ref));
+          if (cat && cat.branch != null && Number(cat.branch) !== Number(currentBranchId)) {
+            return false;
+          }
+        }
+      }
+
       const matchSearch =
         !q ||
         item.name.toLowerCase().includes(q) ||
@@ -107,7 +125,7 @@ export default function NaryadsPage() {
       }
       return matchSearch && matchCat;
     });
-  }, [catalog, categories, searchQuery, categoryFilter]);
+  }, [catalog, categories, searchQuery, categoryFilter, currentBranchId]);
 
   // ---- Category handlers ----
   const openNewCat = () => { setEditingCat(null); setCatModalOpen(true); };

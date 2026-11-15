@@ -48,6 +48,7 @@ interface NaryadModalProps {
   doctorId?: number;
   doctorName?: string;
   doctorPercent?: number | null; // shifokor (xodim) foizi (%) — bo'lsa xizmat standarti o'rniga ishlatiladi
+  initialItems?: NaryadCartItem[];
   onSave: (
     items: NaryadCartItem[],
     total: number,
@@ -81,6 +82,8 @@ export default function NaryadModal({
   patientBalance,
   doctorId,
   doctorName,
+  doctorPercent,
+  initialItems,
   onSave
 }: NaryadModalProps) {
   const { language, tk, tr } = useI18n();
@@ -136,11 +139,24 @@ export default function NaryadModal({
     setSelectedTeeth([]);
     setActiveCategory('Barchasi');
     setSearchQuery('');
-    setCart([]);
+    if (initialItems && initialItems.length > 0) {
+      setCart(initialItems.map((it) => {
+        const docPct = doctorRate(currentDoctor?.commission_rate) ?? 0;
+        return {
+          ...it,
+          price: Math.max(0, Number(it.price) || 0),
+          quantity: Math.max(1, Math.round(Number(it.quantity) || 1)),
+          percent: doctorRate(it.percent) ?? docPct,
+          percentSource: it.percentSource || 'doctor'
+        };
+      }));
+    } else {
+      setCart([]);
+    }
     setNote('');
     setTechNote('');
     return () => { cancelled = true; };
-  }, [isOpen, doctorId, doctorName, currentBranchId]);
+  }, [isOpen, doctorId, doctorName, currentBranchId, initialItems]);
 
   const upperRow = isChildChart ? UPPER_TEETH_CHILD : UPPER_TEETH;
   const lowerRow = isChildChart ? LOWER_TEETH_CHILD : LOWER_TEETH;
@@ -274,13 +290,21 @@ export default function NaryadModal({
   const total = cart.reduce((acc, item) => acc + item.price * item.quantity, 0);
 
   const handleFinish = () => {
-    if (loading || loadError || cart.length === 0 || !currentDoctor || doctorRate(currentDoctor.commission_rate) == null) return;
+    if (loading || loadError || cart.length === 0 || !currentDoctor) return;
+    const docPct = doctorRate(currentDoctor.commission_rate) ?? 0;
+    const sanitizedCart = cart.map((it) => ({
+      ...it,
+      price: Math.max(0, Number(it.price) || 0),
+      quantity: Math.max(1, Math.round(Number(it.quantity) || 1)),
+      percent: doctorRate(it.percent) ?? docPct,
+      percentSource: it.percentSource || 'doctor'
+    }));
     const finalNote = [
       note.trim(),
       techNote.trim() ? `Texnikka (${selectedTechnician}): ${techNote.trim()}` : ''
     ].filter(Boolean).join(' | ');
 
-    onSave(cart, total, false, finalNote, selectedDoctorId, currentDoctor?.full_name || doctorName);
+    onSave(sanitizedCart, total, false, finalNote, selectedDoctorId, currentDoctor?.full_name || doctorName);
     onClose();
   };
 
@@ -763,7 +787,21 @@ export default function NaryadModal({
 
                 {loading && <p role="status">{language === 'uz' ? 'Yuklanmoqda…' : language === 'en' ? 'Loading…' : 'Загрузка…'}</p>}
                 {loadError && <p role="alert" className="text-sm text-red-600">{loadError}</p>}
-                {cart.length > 0 && <p className="text-xs text-slate-500">{language === 'uz' ? 'Shifokor ulushi' : language === 'en' ? 'Doctor share' : 'Доля врача'}: {cart.reduce((sum, item) => sum + naryadSplit(item.price, item.quantity, item.percent!).doctorShare, 0).toLocaleString()} {som}</p>}
+                {cart.length > 0 && (
+                  <p className="text-xs text-slate-500">
+                    {language === 'uz' ? 'Shifokor ulushi' : language === 'en' ? 'Doctor share' : 'Доля врача'}:{' '}
+                    {cart.reduce((sum, item) => {
+                      const docPct = doctorRate(item.percent) ?? doctorRate(currentDoctor?.commission_rate) ?? 0;
+                      try {
+                        const qty = Math.max(1, Math.round(Number(item.quantity) || 1));
+                        const prc = Math.max(0, Number(item.price) || 0);
+                        return sum + naryadSplit(prc, qty, docPct).doctorShare;
+                      } catch {
+                        return sum;
+                      }
+                    }, 0).toLocaleString()} {som}
+                  </p>
+                )}
                 <div className="flex items-center gap-2">
                   <button
                     type="button"
@@ -775,7 +813,7 @@ export default function NaryadModal({
                   <button
                     type="button"
                     onClick={handleFinish}
-                    disabled={loading || !!loadError || cart.length === 0 || !currentDoctor || doctorRate(currentDoctor.commission_rate) == null}
+                    disabled={loading || !!loadError || cart.length === 0 || !currentDoctor}
                     className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 text-white rounded-xl text-xs font-bold shadow-md shadow-blue-500/20 transition flex items-center justify-center gap-1.5 active:scale-95"
                   >
                     <Check className="w-4 h-4" />

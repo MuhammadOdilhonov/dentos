@@ -234,12 +234,22 @@ class TenantViewSet(viewsets.ModelViewSet):
         user_branch_id = getattr(user, 'branch_id', None)
         user_role = getattr(user, 'role', None)
         if user_branch_id and user_role in ('deputy_director', 'admin', 'doctor', 'kassa'):
-            if any(f.name == 'branch' for f in qs.model._meta.fields):
+            if qs.model is ServiceCatalogItem:
                 from django.db.models import Q
-                # O'z filiali + umumiy (branch=null) yozuvlar. Umumiylarni ham yashirsak,
-                # direktor/umumiy xodimlar, umumiy naryadlar va eski (filialsiz) yozuvlar
-                # butunlay ko'rinmay qoladi — bu ma'lumot "yo'qolgan"dek tuyuladi.
+                qs = qs.exclude(
+                    ~Q(branch_id=user_branch_id) & Q(branch_id__isnull=False)
+                ).exclude(
+                    ~Q(category_ref__branch_id=user_branch_id) & Q(category_ref__branch_id__isnull=False)
+                ).filter(
+                    Q(branch_id=user_branch_id) |
+                    Q(category_ref__branch_id=user_branch_id) |
+                    (Q(branch__isnull=True) & (Q(category_ref__isnull=True) | Q(category_ref__branch__isnull=True)))
+                )
+            elif qs.model is ServiceCategory:
+                from django.db.models import Q
                 qs = qs.filter(Q(branch_id=user_branch_id) | Q(branch__isnull=True))
+            elif any(f.name == 'branch' for f in qs.model._meta.fields):
+                qs = qs.filter(branch_id=user_branch_id)
 
         return qs
 
@@ -437,7 +447,17 @@ class ServiceCategoryViewSet(TenantViewSet):
         branch = self.request.query_params.get('branch')
         if branch and branch != 'all':
             from django.db.models import Q
-            qs = qs.filter(Q(branch_id=branch) | Q(branch__isnull=True))
+            # Boshqa filialga biriktirilgan naryadlar yoki boshqa filial kategoriyasiga tegishli naryadlar chiqarilmaydi
+            qs = qs.exclude(
+                ~Q(branch_id=branch) & Q(branch_id__isnull=False)
+            ).exclude(
+                ~Q(category_ref__branch_id=branch) & Q(category_ref__branch_id__isnull=False)
+            )
+            qs = qs.filter(
+                Q(branch_id=branch) |
+                Q(category_ref__branch_id=branch) |
+                (Q(branch__isnull=True) & (Q(category_ref__isnull=True) | Q(category_ref__branch__isnull=True)))
+            )
         return qs
 
     def perform_create(self, serializer):
@@ -482,7 +502,17 @@ class ServiceCatalogItemViewSet(TenantViewSet):
         branch = self.request.query_params.get('branch')
         if branch and branch != 'all':
             from django.db.models import Q
-            qs = qs.filter(Q(branch_id=branch) | Q(branch__isnull=True))
+            # Boshqa filialga biriktirilgan naryadlar yoki boshqa filial kategoriyasiga tegishli naryadlar chiqarilmaydi
+            qs = qs.exclude(
+                ~Q(branch_id=branch) & Q(branch_id__isnull=False)
+            ).exclude(
+                ~Q(category_ref__branch_id=branch) & Q(category_ref__branch_id__isnull=False)
+            )
+            qs = qs.filter(
+                Q(branch_id=branch) |
+                Q(category_ref__branch_id=branch) |
+                (Q(branch__isnull=True) & (Q(category_ref__isnull=True) | Q(category_ref__branch__isnull=True)))
+            )
         return qs
 
     def perform_create(self, serializer):

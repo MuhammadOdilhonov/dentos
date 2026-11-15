@@ -78,10 +78,15 @@ export default function EmployeeFullModal({
   // Tab state & Role (Role is defined in Step 1)
   const [activeTab, setActiveTab] = useState<'main' | 'schedule' | 'access'>('main');
   const [role, setRole] = useState<Employee['role']>('doctor');
+  const [deputyHasSchedule, setDeputyHasSchedule] = useState<boolean>(false);
+  const [mainChair, setMainChair] = useState<string>('');
 
-  // If role is changed away from doctor, automatically skip schedule tab
+  // Shifokor har doim grafikli; Direktor o'rinbosarida esa kerak/kerak emas tanlovi bo'yicha
+  const canHaveSchedule = role === 'doctor' || (role === 'deputy_director' && deputyHasSchedule);
+
+  // If role is changed away from clinical/deputy roles, automatically skip schedule tab
   useEffect(() => {
-    if (role !== 'doctor' && activeTab === 'schedule') {
+    if (role !== 'doctor' && role !== 'deputy_director' && activeTab === 'schedule') {
       setActiveTab('access');
     }
   }, [role, activeTab]);
@@ -210,7 +215,20 @@ export default function EmployeeFullModal({
       // faqat "Parolni o'zgartirish" bosilib yangi parol kiritilsa yuboriladi)
       setCanLogin(employeeToEdit.can_login ?? true);
       setUsername(employeeToEdit.username || '');
-      setRole(employeeToEdit.role || 'doctor');
+      const empRole = employeeToEdit.role || 'doctor';
+      setRole(empRole);
+
+      // Shifokor yoki grafik/kreslosi bor direktor o'rinbosari
+      const isDep = empRole === 'deputy_director';
+      const hasClinicalSetup = Boolean(
+        (employeeToEdit.chair && employeeToEdit.chair.trim() && employeeToEdit.chair !== 'Кресло 1') ||
+        (Array.isArray(employeeToEdit.schedule_details) && employeeToEdit.schedule_details.length > 0 && employeeToEdit.schedule_details.some((s: any) => (s.enabled ?? s.is_workday) && s.intervals && s.intervals.length > 0)) ||
+        (Array.isArray(employeeToEdit.assigned_chairs) && employeeToEdit.assigned_chairs.length > 0)
+      );
+      setDeputyHasSchedule(isDep ? hasClinicalSetup : false);
+      const initChair = employeeToEdit.chair || (employeeToEdit.assigned_chairs && employeeToEdit.assigned_chairs[0]) || workplaces[0]?.name || 'Кресло 1';
+      setMainChair(initChair);
+
       setPassword('');
       setPasswordConfirm('');
       setShowPasswordChange(false);
@@ -231,6 +249,8 @@ export default function EmployeeFullModal({
       setGender('male');
       setAvatar('');
       setRole('doctor');
+      setDeputyHasSchedule(false);
+      setMainChair(workplaces[0]?.name || 'Кресло 1');
 
       setScheduleList(
         DEFAULT_DAYS.map((d, i) => ({
@@ -286,6 +306,18 @@ export default function EmployeeFullModal({
   };
 
   // Schedule interval helpers (Pure immutable updates)
+  const handleMainChairChange = (newChair: string, applyToAllDays: boolean = false) => {
+    setMainChair(newChair);
+    if (applyToAllDays) {
+      setScheduleList((prev) =>
+        prev.map((day) => ({
+          ...day,
+          intervals: (day.intervals || []).map((inv) => ({ ...inv, chair: newChair }))
+        }))
+      );
+    }
+  };
+
   const handleAddInterval = (dayIndex: number) => {
     setScheduleList((prev) =>
       prev.map((day, dIdx) => {
@@ -304,7 +336,7 @@ export default function EmployeeFullModal({
           start_min: '00',
           end_hour: endH,
           end_min: '00',
-          chair: lastInv?.chair || workplaces[0]?.name || 'Кресло 1'
+          chair: lastInv?.chair || mainChair || workplaces[0]?.name || 'Кресло 1'
         };
         return {
           ...day,
@@ -374,7 +406,7 @@ export default function EmployeeFullModal({
               start_min: '00',
               end_hour: '18',
               end_min: '00',
-              chair: workplaces[0]?.name || 'Кресло 1'
+              chair: mainChair || workplaces[0]?.name || 'Кресло 1'
             }
           ];
         }
@@ -413,8 +445,8 @@ export default function EmployeeFullModal({
         alert(tr('employee.pleaseEnterFirstName'));
         return;
       }
-      setActiveTab(role === 'doctor' ? 'schedule' : 'access');
-    } else if (activeTab === 'schedule' && role === 'doctor') {
+      setActiveTab(canHaveSchedule ? 'schedule' : 'access');
+    } else if (activeTab === 'schedule' && canHaveSchedule) {
       setActiveTab('access');
     }
     // 'access' (oxirgi bosqich) — hech narsa qilinmaydi: saqlash FAQAT "Saqlash" tugmasi orqali
@@ -455,27 +487,31 @@ export default function EmployeeFullModal({
 
       // Extract all unique chairs from all active intervals
       const assignedChairsSet = new Set<string>();
-      let primaryChair = workplaces[0]?.name || 'Кресло 1';
+      let primaryChair = mainChair || workplaces[0]?.name || 'Кресло 1';
       for (const d of cleanScheduleDetails) {
         if (d.enabled && d.intervals && d.intervals.length > 0) {
           d.intervals.forEach((inv) => {
             if (inv.chair && inv.chair.trim()) assignedChairsSet.add(inv.chair.trim());
           });
-          if (d.intervals[0].chair && primaryChair === (workplaces[0]?.name || 'Кресло 1')) {
+          if (d.intervals[0].chair && (!primaryChair || primaryChair === (workplaces[0]?.name || 'Кресло 1'))) {
             primaryChair = d.intervals[0].chair.trim();
           }
         }
       }
-      // Chairs and schedule details are strictly for doctor role
-      const assignedChairsList = role === 'doctor'
-        ? (assignedChairsSet.size > 0 ? Array.from(assignedChairsSet) : [primaryChair])
+      if (mainChair && mainChair.trim()) {
+        primaryChair = mainChair.trim();
+        assignedChairsSet.add(primaryChair);
+      }
+      // Chairs and schedule details are for doctor and clinical deputy director
+      const assignedChairsList = canHaveSchedule
+        ? (assignedChairsSet.size > 0 ? Array.from(assignedChairsSet) : (primaryChair ? [primaryChair] : []))
         : [];
-      const primaryChairFinal = role === 'doctor' ? primaryChair : '';
-      const scheduleDetailsFinal = role === 'doctor' ? cleanScheduleDetails : [];
+      const primaryChairFinal = canHaveSchedule ? primaryChair : '';
+      const scheduleDetailsFinal = canHaveSchedule ? cleanScheduleDetails : [];
 
       // Readable schedule string summary
       const activeDays = cleanScheduleDetails.filter((s) => s.enabled);
-      const scheduleSummary = role === 'doctor'
+      const scheduleSummary = canHaveSchedule
         ? (activeDays.length > 0
             ? `${activeDays[0]?.labelRu?.slice(0, 2)}-${activeDays[activeDays.length - 1]?.labelRu?.slice(0, 2)} ${
                 activeDays[0]?.intervals[0]
@@ -494,8 +530,8 @@ export default function EmployeeFullModal({
           : `${firstName.toLowerCase().replace(/[^a-z0-9]/g, '') || 'staff'}`
       );
 
-      // Istisno sanalar — faqat shifokorga tegishli, sana bo'yicha tartiblangan
-      const cleanExceptions = role === 'doctor'
+      // Istisno sanalar — faqat shifokor va o'rinbosarga tegishli, sana bo'yicha tartiblangan
+      const cleanExceptions = canHaveSchedule
         ? [...scheduleExceptions].sort((a, b) => (a.date < b.date ? -1 : 1))
         : [];
 
@@ -510,13 +546,13 @@ export default function EmployeeFullModal({
         phone_extra: cleanExtra,
         email: email.trim(),
         birth_date: birthDate || undefined,
-        specialty: role === 'doctor' ? specialty : (
-          role === 'admin' ? 'Администратор' :
-          role === 'kassa' ? 'Кассир' :
-          role === 'nurse' ? 'Медсестра' :
-          role === 'director' ? 'Директор' :
-          role === 'deputy_director' ? 'Зам. директора' :
-          role === 'technician' ? 'Зубной техник' : role
+        specialty: canHaveSchedule ? specialty : (
+          (role as string) === 'deputy_director' ? 'Директор ўринбосари' :
+          (role as string) === 'admin' ? 'Администратор' :
+          (role as string) === 'kassa' ? 'Кассир' :
+          (role as string) === 'nurse' ? 'Медсестра' :
+          (role as string) === 'director' ? 'Директор' :
+          (role as string) === 'technician' ? 'Зубной техник' : (role as string)
         ),
         color,
         gender,
@@ -529,7 +565,7 @@ export default function EmployeeFullModal({
         can_login: canLogin,
         username: finalUsername,
         role,
-        naryad_type: role === 'doctor' ? (isPersonalNaryad ? 'personal' : 'clinic') : 'clinic',
+        naryad_type: canHaveSchedule ? (isPersonalNaryad ? 'personal' : 'clinic') : 'clinic',
         commission_rate: commissionRate || 0,
         salary_rate: salaryRate || 0,
         is_active: employeeToEdit?.is_active ?? true
@@ -617,7 +653,7 @@ export default function EmployeeFullModal({
                 )}
               </button>
 
-              {role === 'doctor' && (
+              {(role === 'doctor' || role === 'deputy_director') && (
                 <button
                   type="button"
                   onClick={() => {
@@ -633,7 +669,18 @@ export default function EmployeeFullModal({
                       : 'text-slate-500 hover:text-slate-800 dark:text-slate-400 dark:hover:text-white'
                   }`}
                 >
-                  {tr('employee.n2Schedule')}
+                  <span className="inline-flex items-center gap-1.5">
+                    <span>{tr('employee.n2Schedule')}</span>
+                    {role === 'deputy_director' && (
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-bold ${
+                        deputyHasSchedule
+                          ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-950/60 dark:text-emerald-300'
+                          : 'bg-slate-200 text-slate-600 dark:bg-slate-800 dark:text-slate-400'
+                      }`}>
+                        {deputyHasSchedule ? 'kerak' : 'o‘chirilgan'}
+                      </span>
+                    )}
+                  </span>
                   {activeTab === 'schedule' && (
                     <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-600 dark:bg-sky-400 rounded-full" />
                   )}
@@ -699,11 +746,11 @@ export default function EmployeeFullModal({
                       <span>{tk('role_lbl')}*</span>
                     </label>
                     <span className={`text-[11px] font-bold px-2.5 py-0.5 rounded-full border ${
-                      role === 'doctor'
+                      canHaveSchedule
                         ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
                         : 'bg-slate-200 dark:bg-slate-800 text-slate-700 dark:text-slate-300 border-slate-300 dark:border-slate-700'
                     }`}>
-                      {role === 'doctor'
+                      {canHaveSchedule
                         ? (tr('employee.doctor3StepsGeneralScheduleAccess'))
                         : (tr('employee.staff2StepsGeneralAccess'))}
                     </span>
@@ -726,10 +773,53 @@ export default function EmployeeFullModal({
                   </select>
 
                   <p className="text-[11px] text-slate-500 dark:text-slate-400">
-                    {role === 'doctor'
+                    {canHaveSchedule
                       ? (tr('employee.forDoctorsChairAssignmentAndWorkin'))
                       : (tr('employee.forThisRoleDoctorChairsAnd'))}
                   </p>
+
+                  {role === 'deputy_director' && (
+                    <div className="mt-3 pt-3 border-t border-blue-200/60 dark:border-blue-900/40 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                      <div className="flex items-center space-x-2.5">
+                        <Armchair className="w-4 h-4 text-blue-600 dark:text-sky-400 shrink-0" />
+                        <div>
+                          <div className="text-xs font-black text-slate-900 dark:text-white">
+                            {language === 'uz' ? 'Qabul jadvali va kreslo (shifokor sifatida)' : 'График приема и кресло (как врач)'}
+                          </div>
+                          <div className="text-[11px] text-slate-500 dark:text-slate-400">
+                            {deputyHasSchedule
+                              ? (language === 'uz' ? 'Yoqilgan: shifokor sifatida bemor qabul qiladi, kalendarga chiqadi' : 'Включено: ведет прием пациентов, отображается в календаре')
+                              : (language === 'uz' ? 'O‘chirilgan: faqat ma’muriy boshqaruvchi (bemor qabul qilmaydi)' : 'Выключено: только административное руководство')}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center rounded-xl bg-white dark:bg-slate-900 p-1 border border-slate-200 dark:border-slate-700 font-bold text-xs shrink-0 shadow-xs">
+                        <button
+                          type="button"
+                          onClick={() => setDeputyHasSchedule(false)}
+                          className={`px-3 py-1.5 rounded-lg transition ${
+                            !deputyHasSchedule
+                              ? 'bg-rose-500 text-white shadow-xs font-black'
+                              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+                          }`}
+                        >
+                          {language === 'uz' ? 'Kerak emas' : 'Не нужно'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setDeputyHasSchedule(true)}
+                          className={`px-3 py-1.5 rounded-lg transition ${
+                            deputyHasSchedule
+                              ? 'bg-emerald-600 text-white shadow-xs font-black'
+                              : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+                          }`}
+                        >
+                          {language === 'uz' ? 'Kerak' : 'Нужно'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Row 1: Имя & Фамилия */}
@@ -821,9 +911,9 @@ export default function EmployeeFullModal({
                   </div>
                 </div>
 
-                {/* Row 4: Специальность (Faqat shifokor uchun) & Цвет */}
+                {/* Row 4: Специальность (Shifokor va O'rinbosar uchun) & Цвет */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-                  {role === 'doctor' ? (
+                  {canHaveSchedule ? (
                     <div>
                       <label className="block text-xs font-bold text-slate-700 dark:text-slate-300 mb-1.5 flex items-center gap-1.5">
                         <Sparkles className="w-3.5 h-3.5 text-blue-600" />
@@ -850,8 +940,7 @@ export default function EmployeeFullModal({
                       </label>
                       <div className="w-full px-4 py-2.5 bg-slate-100 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-bold text-slate-700 dark:text-slate-200">
                         {role === 'director' ? (tr('employee.director')) :
-                         role === 'deputy_director' ? (tr('employee.deputyDirector')) :
-                         role === 'admin' ? (tr('employee.administrator')) :
+                         (role as string) === 'admin' ? (tr('employee.administrator')) :
                          (tr('employee.cashier'))}
                       </div>
                     </div>
@@ -1030,22 +1119,141 @@ export default function EmployeeFullModal({
               </div>
             )}
 
-            {/* ══════════════ TAB 2: ГРАФИК (FAQAT SHIFOKOR UCHUN) ══════════════ */}
-            {activeTab === 'schedule' && role === 'doctor' && (
+            {/* ══════════════ TAB 2: ГРАФИК (SHIFOKOR VA O'RINBOSAR UCHUN) ══════════════ */}
+            {activeTab === 'schedule' && (role === 'doctor' || role === 'deputy_director') && (
               <div className="space-y-4 animate-in fade-in duration-150">
-                <div className="flex items-center justify-between bg-blue-50 dark:bg-blue-950/40 p-4 rounded-2xl border border-blue-200 dark:border-blue-900/50">
-                  <div className="flex items-center space-x-3">
-                    <Armchair className="w-5 h-5 text-blue-600 dark:text-sky-400" />
-                    <div>
-                      <h4 className="text-xs sm:text-sm font-black text-blue-900 dark:text-blue-100">
-                        {tr('employee.workScheduleChairRoomAssignment')}
-                      </h4>
-                      <p className="text-[11px] text-blue-700 dark:text-blue-300">
-                        {tr('employee.assignWorkHoursAndDesignatedDental')}
-                      </p>
+                {/* Agar direktor o'rinbosari bo'lsa: grafik & kreslo kerak yoki kerak emasligi bo'yicha boshqaruv */}
+                {role === 'deputy_director' && (
+                  <div className="p-4 rounded-2xl bg-gradient-to-r from-blue-50/90 via-indigo-50/60 to-slate-50 dark:from-blue-950/40 dark:via-indigo-950/20 dark:to-slate-900/60 border border-blue-200/80 dark:border-blue-800/60 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div className="flex items-center space-x-3">
+                      <div className="w-10 h-10 rounded-xl bg-white dark:bg-slate-800 text-blue-600 dark:text-sky-400 flex items-center justify-center shadow-xs shrink-0">
+                        <Armchair className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs sm:text-sm font-black text-blue-900 dark:text-blue-100">
+                          {language === 'uz' ? 'Direktor o‘rinbosari uchun grafik va kreslo' : 'График и кресло для зам. директора'}
+                        </h4>
+                        <p className="text-[11px] text-blue-700 dark:text-blue-300">
+                          {language === 'uz' ? 'Shifokor sifatida bemor qabul qilishi kerakmi?' : 'Должен ли вести прием пациентов как врач?'}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center rounded-xl bg-white dark:bg-slate-900 p-1 border border-slate-200 dark:border-slate-700 font-bold text-xs shrink-0 shadow-xs">
+                      <button
+                        type="button"
+                        onClick={() => setDeputyHasSchedule(false)}
+                        className={`px-3.5 py-1.5 rounded-lg transition ${
+                          !deputyHasSchedule
+                            ? 'bg-rose-500 text-white shadow-xs font-black'
+                            : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+                        }`}
+                      >
+                        {language === 'uz' ? 'Kerak emas (O‘chirish)' : 'Не нужно (Отключить)'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDeputyHasSchedule(true)}
+                        className={`px-3.5 py-1.5 rounded-lg transition ${
+                          deputyHasSchedule
+                            ? 'bg-emerald-600 text-white shadow-xs font-black'
+                            : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
+                        }`}
+                      >
+                        {language === 'uz' ? 'Kerak (Yoqish)' : 'Нужно (Включить)'}
+                      </button>
                     </div>
                   </div>
-                </div>
+                )}
+
+                {/* Agar direktor o'rinbosari uchun grafik o'chirilgan bo'lsa */}
+                {role === 'deputy_director' && !deputyHasSchedule ? (
+                  <div className="p-8 sm:p-10 text-center bg-white dark:bg-slate-900/40 rounded-3xl border-2 border-dashed border-slate-200 dark:border-slate-800 space-y-4">
+                    <div className="w-14 h-14 mx-auto rounded-2xl bg-slate-100 dark:bg-slate-800 text-slate-400 flex items-center justify-center">
+                      <Armchair className="w-7 h-7" />
+                    </div>
+                    <div className="max-w-md mx-auto space-y-1">
+                      <h4 className="text-sm sm:text-base font-black text-slate-900 dark:text-white">
+                        {language === 'uz' ? 'Direktor o‘rinbosari uchun grafik va kreslo o‘chirilgan' : 'График и кресло выключены'}
+                      </h4>
+                      <p className="text-xs text-slate-500 dark:text-slate-400">
+                        {language === 'uz'
+                          ? 'Ushbu xodim faqat ma’muriy boshqaruvchi sifatida ishlaydi (bemor qabul qilmaydi, kalendarda ustun ochilmaydi). Shifokor sifatida qabul qilishi kerak bo‘lsa, «Kerak» tugmasini bosing.'
+                          : 'Сотрудник работает только как администратор. Если он ведет прием, включите эту опцию.'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setDeputyHasSchedule(true)}
+                      className="inline-flex items-center gap-2 px-5 py-2.5 rounded-xl bg-blue-600 text-white text-xs font-black hover:bg-blue-700 transition shadow-md shadow-blue-500/20"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>{language === 'uz' ? 'Grafik va kreslo yoqish (Kerak)' : 'Включить график и кресло'}</span>
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between bg-blue-50 dark:bg-blue-950/40 p-4 rounded-2xl border border-blue-200 dark:border-blue-900/50">
+                      <div className="flex items-center space-x-3">
+                        <Armchair className="w-5 h-5 text-blue-600 dark:text-sky-400" />
+                        <div>
+                          <h4 className="text-xs sm:text-sm font-black text-blue-900 dark:text-blue-100">
+                            {tr('employee.workScheduleChairRoomAssignment')}
+                          </h4>
+                          <p className="text-[11px] text-blue-700 dark:text-blue-300">
+                            {tr('employee.assignWorkHoursAndDesignatedDental')}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* ASOSIY KRESLO (ISH O'RNI) TANLASH */}
+                    <div className="p-4 rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="flex items-center space-x-3">
+                        <div className="w-10 h-10 rounded-xl bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-sky-400 flex items-center justify-center shrink-0">
+                          <Armchair className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <label className="text-xs font-black uppercase tracking-wider text-slate-900 dark:text-white block">
+                            {language === 'uz' ? 'Asosiy kreslo (ish o‘rni)' : language === 'ru' ? 'Основное кресло (рабочее место)' : 'Primary Chair'}
+                          </label>
+                          <span className="text-[11px] text-slate-500 dark:text-slate-400">
+                            {language === 'uz' ? 'Xodim qabul o‘tkazadigan asosiy stomatologik kreslo' : 'Основное стоматологическое кресло для приема'}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2">
+                        <select
+                          disabled={isRestricted}
+                          value={mainChair}
+                          onChange={(e) => handleMainChairChange(e.target.value, true)}
+                          className="px-3.5 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-xl text-xs font-black text-slate-900 dark:text-white outline-none cursor-pointer focus:ring-2 focus:ring-blue-500"
+                        >
+                          {workplaces.length === 0 ? (
+                            <option value="">{language === 'uz' ? 'Kreslo mavjud emas' : 'Нет кресел'}</option>
+                          ) : (
+                            (workplaces.filter((w) => !branchId || Number(w.branch) === Number(branchId) || !w.branch).length > 0
+                              ? workplaces.filter((w) => !branchId || Number(w.branch) === Number(branchId) || !w.branch)
+                              : workplaces
+                            ).map((w) => (
+                              <option key={w.id} value={w.name}>
+                                💺 {w.name} {w.branch_name ? `(${w.branch_name})` : ''}
+                              </option>
+                            ))
+                          )}
+                        </select>
+                        <button
+                          type="button"
+                          disabled={isRestricted || !mainChair}
+                          onClick={() => handleMainChairChange(mainChair, true)}
+                          className="px-3 py-2 rounded-xl bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-sky-400 hover:bg-blue-100 dark:hover:bg-blue-900/40 text-xs font-bold transition whitespace-nowrap disabled:opacity-50"
+                          title="Barcha kunlardagi intervallarga shu kresloni qo'llash"
+                        >
+                          {language === 'uz' ? 'Barcha kunlarga qo‘llash' : 'Ко всем дням'}
+                        </button>
+                      </div>
+                    </div>
 
                 <div className="space-y-3">
                   {scheduleList.map((dayItem, dIdx) => (
@@ -1300,6 +1508,8 @@ export default function EmployeeFullModal({
                     </div>
                   )}
                 </div>
+                </>
+              )}
               </div>
             )}
 
@@ -1350,8 +1560,7 @@ export default function EmployeeFullModal({
                     <div className="w-full px-4 py-2.5 bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-sm font-black text-slate-800 dark:text-slate-200 flex items-center justify-between">
                       <span>
                         {role === 'director' ? (tr('employee.director')) :
-                         role === 'deputy_director' ? (tr('employee.deputyDirector')) :
-                         role === 'admin' ? (tr('employee.administrator')) :
+                         (role as string) === 'admin' ? (tr('employee.administrator')) :
                          (tr('employee.cashier'))}
                       </span>
                       <span className="text-[10px] text-slate-400 font-semibold">
@@ -1522,7 +1731,7 @@ export default function EmployeeFullModal({
                   type="button"
                   onClick={() => {
                     if (activeTab === 'access') {
-                      setActiveTab(role === 'doctor' ? 'schedule' : 'main');
+                      setActiveTab(canHaveSchedule ? 'schedule' : 'main');
                     } else if (activeTab === 'schedule') {
                       setActiveTab('main');
                     }
@@ -1545,7 +1754,7 @@ export default function EmployeeFullModal({
                       alert(tr('employee.pleaseEnterFirstName'));
                       return;
                     }
-                    if (role === 'doctor') {
+                    if (canHaveSchedule) {
                       setActiveTab('schedule');
                     } else {
                       setActiveTab('access');
@@ -1556,7 +1765,7 @@ export default function EmployeeFullModal({
                   <span>{tr('employee.next')}</span>
                   <ArrowRight className="w-4 h-4" />
                 </button>
-              ) : activeTab === 'schedule' && role === 'doctor' ? (
+              ) : activeTab === 'schedule' ? (
                 <button
                   type="button"
                   onClick={() => setActiveTab('access')}
