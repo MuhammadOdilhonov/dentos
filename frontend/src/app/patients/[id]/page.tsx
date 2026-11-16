@@ -7812,27 +7812,25 @@ export default function PatientDetailPage() {
         isOpen={isEditing}
         onClose={() => setIsEditing(false)}
         patient={patient}
-        onSave={(updated) => {
+        onSave={async (updated) => {
           setPatient(updated);
           setEditName(updated.full_name);
           setEditPhone(updated.phone);
-          // Persist the edited patient (incl. avatar colour) to localStorage.
-          if (typeof window !== 'undefined') {
-            try {
-              const stored = localStorage.getItem('32desk_custom_patients');
-              const list: Patient[] = stored ? JSON.parse(stored) : [];
-              const idx = list.findIndex((p) => p.id === updated.id);
-              if (idx !== -1) list[idx] = updated;
-              else list.push(updated);
-              localStorage.setItem('32desk_custom_patients', JSON.stringify(list));
-            } catch (e) {
-              console.error(e);
-            }
+          try {
+            await clinicApi.updatePatient(updated.id, updated);
+          } catch (e) {
+            console.error('Failed to update patient:', e);
           }
         }}
-        onDelete={() => {
-          alert(tk('patient_deleted'));
-          window.location.href = '/patients';
+        onDelete={async () => {
+          try {
+            await clinicApi.deletePatient(patient.id);
+            alert(tk('patient_deleted'));
+            window.location.href = '/patients';
+          } catch (e) {
+            console.error('Failed to delete patient:', e);
+            alert('Bemor o‘chirilmadi.');
+          }
         }}
       />
 
@@ -8388,6 +8386,7 @@ export default function PatientDetailPage() {
         patientId={patient?.id}
         patientName={patient?.full_name}
         initialFileName={patient3DScan.fileName}
+        hasScan={patient3DScan.hasScan}
         onSaveScan={(data) => {
           if (data.hasScan) {
             const updated = {

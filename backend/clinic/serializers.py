@@ -217,9 +217,9 @@ class PatientSerializer(TenantModelSerializer):
         fields = '__all__'
 
 class AppointmentSerializer(TenantModelSerializer):
-    patient_name = serializers.CharField(source='patient.full_name', read_only=True)
-    patient_phone = serializers.CharField(source='patient.phone', read_only=True)
-    patient_service_lang = serializers.CharField(source='patient.service_lang', read_only=True)
+    patient_name = serializers.CharField(source='patient.full_name', read_only=True, default='')
+    patient_phone = serializers.CharField(source='patient.phone', read_only=True, default='')
+    patient_service_lang = serializers.CharField(source='patient.service_lang', read_only=True, default='uz')
     doctor_name = serializers.CharField(source='doctor.full_name', read_only=True)
     doctor_color = serializers.CharField(source='doctor.color', read_only=True)
     branch_name = serializers.CharField(source='branch.name', read_only=True)

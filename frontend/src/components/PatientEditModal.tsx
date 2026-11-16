@@ -43,7 +43,7 @@ export default function PatientEditModal({
   const [phone, setPhone] = useState(patient?.phone || '');
   const [extraPhone, setExtraPhone] = useState('');
   const [email, setEmail] = useState('');
-  const [address, setAddress] = useState('Ташкент анкета есть');
+  const [address, setAddress] = useState(patient?.notes || '');
   const [serviceLang, setServiceLang] = useState<'English' | 'Русский' | 'Узбекский'>(
     patient?.service_lang === 'uz' ? 'Узбекский' : patient?.service_lang === 'en' ? 'English' : 'Русский'
   );
@@ -60,6 +60,9 @@ export default function PatientEditModal({
     setServiceLang(
       patient.service_lang === 'uz' ? 'Узбекский' : patient.service_lang === 'en' ? 'English' : 'Русский'
     );
+    setDiscount(patient.default_percent ? `${patient.default_percent}%` : '');
+    setTags(patient.category_status === 'VIP' ? ['VIP'] : []);
+    setAddress(patient.notes || '');
   }, [isOpen, patient]);
 
   const [notifySms, setNotifySms] = useState(false);
@@ -82,8 +85,8 @@ export default function PatientEditModal({
   ];
 
   // TAB 2: Дополнительно
-  const [discount, setDiscount] = useState('5%');
-  const [tags, setTags] = useState<string[]>(['VIP']);
+  const [discount, setDiscount] = useState<string>(patient?.default_percent ? `${patient.default_percent}%` : '');
+  const [tags, setTags] = useState<string[]>(patient?.category_status === 'VIP' ? ['VIP'] : []);
   const [passportNumber, setPassportNumber] = useState('');
   const [passportIssued, setPassportIssued] = useState('');
   const [referredBy, setReferredBy] = useState('');
@@ -144,21 +147,27 @@ export default function PatientEditModal({
 
   if (!isOpen) return null;
 
-  const handleSave = () => {
+  const handleSave = async () => {
     const fullName = `${lastName} ${firstName}`.trim();
     const svcLang: 'uz' | 'ru' | 'en' = serviceLang === 'Узбекский' ? 'uz' : serviceLang === 'English' ? 'en' : 'ru';
-    onSave({
+    const parsedPercent = discount ? (parseInt(discount.replace(/[^0-9]/g, '')) || null) : null;
+    const updatedData: Patient = {
       ...patient,
       full_name: fullName || patient.full_name,
       phone: phone || patient.phone,
       gender: gender,
       birth_date: birthDate,
-      notes: address,
+      notes: address || patient.notes || '',
       avatar_color: selectedColor,
-      service_lang: svcLang
-    });
-    // Backend'ga ham yozamiz (avto-eslatma bemor tilini bilishi uchun)
-    clinicApi.updatePatientLang(patient.id, svcLang);
+      service_lang: svcLang,
+      default_percent: parsedPercent
+    };
+    try {
+      await clinicApi.updatePatient(patient.id, updatedData);
+    } catch (e) {
+      console.warn('Backend updatePatient failed:', e);
+    }
+    onSave(updatedData);
     onClose();
   };
 
@@ -975,13 +984,18 @@ export default function PatientEditModal({
           {/* Delete Icon on Bottom-Left */}
           <button
             type="button"
-            onClick={() => {
+            onClick={async () => {
               if (confirm('Вы действительно хотите удалить данного пациента?')) {
+                try {
+                  await clinicApi.deletePatient(patient.id);
+                } catch (e) {
+                  console.warn('Backend deletePatient failed:', e);
+                }
                 if (onDelete) onDelete();
                 onClose();
               }
             }}
-            className="p-2.5 bg-rose-500 hover:bg-rose-600 text-white rounded-xl shadow-xs transition"
+            className="p-2.5 bg-rose-500 hover:bg-rose-600 text-white rounded-xl shadow-xs transition cursor-pointer"
             title="Удалить пациента"
           >
             <Trash2 className="w-4 h-4" />

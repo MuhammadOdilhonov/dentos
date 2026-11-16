@@ -1183,6 +1183,7 @@ export default function KeynoteDentalPhotoProtocol({
   const [isScanUploadModalOpen, setIsScanUploadModalOpen] = useState<boolean>(false);
   const [activeStoredRentgen, setActiveStoredRentgen] = useState<StoredMediaItem | null>(null);
   const [activeStoredScan, setActiveStoredScan] = useState<StoredMediaItem | null>(null);
+  const [isScanStoreLoading, setIsScanStoreLoading] = useState<boolean>(true);
 
   // Load patient's x-rays (combining clinicApi and dentalMediaStore)
   useEffect(() => {
@@ -1262,13 +1263,26 @@ export default function KeynoteDentalPhotoProtocol({
 
   // Sync Patient's 3D Scan item from dentalMediaStore
   useEffect(() => {
-    if (!currentPatient) return;
+    if (!currentPatient) {
+      setIsScanStoreLoading(false);
+      return;
+    }
+    setIsScanStoreLoading(true);
+    let cancelled = false;
     dentalMediaStore.getScan(currentPatient.id).then((scanItem) => {
+      if (cancelled) return;
       setActiveStoredScan(scanItem || null);
       if (scanItem?.fileName) {
         setScanActiveFileName(scanItem.fileName);
       }
-    }).catch(() => {});
+    }).catch(() => {
+      if (!cancelled) setActiveStoredScan(null);
+    }).finally(() => {
+      if (!cancelled) setIsScanStoreLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [currentPatient?.id]);
 
   const handleDownloadRentgen = () => {
@@ -2575,8 +2589,29 @@ export default function KeynoteDentalPhotoProtocol({
             </div>
           </div>
 
-          {/* 3D SKAN FILE CARD: ONLY SHOWN IF REAL FILE EXISTS, OTHERWISE CLEAN UPLOAD HERO */}
-          {Boolean(activeStoredScan?.file || (scanMeshes.length > 0 && scanActiveFileName && activeStoredScan)) ? (
+          {/* 3D SKAN FILE CARD: LOADING / SAVED / EMPTY */}
+          {isScanStoreLoading ? (
+            <div className="bg-gradient-to-r from-indigo-950/40 via-purple-950/30 to-slate-900/60 p-5 rounded-2xl border border-indigo-500/30 shadow-lg flex items-center justify-between gap-4 animate-pulse">
+              <div className="flex items-center space-x-3.5">
+                <div className="w-12 h-12 rounded-2xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shrink-0">
+                  <div className="w-6 h-6 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+                </div>
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <h4 className="font-black text-sm text-white">
+                      {language === 'ru' ? 'Загрузка данных 3D скана…' : '3D skan ma’lumotlari yuklanmoqda…'}
+                    </h4>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
+                      {language === 'ru' ? 'Проверка…' : 'Tekshirilmoqda…'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-400 mt-1">
+                    {language === 'ru' ? 'Пожалуйста, подождите, идет получение файлов 3D сканирования…' : 'Iltimos kuting, bemorning 3D skan fayllari tekshirilmoqda…'}
+                  </p>
+                </div>
+              </div>
+            </div>
+          ) : Boolean(activeStoredScan?.file || (scanMeshes.length > 0 && scanActiveFileName && activeStoredScan)) ? (
             <div className="bg-gradient-to-r from-indigo-950/40 via-purple-950/30 to-slate-900/60 p-5 rounded-2xl border border-indigo-500/30 shadow-lg flex flex-wrap items-center justify-between gap-4">
               <div className="flex items-center space-x-3.5">
                 <div className="w-12 h-12 rounded-2xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-indigo-400 shrink-0">
@@ -2723,6 +2758,16 @@ export default function KeynoteDentalPhotoProtocol({
                   ref={scanMountRef}
                   className="w-full h-full min-h-[480px] flex items-center justify-center cursor-grab active:cursor-grabbing"
                 />
+
+                {/* Loading overlay while checking store or loading/rendering 3D meshes */}
+                {(isScanStoreLoading || scanLoading) && (
+                  <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-slate-950/85 backdrop-blur-xs gap-3">
+                    <div className="w-10 h-10 border-4 border-indigo-500/30 border-t-indigo-500 rounded-full animate-spin" />
+                    <p className="text-xs font-mono font-bold text-indigo-300 animate-pulse">
+                      {scanStatusProgress || (language === 'ru' ? 'Загрузка 3D модели…' : '3D model yuklanmoqda…')}
+                    </p>
+                  </div>
+                )}
 
                 {/* Subtle Interactive 3D Controls Overlay Footer */}
                 <div className="absolute bottom-3 left-3 right-3 flex items-center justify-between text-[11px] text-slate-300 bg-slate-900/85 backdrop-blur-md px-3.5 py-1.5 rounded-xl border border-slate-700/60 pointer-events-none">

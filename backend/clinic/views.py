@@ -433,7 +433,7 @@ class SpecialtyViewSet(TenantViewSet):
         instance.delete()
 
 class ServiceCategoryViewSet(TenantViewSet):
-    """Klinika xizmat guruhlari (32desk «Услуга») — chap panel CRUD, klinika scoping."""
+    """Klinika xizmat guruhlari (32desk «Услуga») — chap panel CRUD, klinika scoping."""
     queryset = ServiceCategory.objects.all()
     serializer_class = ServiceCategorySerializer
 
@@ -447,17 +447,8 @@ class ServiceCategoryViewSet(TenantViewSet):
         branch = self.request.query_params.get('branch')
         if branch and branch != 'all':
             from django.db.models import Q
-            # Boshqa filialga biriktirilgan naryadlar yoki boshqa filial kategoriyasiga tegishli naryadlar chiqarilmaydi
-            qs = qs.exclude(
-                ~Q(branch_id=branch) & Q(branch_id__isnull=False)
-            ).exclude(
-                ~Q(category_ref__branch_id=branch) & Q(category_ref__branch_id__isnull=False)
-            )
-            qs = qs.filter(
-                Q(branch_id=branch) |
-                Q(category_ref__branch_id=branch) |
-                (Q(branch__isnull=True) & (Q(category_ref__isnull=True) | Q(category_ref__branch__isnull=True)))
-            )
+            # Filialga tegishli yoki umumiy (branch=null) kategoriyalar
+            qs = qs.filter(Q(branch_id=branch) | Q(branch__isnull=True))
         return qs
 
     def perform_create(self, serializer):
@@ -507,8 +498,7 @@ class ServiceCatalogItemViewSet(TenantViewSet):
                 ~Q(branch_id=branch) & Q(branch_id__isnull=False)
             ).exclude(
                 ~Q(category_ref__branch_id=branch) & Q(category_ref__branch_id__isnull=False)
-            )
-            qs = qs.filter(
+            ).filter(
                 Q(branch_id=branch) |
                 Q(category_ref__branch_id=branch) |
                 (Q(branch__isnull=True) & (Q(category_ref__isnull=True) | Q(category_ref__branch__isnull=True)))
@@ -667,15 +657,18 @@ class AppointmentViewSet(TenantViewSet):
 
         patient = None
         patient_id = data.get('patient')
-        if patient_id:
-            patient = Patient.objects.filter(id=patient_id).first()
-        if patient is None:
-            patient = Patient.objects.create(
-                clinic_id=clinic_id,
-                full_name=(data.get('patient_name') or 'Yangi bemor').strip() or 'Yangi bemor',
-                phone=(data.get('patient_phone') or '').strip(),
-            )
-        data['patient'] = patient.id
+        if data.get('status') == 'blocked':
+            data['patient'] = None
+        else:
+            if patient_id:
+                patient = Patient.objects.filter(id=patient_id).first()
+            if patient is None:
+                patient = Patient.objects.create(
+                    clinic_id=clinic_id,
+                    full_name=(data.get('patient_name') or 'Yangi bemor').strip() or 'Yangi bemor',
+                    phone=(data.get('patient_phone') or '').strip(),
+                )
+            data['patient'] = patient.id
 
         doctor = None
         doctor_id = data.get('doctor')

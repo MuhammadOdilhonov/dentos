@@ -10,6 +10,7 @@ import {
   Copy,
   Trash2,
   RotateCw,
+  RotateCcw,
   AlignLeft,
   AlignCenter,
   AlignRight,
@@ -35,6 +36,7 @@ import {
   ChevronRight,
   Scissors,
   ClipboardPaste,
+  Heading1,
   X
 } from 'lucide-react';
 import type { KeynoteElement, KeynoteSlide } from './KeynoteDentalPhotoProtocol';
@@ -692,6 +694,37 @@ export default function PhotoProtocolStudio({
   // Text Inline Editing
   const [editing, setEditing] = useState<string | null>(null);
 
+  // Canvas Click Quick Action Menu (Paste / Write Text / Add Heading)
+  const [canvasQuickMenu, setCanvasQuickMenu] = useState<{
+    px: number;
+    py: number;
+    pctX: number;
+    pctY: number;
+  } | null>(null);
+
+  // Auto-dismiss quick action menu after 3 seconds OR when clicking outside the slide board
+  useEffect(() => {
+    if (!canvasQuickMenu) return;
+    const timer = setTimeout(() => {
+      setCanvasQuickMenu(null);
+    }, 3000);
+
+    const handleOutsideClick = (e: PointerEvent) => {
+      const target = e.target as HTMLElement;
+      // If clicking inside the quick menu or inside the slide board, do not close here (board handles its own clicks)
+      if (target.closest('[data-canvas-quick-menu]') || board.current?.contains(target)) {
+        return;
+      }
+      setCanvasQuickMenu(null);
+    };
+
+    window.addEventListener('pointerdown', handleOutsideClick);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('pointerdown', handleOutsideClick);
+    };
+  }, [canvasQuickMenu]);
+
   // Measurement Guide Badge & Alignment Guides
   const [measureInfo, setMeasureInfo] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [guides, setGuides] = useState({ x: false, y: false });
@@ -946,6 +979,27 @@ export default function PhotoProtocolStudio({
     setSelected(null);
   };
 
+  // Delete Slide Handler (Requirement: Slayd o'chganda unga tegishli barcha rasm, matn va boshqalar o'chadi)
+  const deleteSlide = (idx: number) => {
+    const curr = [...doc.current];
+    if (curr.length <= 1) {
+      // Yagona slayd bo'lsa — toza boshlang'ich slaydga qaytaramiz (barcha elementlar o'chadi)
+      const resetFirst: Slide = {
+        id: uid(),
+        background: '#ffffff',
+        elements: []
+      };
+      commit([resetFirst]);
+      setActive(0);
+      setSelected(null);
+      return;
+    }
+    const next = curr.filter((_, i) => i !== idx);
+    commit(next);
+    setActive((prev) => (prev >= next.length ? next.length - 1 : prev === idx ? Math.max(0, idx - 1) : prev > idx ? prev - 1 : prev));
+    setSelected(null);
+  };
+
   // 2. Element Insertion Helpers (Text, Heading, Note, Photo)
   const addText = (heading = false) => {
     const e: Element = {
@@ -1158,6 +1212,38 @@ export default function PhotoProtocolStudio({
     setContextMenuOpen(false);
   };
 
+  const pasteObjectAt = (x: number, y: number) => {
+    if (!clipboard || !currentSlide) return;
+    const item: Element = {
+      ...clipboard,
+      id: uid(),
+      x: bound(x, 0, 100 - clipboard.width),
+      y: bound(y, 0, 100 - (clipboard.height ?? 15))
+    };
+    commit(doc.current.map((s, i) => (i === active ? { ...s, elements: [...s.elements, item] } : s)));
+    setSelected(item.id);
+    setContextMenuOpen(false);
+  };
+
+  const addTextAt = (x: number, y: number, heading = false) => {
+    const e: Element = {
+      id: uid(),
+      type: heading ? 'heading' : 'text',
+      x: bound(x, 2, heading ? 40 : 60),
+      y: bound(y, 2, 85),
+      width: heading ? 60 : 35,
+      height: heading ? 12 : 16,
+      content: heading ? 'Klinik Tashxis' : 'Matn yozing…',
+      fontSize: heading ? 32 : 20,
+      bold: heading,
+      color: '#17212b',
+      align: heading ? 'center' : 'left'
+    };
+    commit(doc.current.map((s, i) => (i === active ? { ...s, elements: [...s.elements, e] } : s)));
+    setSelected(e.id);
+    setEditing(e.id);
+  };
+
   // ═════════════════════════════════════════════════════════════════════════
   // DOUBLE CLICK / DOUBLE TAP IMAGE: KEYNOTE MASK / CROP MODE ("Автообрезка")
   // ═════════════════════════════════════════════════════════════════════════
@@ -1241,6 +1327,10 @@ export default function PhotoProtocolStudio({
     const initH = initialEl.height ?? (initialEl.type === 'image' ? 40 : 15);
     const initFontSize = initialEl.fontSize || 24;
     const aspectRatio = initW / initH;
+    const elCenterX = ((initX + initW / 2) / 100) * rect.width;
+    const elCenterY = ((initY + initH / 2) / 100) * rect.height;
+    const startAngleRad = Math.atan2(sy - (rect.top + elCenterY), sx - (rect.left + elCenterX));
+    const initRotation = initialEl.rotation || 0;
 
     const node = e.currentTarget as HTMLElement;
     node.setPointerCapture(e.pointerId);
@@ -1289,6 +1379,36 @@ export default function PhotoProtocolStudio({
       let snapY = false;
 
       if (corner) {
+        // Corner or handle rotation dragging (delta-based)
+        if (corner === 'rotate' || corner?.startsWith('rotate')) {
+          const currentAngleRad = Math.atan2(ev.clientY - (rect.top + elCenterY), ev.clientX - (rect.left + elCenterX));
+          const deltaRad = currentAngleRad - startAngleRad;
+          const deltaDeg = Math.round(deltaRad * (180 / Math.PI));
+          let deg = (initRotation + deltaDeg + 3600) % 360;
+
+          const snaps = [0, 45, 90, 135, 180, 225, 270, 315, 360];
+          for (const snap of snaps) {
+            if (Math.abs(deg - snap) < 4) {
+              deg = snap % 360;
+              break;
+            }
+          }
+          setMeasureInfo({ w: deg, h: 0, x: initX + initW / 2, y: initY - 5 });
+          const next = beforeSlides.map((s, idx) =>
+            idx === active
+              ? {
+                  ...s,
+                  elements: s.elements.map((a) =>
+                    a.id === id ? { ...a, rotation: deg } : a
+                  )
+                }
+              : s
+          );
+          doc.current = next;
+          setSlides(next);
+          return;
+        }
+
         // Corner dragging with smooth proportional aspect-ratio scaling
         if (corner === 'se') {
           // Bottom-Right corner: Anchor is Top-Left (initX, initY)
@@ -1389,6 +1509,9 @@ export default function PhotoProtocolStudio({
     };
 
     const upHandler = () => {
+      window.removeEventListener('pointermove', moveHandler);
+      window.removeEventListener('pointerup', upHandler);
+      window.removeEventListener('pointercancel', upHandler);
       node.removeEventListener('pointermove', moveHandler);
       node.removeEventListener('pointerup', upHandler);
       node.removeEventListener('pointercancel', upHandler);
@@ -1402,6 +1525,9 @@ export default function PhotoProtocolStudio({
       }
     };
 
+    window.addEventListener('pointermove', moveHandler);
+    window.addEventListener('pointerup', upHandler);
+    window.addEventListener('pointercancel', upHandler);
     node.addEventListener('pointermove', moveHandler);
     node.addEventListener('pointerup', upHandler);
     node.addEventListener('pointercancel', upHandler);
@@ -1594,6 +1720,22 @@ export default function PhotoProtocolStudio({
             <Play size={16} fill="currentColor" />
           </button>
 
+          {/* Delete Current Slide button next to Slideshow */}
+          <button
+            className={`${css.iconBtn} text-rose-500 hover:text-white hover:bg-rose-600 transition`}
+            onClick={() => {
+              const msg = language === 'ru'
+                ? `Удалить текущий слайд ${active + 1}? Все элементы на нем будут удалены.`
+                : `Hozirgi ${active + 1}-slaydni o‘chirishni xohlaysizmi? Undagi barcha rasm va matnlar o‘chib ketadi.`;
+              if (window.confirm(msg)) {
+                deleteSlide(active);
+              }
+            }}
+            title={language === 'ru' ? 'Удалить текущий слайд' : 'Hozirgi slaydni o‘chirish'}
+          >
+            <Trash2 size={16} />
+          </button>
+
           {/* Insert Capsule Group (Table, Shapes/Badge, Note, Photo, Text) */}
           <div className={css.insertCapsule} role="toolbar" aria-label="Obyekt qo‘shish">
             <button className={css.insertBtn} onClick={addDentalTable} title={txt.table}>
@@ -1615,6 +1757,9 @@ export default function PhotoProtocolStudio({
             </button>
             <button className={css.insertBtn} onClick={() => addText(false)} title={txt.text}>
               <Type size={16} />
+            </button>
+            <button className={css.insertBtn} onClick={() => addText(true)} title={txt.heading || 'Sarlavha (Katta matn)'}>
+              <Heading1 size={17} />
             </button>
           </div>
 
@@ -1852,11 +1997,61 @@ export default function PhotoProtocolStudio({
                 backgroundColor: currentSlide?.background || '#ffffff'
               }}
               onPointerDown={(e) => {
+                // If clicked inside the quick menu itself, don't dismiss
+                if ((e.target as HTMLElement).closest('[data-canvas-quick-menu]')) {
+                  return;
+                }
+
+                // If clicking an existing element (image/text/note/etc.), let element handle its own interaction
+                if ((e.target as HTMLElement).closest('.' + css.element)) {
+                  setCanvasQuickMenu(null);
+                  return;
+                }
+
+                setSelected(null);
+                setContextMenuOpen(false);
+                setEditing(null);
+                if (isMasking) finishMaskMode(false);
+
+                const rect = board.current?.getBoundingClientRect();
+                if (rect) {
+                  // Coordinates relative to 960x540 unscaled canvas:
+                  const localX = (e.clientX - rect.left) / (sf || 1);
+                  const localY = (e.clientY - rect.top) / (sf || 1);
+                  const pctX = bound(Math.round((localX / 960) * 100), 5, 80);
+                  const pctY = bound(Math.round((localY / 540) * 100), 5, 80);
+
+                  const menuH = 46;
+                  const menuW = 240;
+                  let px = localX - 40;
+                  if (px + menuW > 940) px = 940 - menuW;
+                  if (px < 10) px = 10;
+
+                  // If clicking in lower part of 540px canvas, place menu ABOVE cursor:
+                  let py = localY + 12;
+                  if (localY + menuH + 16 > 530) {
+                    py = Math.max(10, localY - menuH - 12);
+                  }
+
+                  setCanvasQuickMenu({
+                    px,
+                    py,
+                    pctX,
+                    pctY
+                  });
+                }
+              }}
+              onDoubleClick={(e) => {
                 if (e.target === e.currentTarget) {
-                  setSelected(null);
-                  setContextMenuOpen(false);
-                  setEditing(null);
-                  if (isMasking) finishMaskMode(false);
+                  const rect = board.current?.getBoundingClientRect();
+                  if (rect) {
+                    const localX = (e.clientX - rect.left) / (sf || 1);
+                    const localY = (e.clientY - rect.top) / (sf || 1);
+                    const pctX = bound(Math.round((localX / 960) * 100), 5, 80);
+                    const pctY = bound(Math.round((localY / 540) * 100), 5, 80);
+                    addTextAt(pctX, pctY, false);
+                    setCanvasQuickMenu(null);
+                  }
                 }
               }}
               onContextMenu={(e) => {
@@ -1871,13 +2066,13 @@ export default function PhotoProtocolStudio({
             >
               {/* Empty Slide Hint */}
               {!currentSlide?.elements.length && (
-                <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 p-8 select-none">
+                <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-400 p-8 select-none pointer-events-none">
                   <div className="w-16 h-16 rounded-2xl bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-500 mb-4 shadow-sm">
                     <ImagePlus size={32} />
                   </div>
                   <h3 className="text-xl font-bold text-slate-700 mb-1">{txt.emptySlide}</h3>
                   <p className="text-sm text-slate-500 mb-4 max-w-sm text-center">{txt.emptySlideDesc}</p>
-                  <div className="flex gap-2">
+                  <div className="flex gap-2 pointer-events-auto">
                     <button
                       onClick={() => fileInput.current?.click()}
                       className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-xs transition shadow-md"
@@ -1944,6 +2139,44 @@ export default function PhotoProtocolStudio({
                       <Visual el={isMaskTarget && maskTemp ? maskTemp : item} isMasking={isMaskTarget} />
                     )}
 
+                    {/* 4 Corner Rotation Hit Zones (clean Figma / Keynote style outer hit zones, no ugly visible icons) */}
+                    {isSelected && !isMasking && (
+                      <>
+                        <div
+                          className="absolute -top-7 -left-7 w-8 h-8 z-30 cursor-grab active:cursor-grabbing"
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                            handlePointerDown(e, item.id, 'rotate-nw');
+                          }}
+                          title={language === 'ru' ? 'Вращение: потяните для поворота' : 'Burish: aylantirish uchun torting'}
+                        />
+                        <div
+                          className="absolute -top-7 -right-7 w-8 h-8 z-30 cursor-grab active:cursor-grabbing"
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                            handlePointerDown(e, item.id, 'rotate-ne');
+                          }}
+                          title={language === 'ru' ? 'Вращение: потяните для поворота' : 'Burish: aylantirish uchun torting'}
+                        />
+                        <div
+                          className="absolute -bottom-7 -right-7 w-8 h-8 z-30 cursor-grab active:cursor-grabbing"
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                            handlePointerDown(e, item.id, 'rotate-se');
+                          }}
+                          title={language === 'ru' ? 'Вращение: потяните для поворота' : 'Burish: aylantirish uchun torting'}
+                        />
+                        <div
+                          className="absolute -bottom-7 -left-7 w-8 h-8 z-30 cursor-grab active:cursor-grabbing"
+                          onPointerDown={(e) => {
+                            e.stopPropagation();
+                            handlePointerDown(e, item.id, 'rotate-sw');
+                          }}
+                          title={language === 'ru' ? 'Вращение: потяните для повороta' : 'Burish: aylantirish uchun torting'}
+                        />
+                      </>
+                    )}
+
                     {/* 8 Circular Drag Handles with Proportional Scaling */}
                     {isSelected && !isMasking && (
                       <>
@@ -1964,6 +2197,73 @@ export default function PhotoProtocolStudio({
               {/* Dynamic Center Snapping Guides */}
               {guides.x && <div className={css.guideX} />}
               {guides.y && <div className={css.guideY} />}
+
+              {/* Canvas Click Floating Action Menu (Paste / Type text / Add Heading at clicked spot) */}
+              {canvasQuickMenu && (
+                <div
+                  data-canvas-quick-menu="true"
+                  style={{ left: `${canvasQuickMenu.px}px`, top: `${canvasQuickMenu.py}px` }}
+                  className="absolute z-40 bg-white/95 dark:bg-slate-800/95 backdrop-blur-md rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700 p-1 flex items-center space-x-1 animate-in fade-in zoom-in-95 duration-100 select-none"
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  {clipboard && (
+                    <>
+                      <button
+                        type="button"
+                        onPointerDown={(e) => e.stopPropagation()}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          pasteObjectAt(canvasQuickMenu.pctX, canvasQuickMenu.pctY);
+                          setCanvasQuickMenu(null);
+                        }}
+                        className="px-2.5 py-1.5 rounded-lg text-xs font-bold bg-blue-50 dark:bg-blue-900/40 text-blue-600 dark:text-sky-300 hover:bg-blue-100 transition flex items-center space-x-1.5 cursor-pointer"
+                      >
+                        <ClipboardPaste size={14} />
+                        <span>{txt.paste}</span>
+                      </button>
+                      <div className="w-[1px] h-4 bg-slate-200 dark:bg-slate-700" />
+                    </>
+                  )}
+                  <button
+                    type="button"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      addTextAt(canvasQuickMenu.pctX, canvasQuickMenu.pctY, false);
+                      setCanvasQuickMenu(null);
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg text-xs font-semibold text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-700 transition flex items-center space-x-1.5 cursor-pointer"
+                  >
+                    <Type size={14} />
+                    <span>{txt.text}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      addTextAt(canvasQuickMenu.pctX, canvasQuickMenu.pctY, true);
+                      setCanvasQuickMenu(null);
+                    }}
+                    className="px-2.5 py-1.5 rounded-lg text-xs font-bold text-slate-800 dark:text-white hover:bg-slate-100 dark:hover:bg-slate-700 transition flex items-center space-x-1.5 cursor-pointer"
+                  >
+                    <Heading1 size={14} />
+                    <span>{txt.heading}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setCanvasQuickMenu(null);
+                    }}
+                    className="p-1 rounded-lg text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 transition cursor-pointer"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              )}
 
               {/* Floating Measurement Tooltip */}
               {measureInfo && (
@@ -2056,6 +2356,21 @@ export default function PhotoProtocolStudio({
                       <div className={css.calloutDivider} />
                       <button className={`${css.calloutBtn} ${css.danger}`} onClick={removeSelected}>
                         {txt.delete}
+                      </button>
+                      <div className={css.calloutDivider} />
+                      <button
+                        className={css.calloutBtn}
+                        onClick={() => updateSelected({ rotation: ((selectedEl.rotation || 0) + 90) % 360 })}
+                        title={language === 'ru' ? 'Повернуть на 90° вправо' : '90° o‘ngga burish'}
+                      >
+                        <RotateCw size={13} />
+                      </button>
+                      <button
+                        className={css.calloutBtn}
+                        onClick={() => updateSelected({ rotation: ((selectedEl.rotation || 0) + 270) % 360 })}
+                        title={language === 'ru' ? 'Повернуть на 90° влево' : '90° chapga burish'}
+                      >
+                        <RotateCcw size={13} />
                       </button>
                       {selectedEl.type === 'image' && (
                         <>

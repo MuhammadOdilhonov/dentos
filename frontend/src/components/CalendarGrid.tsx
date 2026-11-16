@@ -20,7 +20,9 @@ import {
   AlertTriangle,
   CreditCard,
   CheckCircle2,
-  Wallet
+  Wallet,
+  Lock,
+  UserPlus
 } from 'lucide-react';
 
 interface CalendarGridProps {
@@ -29,7 +31,8 @@ interface CalendarGridProps {
   employees: Employee[];
   appointments: Appointment[];
   onSelectAppointment: (apt: Appointment, rect?: DOMRect) => void;
-  onSlotClick: (doctorId: number, timeStr: string) => void;
+  onSlotClick: (doctorId: number, timeStr: string, durationMinutes?: number) => void;
+  onBlockTimeClick?: (doctorId: number, startTime: string, endTime: string, durationMinutes: number) => void;
   workplaces?: WorkplaceItem[];
   currentBranchId?: number | null;
 }
@@ -41,6 +44,7 @@ export default function CalendarGrid({
   appointments,
   onSelectAppointment,
   onSlotClick,
+  onBlockTimeClick,
   workplaces = [],
   currentBranchId = null
 }: CalendarGridProps) {
@@ -93,6 +97,25 @@ export default function CalendarGrid({
     return () => clearInterval(timer);
   }, []);
 
+  // Drag selection state for selecting multiple slots (e.g. 10:00 - 13:00)
+  const [dragSelection, setDragSelection] = useState<{
+    colKey: string;
+    doctorId: number;
+    startIndex: number;
+    endIndex: number;
+  } | null>(null);
+  const [isMouseDownOnSlot, setIsMouseDownOnSlot] = useState(false);
+
+  // Floating action popover ("Записать пациента" vs "Блокировать время")
+  const [slotActionMenu, setSlotActionMenu] = useState<{
+    doctorId: number;
+    startTime: string;
+    endTime: string;
+    durationMinutes: number;
+    x: number;
+    y: number;
+  } | null>(null);
+
   // Time slots from 09:00 to 22:30 (every 30 mins)
   const timeSlots: string[] = [];
   for (let h = 9; h <= 22; h++) {
@@ -113,6 +136,54 @@ export default function CalendarGrid({
   const currentTopOffset = (minutesFromStart / 30) * SLOT_HEIGHT;
   const isWithinRange = minutesFromStart >= 0 && minutesFromStart <= timeSlots.length * 30;
   const currentTimeFormatted = currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  // Global mouseup & ESC key listener for slot drag-selection popover
+  React.useEffect(() => {
+    const handleGlobalMouseUp = (e: MouseEvent) => {
+      if (isMouseDownOnSlot && dragSelection) {
+        setIsMouseDownOnSlot(false);
+        const minIdx = Math.min(dragSelection.startIndex, dragSelection.endIndex);
+        const maxIdx = Math.max(dragSelection.startIndex, dragSelection.endIndex);
+        const startT = timeSlots[minIdx] || '10:00';
+        const [lastH, lastM] = (timeSlots[maxIdx] || '10:00').split(':').map(Number);
+        const endTotalMin = (lastH || 0) * 60 + (lastM || 0) + 30;
+        const endH = Math.min(23, Math.floor(endTotalMin / 60));
+        const endM = endTotalMin % 60;
+        const endT = `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
+        const duration = (maxIdx - minIdx + 1) * 30;
+
+        const popoverWidth = 230;
+        const popoverHeight = 110;
+        const x = Math.min(window.innerWidth - popoverWidth - 10, Math.max(10, e.clientX));
+        const y = Math.min(window.innerHeight - popoverHeight - 10, Math.max(10, e.clientY));
+
+        setSlotActionMenu({
+          doctorId: dragSelection.doctorId,
+          startTime: startT,
+          endTime: endT,
+          durationMinutes: duration,
+          x,
+          y
+        });
+      } else {
+        setIsMouseDownOnSlot(false);
+      }
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setSlotActionMenu(null);
+        setDragSelection(null);
+      }
+    };
+
+    window.addEventListener('mouseup', handleGlobalMouseUp);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => {
+      window.removeEventListener('mouseup', handleGlobalMouseUp);
+      window.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isMouseDownOnSlot, dragSelection, timeSlots]);
 
   // Shifokor shu SANADA ishlaydimi: istisno sana (schedule_exceptions) haftalik
   // grafikdan USTUN. Grafik umuman kiritilmagan bo'lsa — ishlaydi deb hisoblanadi.
@@ -362,6 +433,21 @@ export default function CalendarGrid({
           isToday: isSameDay(d, new Date()),
           perApptColor: true
         }));
+
+  // Check if a specific time slot is within a doctor's blocked time
+  const isSlotBlocked = (col: GridCol, time: string): boolean => {
+    const [h, m] = time.split(':').map(Number);
+    const slotMin = (h || 0) * 60 + (m || 0);
+
+    return col.appts.some((apt) => {
+      if (apt.status !== 'blocked') return false;
+      const s = new Date(apt.start_time);
+      const e = new Date(apt.end_time);
+      const sMin = s.getHours() * 60 + s.getMinutes();
+      const eMin = e.getHours() * 60 + e.getMinutes();
+      return slotMin >= sMin && slotMin < eMin;
+    });
+  };
 
   // Ustun kengligi: noutbukda 12 tagacha shifokor ekranga sig'adi (gorizontal scroll yo'q),
   // 12 tadan ko'p bo'lsa — har biriga 128px beriladi va scroll paydo bo'ladi.
@@ -810,19 +896,64 @@ export default function CalendarGrid({
 
               {gridCols.map((col) => (
                 <div key={col.key} className="border-r border-slate-200 dark:border-slate-800 relative min-h-full">
-                  {timeSlots.map((time) => (
-                    <div
-                      key={time}
-                      style={{ height: `${SLOT_HEIGHT}px` }}
-                      onClick={() => col.onSlot(time)}
-                      className="border-b border-b-slate-200 dark:border-b-slate-800 hover:bg-blue-50/40 dark:hover:bg-blue-900/20 transition-colors cursor-pointer relative group flex items-center justify-center"
-                    >
-                      <span className="opacity-0 group-hover:opacity-100 transition text-[10px] text-blue-600 dark:text-sky-400 font-bold bg-white/95 dark:bg-slate-800 px-2 py-0.5 rounded-full shadow-xs border border-blue-200 dark:border-slate-700 flex items-center space-x-1">
-                        <Plus className="w-3 h-3" />
-                        <span>{t.bookSlot} {time}</span>
-                      </span>
-                    </div>
-                  ))}
+                  {timeSlots.map((time, timeIdx) => {
+                    const blocked = isSlotBlocked(col, time);
+                    const isSelectedInDrag = Boolean(
+                      dragSelection &&
+                      dragSelection.colKey === col.key &&
+                      timeIdx >= Math.min(dragSelection.startIndex, dragSelection.endIndex) &&
+                      timeIdx <= Math.max(dragSelection.startIndex, dragSelection.endIndex)
+                    );
+
+                    return (
+                      <div
+                        key={time}
+                        style={{ height: `${SLOT_HEIGHT}px` }}
+                        onMouseDown={(e) => {
+                          if (e.button !== 0 || blocked || !col.doctorId) return;
+                          e.preventDefault();
+                          setIsMouseDownOnSlot(true);
+                          setDragSelection({
+                            colKey: col.key,
+                            doctorId: col.doctorId,
+                            startIndex: timeIdx,
+                            endIndex: timeIdx
+                          });
+                          setSlotActionMenu(null);
+                        }}
+                        onMouseEnter={() => {
+                          if (isMouseDownOnSlot && dragSelection && dragSelection.colKey === col.key) {
+                            setDragSelection(prev => prev ? { ...prev, endIndex: timeIdx } : null);
+                          }
+                        }}
+                        onClick={() => {
+                          if (blocked) return;
+                          if (!isMouseDownOnSlot && !dragSelection) {
+                            col.onSlot(time);
+                          }
+                        }}
+                        className={`border-b border-b-slate-200 dark:border-b-slate-800 transition-colors relative group flex items-center justify-center select-none ${
+                          blocked
+                            ? 'cursor-not-allowed bg-slate-100/50 dark:bg-slate-800/40'
+                            : isSelectedInDrag
+                            ? 'bg-sky-200/70 dark:bg-sky-900/60 border-y border-sky-400 dark:border-sky-500 cursor-pointer'
+                            : 'hover:bg-blue-50/40 dark:hover:bg-blue-900/20 cursor-pointer'
+                        }`}
+                      >
+                        {!blocked && !isSelectedInDrag && (
+                          <span className="opacity-0 group-hover:opacity-100 transition text-[10px] text-blue-600 dark:text-sky-400 font-bold bg-white/95 dark:bg-slate-800 px-2 py-0.5 rounded-full shadow-xs border border-blue-200 dark:border-slate-700 flex items-center space-x-1 pointer-events-none">
+                            <Plus className="w-3 h-3" />
+                            <span>{t.bookSlot} {time}</span>
+                          </span>
+                        )}
+                        {isSelectedInDrag && (
+                          <span className="text-[10px] text-sky-800 dark:text-sky-200 font-extrabold bg-sky-100/90 dark:bg-sky-950/90 px-2 py-0.5 rounded-full shadow-xs border border-sky-300 pointer-events-none">
+                            {time}
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
 
                   {col.appts.map((apt) => (
                     <AppointmentCard
@@ -839,6 +970,58 @@ export default function CalendarGrid({
                 </div>
               ))}
             </div>
+
+            {/* Floating Popover on slot selection: "Записать пациента" / "Блокировать время" */}
+            {slotActionMenu && (
+              <div
+                style={{ left: `${slotActionMenu.x}px`, top: `${slotActionMenu.y}px` }}
+                className="fixed z-50 bg-white dark:bg-slate-800 rounded-xl shadow-2xl border border-slate-200 dark:border-slate-700 p-1.5 min-w-[220px] animate-in fade-in zoom-in-95 duration-100 select-none"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="px-2.5 py-1.5 border-b border-slate-100 dark:border-slate-700/60 flex items-center justify-between text-[11px] font-mono text-slate-500 dark:text-slate-400">
+                  <span className="font-bold text-slate-800 dark:text-slate-100">
+                    {slotActionMenu.startTime} - {slotActionMenu.endTime}
+                  </span>
+                  <span className="text-[10px] bg-slate-100 dark:bg-slate-700 px-1.5 py-0.5 rounded font-sans font-semibold">
+                    {slotActionMenu.durationMinutes >= 60 ? `${slotActionMenu.durationMinutes / 60}ч.` : `${slotActionMenu.durationMinutes}м.`}
+                  </span>
+                </div>
+                <div className="pt-1 space-y-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onSlotClick(slotActionMenu.doctorId, slotActionMenu.startTime, slotActionMenu.durationMinutes);
+                      setSlotActionMenu(null);
+                      setDragSelection(null);
+                    }}
+                    className="w-full text-left px-2.5 py-2 rounded-lg text-xs font-semibold text-slate-800 dark:text-slate-100 hover:bg-blue-50 dark:hover:bg-blue-900/30 hover:text-blue-600 dark:hover:text-sky-400 flex items-center space-x-2 transition cursor-pointer"
+                  >
+                    <UserPlus className="w-4 h-4 text-blue-500" />
+                    <span>{language === 'ru' ? 'Записать пациента' : language === 'uz' ? 'Qabulga yozish' : 'Book appointment'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (onBlockTimeClick) {
+                        onBlockTimeClick(
+                          slotActionMenu.doctorId,
+                          slotActionMenu.startTime,
+                          slotActionMenu.endTime,
+                          slotActionMenu.durationMinutes
+                        );
+                      }
+                      setSlotActionMenu(null);
+                      setDragSelection(null);
+                    }}
+                    className="w-full text-left px-2.5 py-2 rounded-lg text-xs font-semibold text-slate-800 dark:text-slate-100 hover:bg-slate-100 dark:hover:bg-slate-700/60 flex items-center space-x-2 transition cursor-pointer"
+                  >
+                    <Lock className="w-4 h-4 text-slate-500 dark:text-slate-400" />
+                    <span>{language === 'ru' ? 'Блокировать время' : language === 'uz' ? 'Vaqtni bloklash' : 'Block time'}</span>
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

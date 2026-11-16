@@ -16,7 +16,8 @@ import {
   DollarSign,
   MessageSquare,
   AlertTriangle,
-  Stethoscope
+  Stethoscope,
+  Lock
 } from 'lucide-react';
 import { useI18n } from '../lib/i18n';
 import { useAuth } from '../lib/auth';
@@ -48,7 +49,8 @@ export const APPOINTMENT_STATUS_MAP: Record<
   no_show: { icon: EyeOff, color: '#64748B', bg: 'bg-slate-500/15 text-slate-600 dark:text-slate-400 border-slate-400/40', labelKey: 'aptst_no_show' },
   completed: { icon: CheckCircle2, color: '#0D9488', bg: 'bg-teal-500/15 text-teal-600 dark:text-teal-400 border-teal-400/40', labelKey: 'aptst_completed' },
   debt: { icon: AlertTriangle, color: '#D97706', bg: 'bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-400/40', labelKey: 'aptst_debt' },
-  reserved: { icon: Circle, color: '#3B82F6', bg: 'bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-400/40', labelKey: 'aptst_reserved' }
+  reserved: { icon: Circle, color: '#3B82F6', bg: 'bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-400/40', labelKey: 'aptst_reserved' },
+  blocked: { icon: Lock, color: '#64748B', bg: 'bg-slate-200/60 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border-slate-300 dark:border-slate-700', labelKey: 'aptst_blocked' }
 };
 
 export default function AppointmentCard({ appointment, onClick, style, doctorColor }: AppointmentCardProps) {
@@ -115,6 +117,49 @@ export default function AppointmentCard({ appointment, onClick, style, doctorCol
     : appointment.status === 'in_progress'
     ? 'ring-1 ring-emerald-500/80 animate-pulse'
     : '';
+
+  // 0. BLOCKED TIME CARD (Qabul bloklash)
+  if (appointment.status === 'blocked') {
+    return (
+      <div
+        onClick={(e) => {
+          e.stopPropagation();
+          onClick(e);
+        }}
+        style={style}
+        title={language === 'ru' ? 'Блокировка времени (нажмите чтобы изменить или удалить)' : 'Vaqt bloklangan (o‘zgartirish yoki o‘chirish uchun bosing)'}
+        className="absolute left-1 right-1 rounded-xl cursor-pointer transition-all hover:shadow-md hover:border-slate-400 dark:hover:border-slate-500 z-10 bg-slate-100/90 dark:bg-slate-800/90 border-2 border-dashed border-slate-300 dark:border-slate-600 overflow-hidden flex select-none group"
+      >
+        <div className="w-1.5 shrink-0 bg-slate-400 dark:bg-slate-500" />
+        <div className="flex-1 p-2 sm:p-2.5 flex flex-col justify-between overflow-hidden min-w-0 bg-[repeating-linear-gradient(45deg,transparent,transparent_8px,rgba(148,163,184,0.09)_8px,rgba(148,163,184,0.09)_16px)]">
+          <div className="flex items-center justify-between gap-1 min-w-0">
+            <div className="flex items-center space-x-1.5 min-w-0 truncate">
+              <Lock className="w-3.5 h-3.5 text-slate-500 dark:text-slate-400 shrink-0" />
+              <span className="font-bold text-xs text-slate-700 dark:text-slate-200 truncate">
+                {language === 'ru' ? 'Блокировка времени' : language === 'uz' ? 'Vaqt bloklangan' : 'Time blocked'}
+              </span>
+            </div>
+            <span className="font-mono text-[10px] font-bold text-slate-600 dark:text-slate-300 shrink-0 bg-white/90 dark:bg-slate-900/90 px-1.5 py-0.5 rounded border border-slate-200 dark:border-slate-700">
+              {startTimeStr} - {endTimeStr}
+            </span>
+          </div>
+
+          {appointment.treatment_notes && (
+            <p className="text-[11px] text-slate-600 dark:text-slate-300 truncate mt-1 italic font-medium">
+              «{appointment.treatment_notes}»
+            </p>
+          )}
+
+          <div className="flex items-center justify-between mt-1 text-[10px] text-slate-400 font-medium">
+            <span className="truncate">{appointment.doctor_name || 'Shifokor'}</span>
+            <span className="text-[9px] uppercase font-bold text-slate-500 group-hover:text-blue-600 transition shrink-0 ml-1">
+              {language === 'ru' ? 'Изменить' : 'O‘zgartirish'}
+            </span>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div

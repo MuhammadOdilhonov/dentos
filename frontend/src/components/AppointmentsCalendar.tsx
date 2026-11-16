@@ -6,6 +6,7 @@ import AppointmentPopover, { STATUS_CONFIG } from './AppointmentPopover';
 import { PaidInvoiceModal, InvoiceItem } from './PaidInvoiceModal';
 import { ActiveCheckoutModal } from './ActiveCheckoutModal';
 import NewAppointmentModal from './NewAppointmentModal';
+import BlockTimeModal from './BlockTimeModal';
 import { clinicApi } from '../lib/api';
 import { Employee, Patient, Appointment, AppointmentStatus, WorkplaceItem } from '../lib/types';
 import { useBranch } from '../lib/branchContext';
@@ -63,6 +64,14 @@ export default function AppointmentsCalendar() {
   const [slotTime, setSlotTime] = useState<string>('09:30');
   const [appointmentToEdit, setAppointmentToEdit] = useState<Appointment | null>(null);
 
+  // Block time modal state
+  const [isBlockTimeModalOpen, setIsBlockTimeModalOpen] = useState(false);
+  const [blockDoctorId, setBlockDoctorId] = useState<number | undefined>(undefined);
+  const [blockStartTime, setBlockStartTime] = useState<string>('10:00');
+  const [blockEndTime, setBlockEndTime] = useState<string>('13:00');
+  const [blockDurationMinutes, setBlockDurationMinutes] = useState<number>(180);
+  const [appointmentToUnblock, setAppointmentToUnblock] = useState<Appointment | null>(null);
+
   const dateParam = currentDate.toISOString().split('T')[0];
 
   const loadData = async () => {
@@ -87,6 +96,12 @@ export default function AppointmentsCalendar() {
 
   // Click an appointment card on calendar grid
   const handleSelectAppointment = (apt: Appointment, rect?: DOMRect) => {
+    if (apt.status === 'blocked') {
+      // It's a blocked time! Open BlockTimeModal so user can view/edit/unblock
+      setAppointmentToUnblock(apt);
+      setIsBlockTimeModalOpen(true);
+      return;
+    }
     setSelectedAppointment(apt);
     setSelectedCardRect(rect || null);
     setIsPopoverOpen(true);
@@ -255,11 +270,82 @@ export default function AppointmentsCalendar() {
   };
 
   // Click on empty slot
-  const handleSlotClick = (doctorId: number, timeStr: string) => {
+  const handleSlotClick = (doctorId: number, timeStr: string, durationMinutes?: number) => {
     setAppointmentToEdit(null);
     setSlotDoctorId(doctorId);
     setSlotTime(timeStr);
     setIsNewAptModalOpen(true);
+  };
+
+  // Block time clicked from drag-selection popover
+  const handleBlockTimeClick = (doctorId: number, startTime: string, endTime: string, durationMinutes: number) => {
+    setAppointmentToUnblock(null);
+    setBlockDoctorId(doctorId);
+    setBlockStartTime(startTime);
+    setBlockEndTime(endTime);
+    setBlockDurationMinutes(durationMinutes);
+    setIsBlockTimeModalOpen(true);
+  };
+
+  // Save new or updated blocked time
+  const handleSaveBlockedTime = async (data: {
+    doctorId: number;
+    doctorName?: string;
+    date: string;
+    startTime: string;
+    endTime: string;
+    durationMinutes: number;
+    isAllDay: boolean;
+    notes: string;
+  }) => {
+    const branchVal = currentBranchId || undefined;
+    const branchNameVal = currentBranch?.name || undefined;
+    const startIso = `${data.date}T${data.startTime}:00`;
+    const endIso = `${data.date}T${data.endTime}:00`;
+
+    if (appointmentToUnblock) {
+      await clinicApi.updateAppointment(appointmentToUnblock.id, {
+        doctor: data.doctorId,
+        doctor_name: data.doctorName,
+        start_time: startIso,
+        end_time: endIso,
+        treatment_notes: data.notes,
+        status: 'blocked'
+      });
+      setAppointments((prev) =>
+        prev.map((a) =>
+          a.id === appointmentToUnblock.id
+            ? { ...a, doctor: data.doctorId, doctor_name: data.doctorName || a.doctor_name, start_time: startIso, end_time: endIso, treatment_notes: data.notes }
+            : a
+        )
+      );
+      setAppointmentToUnblock(null);
+    } else {
+      const created = await clinicApi.createAppointment({
+        doctor: data.doctorId,
+        doctor_name: data.doctorName,
+        start_time: startIso,
+        end_time: endIso,
+        status: 'blocked',
+        color_code: '#64748B',
+        treatment_notes: data.notes,
+        patient_name: data.notes ? `Bloklangan (${data.notes})` : 'Vaqt bloklangan',
+        branch: branchVal,
+        branch_name: branchNameVal,
+        price: 0,
+        paid_amount: 0
+      });
+      setAppointments((prev) => [created, ...prev]);
+    }
+    setIsBlockTimeModalOpen(false);
+  };
+
+  // Delete / unblock time
+  const handleDeleteBlockedTime = async (id: number) => {
+    await clinicApi.deleteAppointment(id);
+    setAppointments((prev) => prev.filter((a) => a.id !== id));
+    setIsBlockTimeModalOpen(false);
+    setAppointmentToUnblock(null);
   };
 
   // Edit appointment from Popover
@@ -406,6 +492,7 @@ export default function AppointmentsCalendar() {
           appointments={displayAppointments}
           onSelectAppointment={handleSelectAppointment}
           onSlotClick={handleSlotClick}
+          onBlockTimeClick={handleBlockTimeClick}
           workplaces={displayWorkplaces}
           currentBranchId={currentBranchId}
         />
@@ -437,7 +524,7 @@ export default function AppointmentsCalendar() {
           patient={currentPatient}
           onComplete={handleCheckoutComplete}
           onPreviewInvoice={handlePreviewInvoice}
-          persistKey={selectedAppointment.patient}
+          persistKey={selectedAppointment.patient || undefined}
           onClearAll={async () => {
             if (selectedAppointment) {
               await clinicApi.updateAppointment(selectedAppointment.id, {
@@ -485,6 +572,24 @@ export default function AppointmentsCalendar() {
         appointmentToEdit={appointmentToEdit}
         branchId={currentBranchId || undefined}
         branchName={currentBranch?.name || undefined}
+      />
+
+      {/* Block Time Modal matching Screenshot 1:1 */}
+      <BlockTimeModal
+        isOpen={isBlockTimeModalOpen}
+        onClose={() => {
+          setIsBlockTimeModalOpen(false);
+          setAppointmentToUnblock(null);
+        }}
+        onSave={handleSaveBlockedTime}
+        onDelete={handleDeleteBlockedTime}
+        employees={displayEmployees}
+        defaultDoctorId={blockDoctorId}
+        defaultDate={dateParam}
+        defaultStartTime={blockStartTime}
+        defaultEndTime={blockEndTime}
+        defaultDurationMinutes={blockDurationMinutes}
+        existingAppointment={appointmentToUnblock}
       />
     </div>
   );

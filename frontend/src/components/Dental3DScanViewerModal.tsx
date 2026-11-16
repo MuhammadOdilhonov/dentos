@@ -48,6 +48,7 @@ interface Dental3DScanViewerModalProps {
   orderNumber?: string;
   initialZipFile?: File | Blob | null;
   initialFileName?: string;
+  hasScan?: boolean;
   onSaveScan?: (data: { hasScan: boolean; fileName?: string; filesCount?: number; fileSize?: number }) => void;
 }
 
@@ -60,14 +61,17 @@ export default function Dental3DScanViewerModal({
   orderNumber,
   initialZipFile,
   initialFileName,
+  hasScan,
   onSaveScan
 }: Dental3DScanViewerModalProps) {
   const { language, tr } = useI18n();
   const mountRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [loading, setLoading] = useState(false);
-  const [loadingProgress, setLoadingProgress] = useState<string>('');
+  const [loading, setLoading] = useState(Boolean(initialZipFile || initialFileName || hasScan));
+  const [loadingProgress, setLoadingProgress] = useState<string>(
+    Boolean(initialZipFile || initialFileName || hasScan) ? (language === 'ru' ? 'Загрузка 3D модели…' : '3D model yuklanmoqda…') : ''
+  );
   const [meshes, setMeshes] = useState<ScanMeshItem[]>([]);
   const [isWireframe, setIsWireframe] = useState(false);
   const [activeFileName, setActiveFileName] = useState<string>(initialFileName || '');
@@ -372,11 +376,19 @@ export default function Dental3DScanViewerModal({
 
   // 4. On modal open: load real file from props or IndexedDB
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen) {
+      setLoading(false);
+      return;
+    }
 
     let isMounted = true;
 
     async function loadRealData() {
+      if (initialZipFile || initialFileName || hasScan) {
+        setLoading(true);
+        setLoadingProgress(language === 'ru' ? 'Загрузка 3D модели…' : '3D model yuklanmoqda…');
+      }
+
       // 1. If passed directly via prop
       if (initialZipFile) {
         handleProcessFile(initialZipFile, initialFileName);
@@ -396,6 +408,8 @@ export default function Dental3DScanViewerModal({
         if (found && found.file) {
           handleProcessFile(found.file, found.fileName);
         } else {
+          setLoading(false);
+          setLoadingProgress('');
           // Clear any previous data: NO FAKE DEMO DATA!
           setMeshes([]);
           setActiveFileName('');
@@ -417,7 +431,7 @@ export default function Dental3DScanViewerModal({
     return () => {
       isMounted = false;
     };
-  }, [isOpen, initialZipFile, patientId, orderId]);
+  }, [isOpen, initialZipFile, patientId, orderId, hasScan]);
 
   // Toggle layer visibility
   const toggleVisibility = (id: string) => {

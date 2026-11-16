@@ -95,9 +95,10 @@ class Appointment(models.Model):
         ('completed', 'Завершен'),
         ('debt', 'Задолженность'),
         ('reserved', 'Забронировано'),
+        ('blocked', 'Заблокировано'),
     )
     clinic = models.ForeignKey('ClinicTenant', on_delete=models.CASCADE, null=True, blank=True, related_name='appointments')
-    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, related_name='appointments')
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, null=True, blank=True, related_name='appointments')
     doctor = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='appointments')
     branch = models.ForeignKey('Branch', on_delete=models.SET_NULL, null=True, blank=True, related_name='appointments')
     start_time = models.DateTimeField()
@@ -112,7 +113,9 @@ class Appointment(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     def __str__(self):
-        return f"{self.patient.full_name} - {self.doctor.full_name} ({self.start_time.strftime('%H:%M')})"
+        pname = self.patient.full_name if self.patient else (self.treatment_notes or "Bloklangan")
+        dname = self.doctor.full_name if self.doctor else "-"
+        return f"{pname} - {dname} ({self.start_time.strftime('%H:%M')})"
 
 class FinancialTransaction(models.Model):
     request_id = models.UUIDField(null=True, blank=True, unique=True, editable=False)

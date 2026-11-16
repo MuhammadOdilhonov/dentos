@@ -185,6 +185,7 @@ export interface Patient {
   notes?: string;
   avatar_color?: string;
   service_lang?: 'uz' | 'ru' | 'en'; // xizmat tili — xabar shu tilda yuboriladi
+  default_percent?: number | null;
   created_at: string;
   clinic?: number | null;
   photo?: string;
@@ -203,7 +204,8 @@ export type AppointmentStatus =
   | 'no_show'
   | 'completed'
   | 'debt'
-  | 'reserved';
+  | 'reserved'
+  | 'blocked';
 
 export interface Appointment {
   id: number;

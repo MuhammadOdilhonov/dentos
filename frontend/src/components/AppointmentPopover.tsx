@@ -23,7 +23,8 @@ import {
   CreditCard,
   Trash2,
   AlertTriangle,
-  Building2
+  Building2,
+  Lock
 } from 'lucide-react';
 
 interface AppointmentPopoverProps {
@@ -143,6 +144,14 @@ export const STATUS_CONFIG: Record<
     icon: Circle,
     textColor: 'text-blue-600 dark:text-sky-400',
     bgBadge: 'bg-blue-50 dark:bg-blue-950/60 border-blue-200 dark:border-blue-800'
+  },
+  blocked: {
+    labelKey: 'aptst_blocked',
+    color: '#64748B',
+    dotColor: 'bg-slate-500',
+    icon: Lock,
+    textColor: 'text-slate-600 dark:text-slate-300',
+    bgBadge: 'bg-slate-100 dark:bg-slate-800 border-slate-300 dark:border-slate-700'
   }
 };
 
