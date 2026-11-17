@@ -273,7 +273,12 @@ export default function NewAppointmentModal({
   };
 
   const doctors = employees.filter(
-    (e) => e.role === 'doctor' || (e.role === 'deputy_director' && (Boolean(e.chair && e.chair.trim()) || (Array.isArray(e.schedule_details) && e.schedule_details.some((s) => (s.enabled ?? s.is_workday) && s.intervals && s.intervals.length > 0))))
+    (e) =>
+      e.role === 'doctor' ||
+      ((e.role === 'deputy_director' || e.role === 'director') &&
+        (Boolean(e.chair && e.chair.trim()) ||
+          Boolean(e.specialty) ||
+          (Array.isArray(e.schedule_details) && e.schedule_details.some((s) => (s.enabled ?? s.is_workday) && s.intervals && s.intervals.length > 0))))
   );
 
   return (

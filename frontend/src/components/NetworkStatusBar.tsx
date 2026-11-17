@@ -350,9 +350,11 @@ export default function NetworkStatusBar() {
     const onSave = (e: Event) => {
       const d = (e as CustomEvent).detail || {};
       if (typeof d.pending === 'number') { pendingSaves.current = d.pending; if (d.pending > 0) armSlowWatch(); else disarmSlowWatch(); }
-      if (typeof d.failed === 'number' && d.failed > 0) setStuck(true, 'Ba’zi ma’lumot saqlanmadi — qayta saqlash');
-      if (d.error) setStuck(true, 'Saqlanmadi — qayta saqlash');
-      recompute();
+      queueMicrotask(() => {
+        if (typeof d.failed === 'number' && d.failed > 0) setStuck(true, 'Ba’zi ma’lumot saqlanmadi — qayta saqlash');
+        if (d.error) setStuck(true, 'Saqlanmadi — qayta saqlash');
+        recompute();
+      });
     };
     window.addEventListener('dentos-save-state', onSave);
 

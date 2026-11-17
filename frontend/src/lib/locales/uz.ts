@@ -875,7 +875,7 @@ export const uz = {
     k5: 'Katalog narxlarida',
     k6: 'Yopish',
     k7: 'Tish va xizmatlarni tanlash',
-    k8: 'Texnik va naryad urish',
+    k8: 'Xizmatlar va naryad urish',
     k9: 'Bajarilmoqda / Sinovda',
     k10: 'Yakunlash va To‘lov',
     k11: 'Belgilangan tishlar',

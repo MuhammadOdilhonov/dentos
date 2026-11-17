@@ -17,7 +17,9 @@ function identity(id: number) {
 }
 function notify() {
   if (typeof window === 'undefined') return;
-  window.dispatchEvent(new CustomEvent('dentos-save-state', { detail: { pending, failed: failed.size } }));
+  queueMicrotask(() => {
+    window.dispatchEvent(new CustomEvent('dentos-save-state', { detail: { pending, failed: failed.size } }));
+  });
 }
 export async function hydratePatientRecords(id: number) {
   const { cid, key } = identity(id);

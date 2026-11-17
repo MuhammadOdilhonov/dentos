@@ -103,7 +103,21 @@ export const ActiveCheckoutModal: React.FC<ActiveCheckoutModalProps> = ({
 
     clinicApi.getEmployees().then(emps => {
       setEmployees(emps);
-      const docNames = emps.filter(e => e.role === 'doctor').map(e => e.full_name);
+      const isClinical = (e: Employee) => {
+        if (e.is_active === false) return false;
+        const r = (e.role || '').toLowerCase();
+        const spec = (e.specialty || '').toLowerCase();
+        return (
+          r === 'doctor' ||
+          r === 'director' ||
+          r === 'deputy_director' ||
+          r === 'chief_doctor' ||
+          Boolean(spec && !['бухгалтер', 'уборщица', 'administrator', 'администратор', 'reception'].includes(spec)) ||
+          (e as any).is_doctor ||
+          (e as any).can_treat
+        );
+      };
+      const docNames = emps.filter(isClinical).map(e => e.full_name);
       const merged = Array.from(new Set([...DEFAULT_DOCTORS, ...docNames]));
       setDoctorList(merged);
     });

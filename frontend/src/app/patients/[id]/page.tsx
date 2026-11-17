@@ -1831,6 +1831,8 @@ export default function PatientDetailPage() {
         status: t.status === 'Долг' ? 'debt' : 'completed',
         start_time: t.date || tk('txt_today'),
         dateIso,
+        rawStartTime: t.created_at || dateIso,
+        created_at: t.created_at || dateIso,
         teeth: t.teeth || (t.tooth ? [t.tooth] : []),
         category: t.category || 'Терапия',
         branch_name: t.branch_name || (t.branch_id ? branches.find((b) => b.id === t.branch_id)?.name : '') || ''
@@ -1854,6 +1856,9 @@ export default function PatientDetailPage() {
           status: a.status,
           start_time: fmtAptTime(a.start_time),
           dateIso: aptDay,
+          rawStartTime: a.start_time,
+          created_at: a.start_time,
+          end_time: a.end_time,
           chair_name: a.chair_name,
           branch_name: a.branch_name || branches.find((b) => b.id === a.branch)?.name || '',
           teeth: []
@@ -1864,7 +1869,7 @@ export default function PatientDetailPage() {
     // 3. Struck naryads from karzinka
     patientNaryads.forEach((n) => {
       if (cancelledTreatmentIds.includes(`nar-${n.id}`)) return;
-      const narDay = getTodayStr();
+      const narDay = n.created_at ? n.created_at.split('T')[0] : getTodayStr();
       list.push({
         id: `nar-${n.id}`,
         procedure: n.title || n.name,
@@ -1873,6 +1878,8 @@ export default function PatientDetailPage() {
         status: n.isDebt ? 'debt' : 'completed',
         start_time: n.date || tk('txt_today'),
         dateIso: narDay,
+        rawStartTime: n.created_at || narDay,
+        created_at: n.created_at || narDay,
         teeth: n.teeth || [],
         branch_name: (n as any).branch_name || ((n as any).branch_id ? branches.find((b) => b.id === (n as any).branch_id)?.name : '') || ''
       });
@@ -2073,7 +2080,7 @@ export default function PatientDetailPage() {
     branch_id?: number | null;
     branch_name?: string | null;
   };
-  const billRows: PayRow[] = patientAppointments
+  const appointmentBillRows: PayRow[] = patientAppointments
     .filter((a) => Number(a.price) > 0)
     .map((a) => {
       const total = Number(a.price) || 0;
@@ -2097,6 +2104,31 @@ export default function PatientDetailPage() {
         branch_name: a.branch_name || (a.branch ? branches.find((b) => b.id === a.branch)?.name : '') || null
       };
     });
+
+  const naryadBillRows: PayRow[] = patientNaryads
+    .filter((n) => Number(n.price) > 0)
+    .map((n) => {
+      const total = Number(n.price) || 0;
+      const paid = n.isDebt ? 0 : total;
+      const st: 'paid' | 'partial' | 'unpaid' | 'cancelled' = n.isDebt ? 'unpaid' : 'paid';
+      const ts = n.created_at ? new Date(n.created_at).getTime() : n.id;
+      return {
+        id: n.id,
+        ts: isNaN(ts) ? Date.now() : ts,
+        date: n.date || tk('txt_today'),
+        total,
+        paid,
+        st,
+        kind: 'bill' as const,
+        operator: n.doctor || 'Shifokor',
+        method: n.isDebt ? undefined : 'Наличные',
+        description: n.title || n.name || 'Naryad xizmati',
+        branch_id: (n as any).branch_id || null,
+        branch_name: (n as any).branch_name || null
+      };
+    });
+
+  const billRows: PayRow[] = [...appointmentBillRows, ...naryadBillRows];
   const paymentRows: PayRow[] = invoices.map((inv) => ({
     id: inv.id,
     ts: inv.id, // id is the creation timestamp for manual payments
@@ -2789,18 +2821,24 @@ export default function PatientDetailPage() {
       setNaryadLog((prev) => [entry, ...prev]);
     });
 
+    const invDate = new Date().toLocaleDateString(language === 'uz' ? 'uz-UZ' : language === 'en' ? 'en-US' : 'ru-RU', {
+      day: 'numeric', month: 'long'
+    });
     if (isDebt) {
       await clinicApi.updatePatientBalance(patient.id, -total);
       setPatient((prev) => (prev ? { ...prev, balance: prev.balance - total } : null));
-      setInvoices((prev) => [
-        { id: Date.now(), date: '08 сентября', status: 'Отменен', paid: 0, total },
-        ...prev
-      ]);
     } else {
-      setInvoices((prev) => [
-        { id: Date.now(), date: '08 сентября', status: 'Оплачен', paid: total, total },
-        ...prev
-      ]);
+      const newInv: PaymentInvoice = {
+        id: Date.now(),
+        date: invDate,
+        status: 'Оплачен',
+        paid: total,
+        total,
+        description: items.map((i) => i.name).join(', ')
+      };
+      const nextInvoices = [newInv, ...invoices];
+      setInvoices(nextInvoices);
+      clinicApi.savePatientPayments(patient.id, nextInvoices);
     }
     // Mark ordered procedures in patient plans & clear selectedProcsForNaryad
     const orderedProcIds = Object.keys(selectedProcsForNaryad).filter((id) => selectedProcsForNaryad[id]);
@@ -2941,11 +2979,9 @@ export default function PatientDetailPage() {
       items: data.items.map((it) => ({ name: it.name, doctor: it.doctor, quantity: it.quantity, price: it.price, total: it.price * it.quantity }))
     };
 
-    setInvoices((prev) => {
-      const next = [newInvoice, ...prev];
-      if (patient) clinicApi.savePatientPayments(patient.id, next);
-      return next;
-    });
+    const nextInvoices = [newInvoice, ...invoices];
+    setInvoices(nextInvoices);
+    if (patient) clinicApi.savePatientPayments(patient.id, nextInvoices);
 
     if (patient) {
       // 1. Close active appointment for this patient in Zapis/Calendar
@@ -3029,26 +3065,24 @@ export default function PatientDetailPage() {
     clinicApi.appendNaryadLog(patient.id, logEntry);
     setNaryadLog((prev) => [logEntry, ...prev]);
 
+    const invDate = new Date().toLocaleDateString(language === 'uz' ? 'uz-UZ' : language === 'en' ? 'en-US' : 'ru-RU', {
+      day: 'numeric', month: 'long'
+    });
     if (newNaryadIsDebt) {
       await clinicApi.updatePatientBalance(patient.id, -newNaryadPrice);
       setPatient((prev) => (prev ? { ...prev, balance: prev.balance - newNaryadPrice } : null));
-      const newInv: PaymentInvoice = {
-        id: Date.now(),
-        date: '08 сентября',
-        status: 'Отменен',
-        paid: 0,
-        total: newNaryadPrice
-      };
-      setInvoices((prev) => [newInv, ...prev]);
     } else {
       const newInv: PaymentInvoice = {
         id: Date.now(),
-        date: '08 сентября',
+        date: invDate,
         status: 'Оплачен',
         paid: newNaryadPrice,
-        total: newNaryadPrice
+        total: newNaryadPrice,
+        description: newItem.title
       };
-      setInvoices((prev) => [newInv, ...prev]);
+      const nextInvoices = [newInv, ...invoices];
+      setInvoices(nextInvoices);
+      clinicApi.savePatientPayments(patient.id, nextInvoices);
     }
   };
 
@@ -6656,11 +6690,19 @@ export default function PatientDetailPage() {
       {/* MODAL: Лечение detail — what was done on the clicked treatment record (mirrors 32desk "Зуб # / Пациент") */}
       {treatmentModalApt && (() => {
         const a = treatmentModalApt;
-        const dur = Math.max(0, Math.round((new Date(a.end_time).getTime() - new Date(a.start_time).getTime()) / 60000)) || 0;
-        const _d = new Date(a.start_time);
+        const dur = Math.max(0, Math.round((new Date(a.end_time).getTime() - new Date(a.start_time).getTime()) / 60000)) || (a as any).duration || 30;
+        const getValidDate = () => {
+          const raw = (a as any).rawStartTime || (a as any).created_at || (a as any).dateIso || a.start_time;
+          if (raw) {
+            const d = new Date(raw);
+            if (!isNaN(d.getTime())) return d;
+          }
+          return new Date();
+        };
+        const _d = getValidDate();
         const doneDate = `${String(_d.getDate()).padStart(2, '0')}.${String(_d.getMonth() + 1).padStart(2, '0')}.${_d.getFullYear()}`;
         const price = Number(a.price) || 0;
-        const docInitials = (a.doctor_name || '').split(' ').filter(Boolean).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
+        const docInitials = (a.doctor_name || '').split(' ').filter(Boolean).map((w) => w[0]).slice(0, 2).join('').toUpperCase() || 'DR';
         return (
         <div className="fixed inset-0 z-50 bg-slate-900/30 backdrop-blur-xs flex items-start justify-center p-4 overflow-y-auto" onClick={() => setTreatmentModalApt(null)}>
           <div onClick={(e) => e.stopPropagation()} className="bg-white dark:bg-slate-900 rounded-2xl max-w-5xl w-full my-6 shadow-2xl border border-slate-200 dark:border-slate-800 text-slate-900 dark:text-white flex flex-col max-h-[90vh]">

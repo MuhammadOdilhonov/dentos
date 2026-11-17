@@ -102,6 +102,7 @@ export default function NaryadModal({
   // Dental technician selection in naryad
   const [selectedTechnician, setSelectedTechnician] = useState('');
   const [techNote, setTechNote] = useState('');
+  const [showLabDetails, setShowLabDetails] = useState(false);
 
   // Doctor state
   const [doctorsList, setDoctorsList] = useState<Employee[]>([]);
@@ -122,7 +123,21 @@ export default function NaryadModal({
     Promise.all([clinicApi.getEmployees(), clinicApi.getNaryadCatalog(currentBranchId), clinicApi.getDoctorNaryads()])
       .then(([employees, catalog, assignments]) => {
         if (cancelled) return;
-        const doctors = employees.filter(employee => employee.role === 'doctor' && employee.is_active !== false);
+        const isClinicalDoctor = (employee: Employee) => {
+          if (employee.is_active === false) return false;
+          const r = (employee.role || '').toLowerCase();
+          const spec = (employee.specialty || '').toLowerCase();
+          return (
+            r === 'doctor' ||
+            r === 'director' ||
+            r === 'deputy_director' ||
+            r === 'chief_doctor' ||
+            Boolean(spec && !['бухгалтер', 'уборщица', 'administrator', 'администратор', 'reception'].includes(spec)) ||
+            (employee as any).is_doctor ||
+            (employee as any).can_treat
+          );
+        };
+        const doctors = employees.filter(isClinicalDoctor);
         setDoctorsList(doctors);
         setCatalogItems(catalog);
         setDoctorAssignments(assignments);
@@ -629,41 +644,65 @@ export default function NaryadModal({
 
           {/* RIGHT: Dental Technician Details & Naryad Cart (4 cols) */}
           <div className="lg:col-span-4 flex flex-col space-y-4 overflow-hidden">
-            {/* Zubotexnik / Laboratoriya Box */}
-            <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-4 shadow-2xs space-y-2.5 shrink-0">
-              <div className="flex items-center gap-2 text-xs font-bold text-amber-900 dark:text-amber-300">
-                <FlaskConical className="w-4 h-4 text-amber-500" />
-                <span>{tr('naryadmodal.k21')}</span>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="text-[10px] font-bold text-slate-500 block mb-1">
-                    {tr('naryadmodal.k22')}
-                  </label>
-                  <select
-                    value={selectedTechnician}
-                    onChange={(e) => setSelectedTechnician(e.target.value)}
-                    className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-bold outline-none"
+            {/* Zubotexnik / Laboratoriya Box (Shown automatically for lab items, or expandable) */}
+            {(() => {
+              const hasLabItems = cart.some(
+                (it) => it.category === 'Зуботехнические работы' || (it.category || '').toLowerCase().includes('лабор') || (it.category || '').toLowerCase().includes('зуботех')
+              );
+              const isOpen = hasLabItems || showLabDetails;
+              return (
+                <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-3 shadow-2xs shrink-0 transition-all">
+                  <button
+                    type="button"
+                    onClick={() => setShowLabDetails(!showLabDetails)}
+                    className="w-full flex items-center justify-between text-xs font-bold text-slate-700 dark:text-slate-200 hover:text-amber-600 dark:hover:text-amber-400 transition"
                   >
-                    {LAB_TECHNICIANS.map((t) => (
-                      <option key={t} value={t}>{t}</option>
-                    ))}
-                  </select>
+                    <div className="flex items-center gap-2">
+                      <FlaskConical className={`w-4 h-4 ${hasLabItems ? 'text-amber-500' : 'text-slate-400'}`} />
+                      <span>{tr('naryadmodal.k21')}</span>
+                      {hasLabItems && (
+                        <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-amber-100 dark:bg-amber-950 text-amber-800 dark:text-amber-300">
+                          Laboratoriya
+                        </span>
+                      )}
+                    </div>
+                    <span className="text-[10px] text-slate-400 font-semibold">
+                      {isOpen ? '▲' : '▼ Qo‘shimcha'}
+                    </span>
+                  </button>
+                  {isOpen && (
+                    <div className="grid grid-cols-2 gap-2 pt-2.5 border-t border-slate-100 dark:border-slate-800 mt-2.5 animate-in fade-in duration-150">
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-500 block mb-1">
+                          {tr('naryadmodal.k22')}
+                        </label>
+                        <select
+                          value={selectedTechnician}
+                          onChange={(e) => setSelectedTechnician(e.target.value)}
+                          className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-bold outline-none"
+                        >
+                          {LAB_TECHNICIANS.map((t) => (
+                            <option key={t} value={t}>{t}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-500 block mb-1">
+                          {tr('naryadmodal.k23')}
+                        </label>
+                        <input
+                          type="text"
+                          value={techNote}
+                          onChange={(e) => setTechNote(e.target.value)}
+                          placeholder={tr('naryadmodal.k24')}
+                          className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-medium outline-none"
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
-                <div>
-                  <label className="text-[10px] font-bold text-slate-500 block mb-1">
-                    {tr('naryadmodal.k23')}
-                  </label>
-                  <input
-                    type="text"
-                    value={techNote}
-                    onChange={(e) => setTechNote(e.target.value)}
-                    placeholder={tr('naryadmodal.k24')}
-                    className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl text-xs font-medium outline-none"
-                  />
-                </div>
-              </div>
-            </div>
+              );
+            })()}
 
             {/* Shopping Cart List */}
             <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 flex-1 flex flex-col overflow-hidden shadow-2xs">

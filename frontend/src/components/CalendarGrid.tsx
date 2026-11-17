@@ -145,6 +145,18 @@ export default function CalendarGrid({
         const minIdx = Math.min(dragSelection.startIndex, dragSelection.endIndex);
         const maxIdx = Math.max(dragSelection.startIndex, dragSelection.endIndex);
         const startT = timeSlots[minIdx] || '10:00';
+
+        // SINGLE CLICK (no drag): directly open appointment modal!
+        if (minIdx === maxIdx) {
+          if (dragSelection.doctorId) {
+            onSlotClick(dragSelection.doctorId, startT, 30);
+          }
+          setDragSelection(null);
+          setSlotActionMenu(null);
+          return;
+        }
+
+        // DRAG DOWN (multiple slots): show action menu popover (Block time / Book appointment)
         const [lastH, lastM] = (timeSlots[maxIdx] || '10:00').split(':').map(Number);
         const endTotalMin = (lastH || 0) * 60 + (lastM || 0) + 30;
         const endH = Math.min(23, Math.floor(endTotalMin / 60));
@@ -183,7 +195,7 @@ export default function CalendarGrid({
       window.removeEventListener('mouseup', handleGlobalMouseUp);
       window.removeEventListener('keydown', handleKeyDown);
     };
-  }, [isMouseDownOnSlot, dragSelection, timeSlots]);
+  }, [isMouseDownOnSlot, dragSelection, timeSlots, onSlotClick]);
 
   // Shifokor shu SANADA ishlaydimi: istisno sana (schedule_exceptions) haftalik
   // grafikdan USTUN. Grafik umuman kiritilmagan bo'lsa — ishlaydi deb hisoblanadi.
@@ -205,7 +217,10 @@ export default function CalendarGrid({
   // Shifokorlar va qabul olib boruvchi direktor o'rinbosarlari (kreslo yoki faol grafigi bor) kalendarda chiqadi.
   const isClinicalStaff = (e: Employee) =>
     e.role === 'doctor' ||
-    (e.role === 'deputy_director' && (Boolean(e.chair && e.chair.trim()) || (Array.isArray(e.schedule_details) && e.schedule_details.some((s) => (s.enabled ?? s.is_workday) && s.intervals && s.intervals.length > 0))));
+    ((e.role === 'deputy_director' || e.role === 'director') &&
+      (Boolean(e.chair && e.chair.trim()) ||
+        Boolean(e.specialty) ||
+        (Array.isArray(e.schedule_details) && e.schedule_details.some((s) => (s.enabled ?? s.is_workday) && s.intervals && s.intervals.length > 0))));
   const allDoctors = employees.filter(isClinicalStaff);
   // KUN ko'rinishida tanlangan sanada ishlamaydigan shifokor ustuni chiqarilmaydi.
   // Lekin o'sha kuni qabuli bor bo'lsa (ma'lumot nomuvofiqligi) — baribir ko'rsatamiz.
@@ -867,9 +882,9 @@ export default function CalendarGrid({
               {isWithinRange && (
                 <div
                   style={{ top: `${currentTopOffset - 9}px` }}
-                  className="absolute left-1 right-1 z-20 bg-red-600 text-white text-[10px] font-mono font-black px-1.5 py-0.5 rounded-md shadow-md flex items-center justify-between pointer-events-none"
+                  className="absolute left-1 right-1 z-[5] bg-rose-500/85 text-white text-[10px] font-mono font-bold px-1.5 py-0.5 rounded-md shadow-xs flex items-center justify-between pointer-events-none opacity-90 transition-opacity"
                 >
-                  <span className="w-1.5 h-1.5 rounded-full bg-white animate-ping" />
+                  <span className="w-1.5 h-1.5 rounded-full bg-white/90" />
                   <span>{currentTimeFormatted}</span>
                 </div>
               )}
@@ -888,9 +903,9 @@ export default function CalendarGrid({
 
             <div className="flex-1 grid relative" style={{ gridTemplateColumns: gridTemplateColumns }}>
               {isWithinRange && (
-                <div style={{ top: `${currentTopOffset}px` }} className="absolute left-0 right-0 z-20 pointer-events-none flex items-center">
-                  <div className="w-2.5 h-2.5 rounded-full bg-red-600 -ml-1 ring-2 ring-white dark:ring-slate-900 shadow-md" />
-                  <div className="flex-1 h-[2px] bg-red-500 shadow-sm shadow-red-500/50" />
+                <div style={{ top: `${currentTopOffset}px` }} className="absolute left-0 right-0 z-[5] pointer-events-none flex items-center">
+                  <div className="w-2 h-2 rounded-full bg-rose-400 -ml-1 ring-2 ring-white dark:ring-slate-900 shadow-xs" />
+                  <div className="flex-1 h-[1.5px] bg-rose-400/70" />
                 </div>
               )}
 
