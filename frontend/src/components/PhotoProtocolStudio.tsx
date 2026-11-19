@@ -37,6 +37,7 @@ import {
   Scissors,
   ClipboardPaste,
   Heading1,
+  Presentation,
   X
 } from 'lucide-react';
 import type { KeynoteElement, KeynoteSlide } from './KeynoteDentalPhotoProtocol';
@@ -48,7 +49,7 @@ import type { ExportFormat } from './PhotoProtocolExport';
 import css from './PhotoProtocolStudio.module.css';
 
 export type Element = Omit<KeynoteElement, 'type' | 'align'> & {
-  type: 'image' | 'text' | 'heading' | 'badge' | 'note';
+  type: 'image' | 'video' | 'text' | 'heading' | 'badge' | 'note';
   align?: 'left' | 'center' | 'right' | 'justify';
   fit?: 'cover' | 'contain';
   objectX?: number; // 0 to 100 percentage
@@ -263,6 +264,35 @@ function Visual({ el, isMasking = false }: { el: Element; isMasking?: boolean })
               (el.opacity ?? 100) / 100
             })`,
             transition: isMasking ? 'none' : 'transform 0.1s ease-out'
+          }}
+        />
+      </div>
+    );
+  }
+
+  if (el.type === 'video') {
+    return (
+      <div
+        style={{
+          width: '100%',
+          height: '100%',
+          overflow: 'hidden',
+          background: '#000',
+          borderRadius: el.borderRadius ? `${el.borderRadius}px` : undefined,
+          border: el.borderWidth ? `${el.borderWidth}px solid ${el.borderColor || '#007aff'}` : undefined,
+          boxShadow: el.shadow ? '0 10px 30px rgba(0,0,0,0.25)' : undefined
+        }}
+      >
+        <video
+          src={el.src}
+          controls={!isMasking}
+          playsInline
+          preload="metadata"
+          style={{
+            width: '100%',
+            height: '100%',
+            objectFit: el.fit || 'contain',
+            background: '#000'
           }}
         />
       </div>
@@ -751,6 +781,7 @@ export default function PhotoProtocolStudio({
   const viewport = useRef<HTMLDivElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const replaceFileInput = useRef<HTMLInputElement>(null);
+  const presInput = useRef<HTMLInputElement>(null);
   const live = useRef(true);
   const saveVersion = useRef(0);
   const lastSaveDoc = useRef<Slide[] | null>(null);
@@ -767,7 +798,14 @@ export default function PhotoProtocolStudio({
   const dragSlide = useRef<number | null>(null);
   const lastTap = useRef({ id: '', time: 0 });
 
-  const key = `${getActiveClinicId() ?? 'none'}:${patientId}`;
+  // ── PREZENTATSIYALAR (bir bemorda 3 tagacha slayd-to'plam) ──────────────────
+  const [activeSlot, setActiveSlot] = useState(1);
+  const activeSlotRef = useRef(1);
+  const [presentations, setPresentations] = useState<Array<{ slot: number; title: string; hasContent: boolean }>>([]);
+  const switching = useRef(false);
+  useEffect(() => { activeSlotRef.current = activeSlot; }, [activeSlot]);
+
+  const key = `${getActiveClinicId() ?? 'none'}:${patientId}:${activeSlot}`;
   const loadCancelled = useRef(false);
 
   // 1. Load Document from Backend / IndexedDB
@@ -777,7 +815,7 @@ export default function PhotoProtocolStudio({
     setError('');
     setReadFailed(false);
     try {
-      const backendDoc = await clinicApi.fetchPatientPhotoDoc(patientId);
+      const backendDoc = await clinicApi.fetchPatientPhotoDoc(patientId, studioClinicId.current ?? undefined, activeSlotRef.current);
       if (loadCancelled.current) return;
 
       if (backendDoc === null && !isDemoClinic()) {
@@ -853,9 +891,10 @@ export default function PhotoProtocolStudio({
       while (pendingSave.current) {
         const next = pendingSave.current;
         pendingSave.current = null;    // shu holatni oldik; keyingi save yangi pending qo'yadi
+        const slotForThis = activeSlotRef.current;  // SLOTni shu yerda qotiramiz — slot almashsa ham eski slotga yoziladi
         const sentVersion = saveVersion.current;
         try {
-          const { ok, doc: canonical } = await clinicApi.savePatientPhotoDocBackend(patientId, next, studioClinicId.current ?? undefined);
+          const { ok, doc: canonical } = await clinicApi.savePatientPhotoDocBackend(patientId, next, studioClinicId.current ?? undefined, slotForThis);
           if (!ok) throw new Error('Server saqlamadi');
           // Server base64 rasmlarni media URL'ga aylantirib qaytardi — joriy hujjatga
           // (va navbatdagi pending'ga) singdiramiz, YANGI tahrirlarni yo'qotmasdan. Shunda
@@ -922,6 +961,79 @@ export default function PhotoProtocolStudio({
     setSlides(next);
     save(next);
   };
+
+  // ── PREZENTATSIYA boshqaruvi ───────────────────────────────────────────────
+  const refreshPresentations = useCallback(async () => {
+    if (isDemoClinic()) { setPresentations([]); return; }
+    const list = await clinicApi.listPatientPresentations(patientId, studioClinicId.current ?? undefined);
+    if (live.current) setPresentations(list);
+  }, [patientId]);
+
+  useEffect(() => { void refreshPresentations(); }, [refreshPresentations]);
+
+  // Slotni almashtirish: joriy slotning KUTILAYOTGAN saqlashini tugatib (eski slotga
+  // yoziladi — slot runPendingSaves ichida qotirilgan), keyin yangi slotni yuklaydi.
+  const switchToSlot = async (newSlot: number) => {
+    if (newSlot === activeSlotRef.current || switching.current || status === 'loading') return;
+    switching.current = true;
+    setStatus('saving');
+    try {
+      if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+      await runPendingSaves();
+      while (saving.current) await new Promise((r) => setTimeout(r, 40));
+      await refreshPresentations();
+    } catch { /* ignore */ }
+    switching.current = false;
+    activeSlotRef.current = newSlot;
+    setSelected(null);
+    setActive(0);
+    setHistory([]);
+    setFuture([]);
+    setActiveSlot(newSlot); // key o'zgaradi → loadDoc yangi slotni yuklaydi
+  };
+
+  // 1..3 orasidagi bo'sh slotga yangi prezentatsiya qo'shadi.
+  const addPresentation = async () => {
+    const used = new Set<number>([1, ...presentations.map((p) => p.slot), activeSlotRef.current]);
+    const next = [1, 2, 3].find((s) => !used.has(s));
+    if (!next) { setError('Ko‘pi bilan 3 ta prezentatsiya mumkin.'); return; }
+    await switchToSlot(next);
+  };
+
+  // Joriy prezentatsiyani (slotni) BUTUNLAY o'chiradi — barcha slaydlari bilan.
+  const deleteCurrentPresentation = async () => {
+    if (isDemoClinic() || switching.current || status === 'loading') return;
+    const slot = activeSlotRef.current;
+    if (!window.confirm(`"${slotTitle(slot)}" — bu prezentatsiyaning BARCHA slaydlari o‘chiriladi. Davom etilsinmi?`)) return;
+    switching.current = true;
+    setStatus('saving');
+    try {
+      if (saveTimer.current) { clearTimeout(saveTimer.current); saveTimer.current = null; }
+      pendingSave.current = null; // o'chirilyapti — kutilayotgan saqlashni tashlaymiz
+      while (saving.current) await new Promise((r) => setTimeout(r, 40));
+      await clinicApi.deletePatientPresentation(patientId, slot, studioClinicId.current ?? undefined);
+    } catch { /* ignore */ }
+    // Qolgan slotlarni aniqlab, boshqasiga o'tamiz (bo'lmasa 1-slot, bo'sh)
+    const remaining = presentations.map((p) => p.slot).filter((s) => s !== slot);
+    const target = remaining.length ? Math.min(...remaining) : 1;
+    await refreshPresentations();
+    switching.current = false;
+    activeSlotRef.current = target;
+    setSelected(null);
+    setActive(0);
+    setHistory([]);
+    setFuture([]);
+    // O'chirilgan slotga qaytib qolsak ham bo'sh ko'rinsin
+    doc.current = [blank()];
+    setSlides(doc.current);
+    setActiveSlot(target); // target boshqa bo'lsa loadDoc uni yuklaydi
+    setStatus('saved');
+  };
+
+  // Tablarda ko'rsatiladigan slotlar: mavjud prezentatsiyalar ∪ joriy slot (hech bo'lmasa 1).
+  const slotTabs = Array.from(new Set<number>([1, ...presentations.map((p) => p.slot), activeSlot])).sort((a, b) => a - b);
+  const canAddPresentation = slotTabs.length < 3;
+  const slotTitle = (s: number) => presentations.find((p) => p.slot === s)?.title || `Prezentatsiya ${s}`;
 
   const currentSlide = slides[active] || slides[0];
   const selectedEl = currentSlide?.elements.find((e) => e.id === selected) || null;
@@ -1075,20 +1187,44 @@ export default function PhotoProtocolStudio({
   //  - format/hajm tekshiruvi (buzilgan rasm uchun aniq xabar);
   //  - piksel chegarasi (juda katta rasm brauzerni qotirmasin);
   //  - xatoda ham bitmap.close() (resurs bo'shaydi).
-  const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
-  const MAX_IMAGE_PIXELS = 40_000_000; // ~40 MP
+  // FORMAT CHEKLOVI OLIB TASHLANDI: endi brauzer ocha oladigan HAR QANDAY rasm yuklanadi
+  // (JPG/PNG/WebP/GIF/BMP/AVIF/TIFF...), HEIC/HEIF esa (iPhone) heic2any bilan JPEG'ga
+  // aylantiriladi. Har bir rasm pastdagi canvas orqali JPEG'ga qayta kodlanadi — shuning
+  // uchun backend bir xil (JPEG) oladi, fayl normallanadi va siqiladi.
+  const MAX_IMAGE_BYTES = 60 * 1024 * 1024; // iPhone HEIC + yuqori aniqlikdagi rasmlar uchun
+  const MAX_IMAGE_PIXELS = 80_000_000; // ~80 MP
+  const IMAGE_EXT_RE = /\.(jpe?g|png|webp|gif|bmp|avif|tiff?|heic|heif|jfif|svg)$/i;
+  function looksLikeImage(f: File): boolean {
+    // Ba'zi HEIC/HEIF fayllar bo'sh yoki noto'g'ri MIME bilan keladi — kengaytmaga ham qaraymiz.
+    if (f.type && f.type.startsWith('image/')) return true;
+    return IMAGE_EXT_RE.test(f.name || '');
+  }
+  async function fileToBitmap(f: File): Promise<ImageBitmap> {
+    const isHeic = /image\/(heic|heif)/i.test(f.type) || /\.(heic|heif)$/i.test(f.name || '');
+    if (isHeic) {
+      // Brauzer (Safari'dan tashqari) HEIC'ni o'zi ocholmaydi — heic2any bilan JPEG'ga o'giramiz.
+      try {
+        const heic2any = (await import('heic2any')).default as (o: any) => Promise<Blob | Blob[]>;
+        const out = await heic2any({ blob: f, toType: 'image/jpeg', quality: 0.92 });
+        return await createImageBitmap(Array.isArray(out) ? out[0] : out);
+      } catch {
+        return await createImageBitmap(f); // Safari/iOS o'zi ochishi mumkin — oxirgi urinish
+      }
+    }
+    return await createImageBitmap(f);
+  }
   async function decodeImageElement(f: File): Promise<{ src: string; name: string }> {
-    if (!/^image\/(jpeg|png|webp)$/i.test(f.type)) {
-      throw new Error(`"${f.name || 'fayl'}" — faqat JPG, PNG yoki WebP formatidagi rasm yuklang.`);
+    if (!looksLikeImage(f)) {
+      throw new Error(`"${f.name || 'fayl'}" rasm emas. Rasm yuklang (JPG, PNG, HEIC, WebP, GIF, BMP, AVIF...).`);
     }
     if (f.size > MAX_IMAGE_BYTES) {
-      throw new Error(`"${f.name}" 25 MB dan katta — kichikroq rasm yuklang.`);
+      throw new Error(`"${f.name}" juda katta (${(f.size / 1048576).toFixed(0)} MB). 60 MB gacha rasm yuklang.`);
     }
     let bitmap: ImageBitmap;
     try {
-      bitmap = await createImageBitmap(f);
+      bitmap = await fileToBitmap(f);
     } catch {
-      throw new Error(`"${f.name}" ochilmadi — rasm buzilgan yoki qo‘llab-quvvatlanmaydigan format.`);
+      throw new Error(`"${f.name}" ochilmadi — fayl buzilgan yoki brauzer bu formatni qo‘llab-quvvatlamaydi.`);
     }
     try {
       if (bitmap.width * bitmap.height > MAX_IMAGE_PIXELS) {
@@ -1111,7 +1247,7 @@ export default function PhotoProtocolStudio({
   // aniq sabab + qayta urinish yo'lini ko'rsatamiz (limitni shunchaki oshirmaymiz).
   const DOC_JSON_SOFT_LIMIT = 11 * 1024 * 1024;
 
-  async function uploadPhotos(files: FileList | null) {
+  async function uploadPhotos(files: FileList | File[] | null) {
     if (!files) return;
     setUploading(true);
     setError('');
@@ -1157,6 +1293,204 @@ export default function PhotoProtocolStudio({
     } finally {
       setUploading(false);
       if (fileInput.current) fileInput.current.value = '';
+    }
+  }
+
+  // VIDEO QO'YISH — foto-protokolga klinik video. Video base64 bo'lib hujjat JSON'iga
+  // sig'maydi (juda katta), shuning uchun avval bazaga (PatientMedia) yuklaymiz va elementga
+  // /api/patient-media/<id>/download/ URL beramiz. Element kichik qoladi, JSON limiti buzilmaydi.
+  const VIDEO_EXT_RE = /\.(mp4|webm|mov|m4v|ogg|ogv)$/i;
+  function isVideoFile(f: File) {
+    return (f.type && f.type.startsWith('video/')) || VIDEO_EXT_RE.test(f.name || '');
+  }
+  async function uploadVideos(files: FileList | File[] | null) {
+    if (!files) return;
+    const arr = Array.from(files).filter(isVideoFile);
+    if (!arr.length) return;
+    // MUHIM: foto-protokol saqlashi bilan AYNAN BIR XIL klinikani ishlatamiz (studioClinicId),
+    // getActiveClinicId() EMAS. Aks holda bemor klinikasi X-Clinic-ID bilan mos kelmay backend
+    // "Obyekt shu klinikaga tegishli emas" (400) beradi. Rasm shu bilan ishlaydi — video ham.
+    const clinicId = studioClinicId.current ?? getActiveClinicId();
+    if (isDemoClinic(clinicId ?? undefined)) { setError('Demo klinikada video saqlanmaydi — haqiqiy klinikada ishlaydi.'); return; }
+    setUploading(true);
+    setError('');
+    try {
+      // Videolarni KETMA-KET bazaga yuklaymiz (base64 EMAS — hujjat JSON'iga sig'maydi),
+      // keyin BITTA commit bilan slaydga joylaymiz.
+      const vids: Array<{ src: string; name: string }> = [];
+      for (const f of arr) {
+        const rec = await clinicApi.uploadPatientMediaRecord(patientId, 'foto', f, f.name, { media: 'video' }, clinicId ?? undefined);
+        if (!rec || !rec.id) throw new Error('Video yuklanmadi — klinika yoki ruxsatni tekshiring.');
+        vids.push({ src: rec.file_url || `/api/patient-media/${rec.id}/download/`, name: f.name });
+      }
+      if (!vids.length) return;
+      if (!doc.current.length) doc.current = [blank()];
+      const next: Slide[] = doc.current.map((s) => ({ ...s, elements: [...s.elements] }));
+      const idx = Math.max(0, Math.min(active, next.length - 1));
+      const existing = next[idx].elements.filter((e) => e.type === 'image' || e.type === 'video').length;
+      let firstId = '';
+      vids.forEach((v, i) => {
+        const n = existing + i;
+        const el = {
+          id: uid(), type: 'video' as const, src: v.src, caption: v.name,
+          x: 6 + (n % 3) * 31, y: 16 + Math.floor(n / 3) * 26, width: 29, height: 25,
+          fit: 'contain' as const, objectScale: 1, objectX: 50, objectY: 50
+        } as Element;
+        if (!firstId) firstId = el.id;
+        next[idx].elements.push(el);
+      });
+      commit(next);
+      setActive(idx);
+      setSelected(firstId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Video yuklanmadi. Qayta urinib ko‘ring.');
+    } finally {
+      setUploading(false);
+      if (fileInput.current) fileInput.current.value = '';
+    }
+  }
+
+  // RASM + VIDEO bitta tugmada: foydalanuvchi bitta "rasm yuklash" tugmasini bosib rasm
+  // YOKI video tanlaydi. Fayllarni turiga qarab ajratamiz — rasm uploadPhotos'ga (canvas→JPEG),
+  // video uploadVideos'ga (bazaga yuklab, havola bilan). Ikkisi ham bitta slaydga tushadi.
+  async function uploadMedia(files: FileList | null) {
+    if (!files || !files.length) return;
+    const arr = Array.from(files);
+    const videos = arr.filter(isVideoFile);
+    const images = arr.filter((f) => !isVideoFile(f));
+    if (images.length) await uploadPhotos(images);
+    if (videos.length) await uploadVideos(videos);
+  }
+
+  // ── PREZENTATSIYA YUKLASH ────────────────────────────────────────────────────
+  // Eski prezentatsiyani import qiladi: PDF → har SAHIFA, rasmlar → har RASM, video → har
+  // VIDEO ketma-ket ALOHIDA slayd bo'ladi (bitta slaydga tiqilmaydi). Sahifalar bazaga
+  // (PatientMedia) yuklanadi va URL bilan bog'lanadi — ko'p sahifali PDF ham JSON limitini buzmaydi.
+  function blobToDataUrl(blob: Blob): Promise<string> {
+    return new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(r.result as string); r.onerror = rej; r.readAsDataURL(blob); });
+  }
+  function dataUrlToBlob(dataUrl: string): Blob {
+    const [head, b64] = dataUrl.split(',');
+    const mime = head.match(/data:(.*?);/)?.[1] || 'image/jpeg';
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return new Blob([bytes], { type: mime });
+  }
+  async function pdfToBlobs(f: File): Promise<Blob[]> {
+    const pdfjs: any = await import('pdfjs-dist');
+    // Worker public/ dan (webpack asset muammosisiz). Faqat bir marta o'rnatiladi.
+    if (!pdfjs.GlobalWorkerOptions.workerSrc) pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
+    const pdf = await pdfjs.getDocument({ data: await f.arrayBuffer() }).promise;
+    const out: Blob[] = [];
+    const n = Math.min(pdf.numPages, 80); // xavfsizlik chegarasi
+    for (let i = 1; i <= n; i++) {
+      const page = await pdf.getPage(i);
+      const viewport = page.getViewport({ scale: 1.6 });
+      const canvas = document.createElement('canvas');
+      canvas.width = Math.round(viewport.width);
+      canvas.height = Math.round(viewport.height);
+      const ctx = canvas.getContext('2d');
+      if (!ctx) continue;
+      await page.render({ canvasContext: ctx, viewport }).promise;
+      const blob: Blob | null = await new Promise((res) => canvas.toBlob((b) => res(b), 'image/jpeg', 0.9));
+      if (blob) out.push(blob);
+      canvas.width = 0; canvas.height = 0; // xotira bo'shatish
+    }
+    return out;
+  }
+  function oneSlide(src: string, name: string, isVideo = false): Slide {
+    return {
+      id: uid(), background: isVideo ? '#000000' : '#ffffff',
+      elements: [{
+        id: uid(), type: (isVideo ? 'video' : 'image') as 'image' | 'video', src, caption: name,
+        x: 2, y: 2, width: 96, height: 96, fit: 'contain', objectScale: 1, objectX: 50, objectY: 50,
+      } as Element],
+    };
+  }
+  // Keynote (.key) — bu ZIP arxivi; sof slaydlarni (IWA ikkilik) brauzer o'qiy olmaydi, LEKIN
+  // Data/ ichidagi HAQIQIY rasmlarni chiqarib, har birini slayd qilamiz. Tema-bezaklar (kichik
+  // mt-/st- fayllar) va -small- eskizlarni tashlaymiz; rasmlarni Keynote asset-id bo'yicha
+  // tartiblaymiz (taxminan slayd tartibi). PNG/JPEG qoldiriladi (HEIC brauzerda ko'rinmaydi).
+  function keyAssetId(name: string): number {
+    const m = name.match(/-(\d+)\.[a-z]+$/i);
+    return m ? parseInt(m[1], 10) : 0;
+  }
+  async function keyToFiles(f: File): Promise<File[]> {
+    const fflate: any = await import('fflate');
+    const buf = new Uint8Array(await f.arrayBuffer());
+    const extracted: Record<string, Uint8Array> = fflate.unzipSync(buf, {
+      filter: (e: any) =>
+        /^Data\/.+\.(jpe?g|png)$/i.test(e.name) &&
+        !/-small-/i.test(e.name) &&
+        (e.originalSize || e.size || 0) > 120000, // tema-bezaklar (kichik) tashlanadi
+    });
+    const names = Object.keys(extracted).sort((a, b) => keyAssetId(a) - keyAssetId(b));
+    return names.map((n) => new File([extracted[n] as any], n.split('/').pop() || 'slide.jpg',
+      { type: /\.png$/i.test(n) ? 'image/png' : 'image/jpeg' }));
+  }
+  async function uploadPresentation(files: FileList | null) {
+    if (!files || !files.length) return;
+    setUploading(true);
+    setError('');
+    try {
+      const clinicId = studioClinicId.current ?? getActiveClinicId();
+      const demo = isDemoClinic(clinicId ?? undefined);
+      const made: Slide[] = [];
+      let page = 0;
+      for (const f of Array.from(files)) {
+        if (isVideoFile(f)) {
+          if (demo) continue;
+          const rec = await clinicApi.uploadPatientMediaRecord(patientId, 'foto', f, f.name, { media: 'video' }, clinicId ?? undefined);
+          if (!rec || !rec.id) throw new Error('Video yuklanmadi — klinika/ruxsatni tekshiring.');
+          made.push(oneSlide(rec.file_url || `/api/patient-media/${rec.id}/download/`, f.name, true));
+          continue;
+        }
+        // Keynote(.key)/ZIP → ichidagi rasmlar; PDF → sahifalar; rasm → bitta
+        let blobs: Blob[] = [];
+        if (/\.(key|zip)$/i.test(f.name)) {
+          let imgs: File[] = [];
+          try { imgs = await keyToFiles(f); }
+          catch { throw new Error(`"${f.name}" ochilmadi. Keynote'ni PDF qilib eksport qilib ko‘ring.`); }
+          if (!imgs.length) throw new Error(`"${f.name}" ichidan rasm topilmadi. Keynote'ni PDF/rasm qilib eksport qiling.`);
+          for (const im of imgs) {
+            const { src } = await decodeImageElement(im); // 1920px gacha kichiklaydi
+            blobs.push(dataUrlToBlob(src));
+          }
+        } else if (f.type === 'application/pdf' || /\.pdf$/i.test(f.name)) {
+          try { blobs = await pdfToBlobs(f); }
+          catch { throw new Error(`"${f.name}" PDF o‘qilmadi. PDF, rasm(lar) yoki video yuklang.`); }
+        } else if (looksLikeImage(f)) {
+          const { src } = await decodeImageElement(f);
+          blobs = [dataUrlToBlob(src)];
+        } else {
+          throw new Error(`"${f.name}" — qo‘llab-quvvatlanmaydi. PDF, rasm, video yoki Keynote(.key) yuklang.`);
+        }
+        for (const b of blobs) {
+          page++;
+          if (demo) {
+            made.push(oneSlide(await blobToDataUrl(b), f.name));
+          } else {
+            const rec = await clinicApi.uploadPatientMediaRecord(patientId, 'foto', b, `prez-${Date.now()}-${page}.jpg`, { media: 'presentation' }, clinicId ?? undefined);
+            if (!rec || !rec.id) throw new Error('Sahifa bazaga yuklanmadi — klinika/ruxsatni tekshiring.');
+            made.push(oneSlide(rec.file_url || `/api/patient-media/${rec.id}/download/`, f.name));
+          }
+        }
+      }
+      if (!made.length) { setError('Prezentatsiyadan slayd olinmadi. PDF, rasm yoki video yuklang.'); return; }
+      // Hujjat bo'sh (yoki bitta bo'sh slayd) bo'lsa — almashtiramiz; aks holda OXIRIGA qo'shamiz.
+      const cur = doc.current;
+      const isEmpty = cur.length === 0 || (cur.length === 1 && cur[0].elements.length === 0);
+      const next: Slide[] = isEmpty ? made : [...cur.map((s) => ({ ...s, elements: [...s.elements] })), ...made];
+      const firstNewIdx = isEmpty ? 0 : cur.length;
+      commit(next);
+      setActive(firstNewIdx);
+      setSelected(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Prezentatsiya yuklanmadi. Qayta urinib ko‘ring.');
+    } finally {
+      setUploading(false);
+      if (presInput.current) presInput.current.value = '';
     }
   }
 
@@ -1707,6 +2041,38 @@ export default function PhotoProtocolStudio({
                 : txt.notSaved}
             </span>
           </div>
+
+          {/* PREZENTATSIYA TABLARI — bir bemorda 3 tagacha slayd-to'plam */}
+          {!isDemoClinic() && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 4, marginLeft: 6, paddingLeft: 8, borderLeft: '1px solid rgba(148,163,184,0.25)' }}>
+              <span style={{ fontSize: 11, opacity: 0.6, marginRight: 2 }} title="Prezentatsiyalar">Prez:</span>
+              {slotTabs.map((s) => (
+                <button
+                  key={s}
+                  onClick={() => void switchToSlot(s)}
+                  disabled={switching.current}
+                  title={slotTitle(s)}
+                  style={{
+                    minWidth: 26, height: 26, borderRadius: 8, fontSize: 13, fontWeight: 700, border: 'none', cursor: 'pointer',
+                    background: s === activeSlot ? '#2563eb' : 'rgba(148,163,184,0.18)',
+                    color: s === activeSlot ? '#fff' : 'inherit',
+                  }}
+                >
+                  {s}
+                </button>
+              ))}
+              {canAddPresentation && (
+                <button
+                  onClick={() => void addPresentation()}
+                  disabled={switching.current}
+                  title="Yangi prezentatsiya qo‘shish (3 tagacha)"
+                  style={{ minWidth: 26, height: 26, borderRadius: 8, border: 'none', cursor: 'pointer', background: 'rgba(148,163,184,0.18)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center' }}
+                >
+                  <Plus size={15} />
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Center / Right Toolbar Controls */}
@@ -1751,9 +2117,17 @@ export default function PhotoProtocolStudio({
               className={css.insertBtn}
               onClick={() => fileInput.current?.click()}
               disabled={uploading}
-              title={txt.photo}
+              title={`${txt.photo} / Video (MP4, WebM, MOV)`}
             >
               <ImagePlus size={16} />
+            </button>
+            <button
+              className={css.insertBtn}
+              onClick={() => presInput.current?.click()}
+              disabled={uploading}
+              title="Prezentatsiya yuklash (PDF / Keynote .key / rasmlar) — har sahifa/rasm alohida slayd"
+            >
+              <Presentation size={16} />
             </button>
             <button className={css.insertBtn} onClick={() => addText(false)} title={txt.text}>
               <Type size={16} />
@@ -1867,23 +2241,35 @@ export default function PhotoProtocolStudio({
           </button>
         </div>
 
-        {/* Hidden File Inputs */}
+        {/* Hidden File Inputs — BITTA input rasm HAM video qabul qiladi */}
         <input
           ref={fileInput}
           type="file"
           multiple
-          accept="image/jpeg,image/png,image/webp"
-          onChange={(e) => void uploadPhotos(e.target.files)}
+          accept="image/*,video/*,.heic,.heif,.jfif,.avif,.tif,.tiff,.mp4,.webm,.mov,.m4v"
+          onChange={(e) => void uploadMedia(e.target.files)}
           hidden
-          aria-label="Rasmlarni tanlash"
+          aria-label="Rasm yoki video tanlash"
         />
         <input
           ref={replaceFileInput}
           type="file"
-          accept="image/jpeg,image/png,image/webp"
+          accept="image/*,.heic,.heif,.jfif,.avif,.tif,.tiff"
           onChange={(e) => void replaceSelectedPhoto(e.target.files)}
           hidden
           aria-label="Rasmni almashtirish"
+        />
+        <input
+          ref={presInput}
+          type="file"
+          multiple
+          /* MUHIM: image/*,video/* WILDCARD ishlatmaymiz — Windows+Chrome'da ular fayl oynasini
+             standart "rasm/video" filtriga qo'yib .key'ni YASHIRADI. Faqat ANIQ kengaytmalar
+             (.key birinchi) — shunda .key, .pdf va boshqalar ko'rinadi. */
+          accept=".key,.pdf,.zip,.ppt,.pptx,.jpg,.jpeg,.png,.webp,.gif,.bmp,.avif,.tif,.tiff,.heic,.heif,.jfif,.mp4,.webm,.mov,.m4v,.ogg,.ogv"
+          onChange={(e) => void uploadPresentation(e.target.files)}
+          hidden
+          aria-label="Prezentatsiya yuklash"
         />
       </header>
 
@@ -1946,6 +2332,22 @@ export default function PhotoProtocolStudio({
               </div>
             ))}
           </div>
+
+          {/* Slaydlar TAGIDA — joriy PREZENTATSIYANI (slotni) o'chirish */}
+          {!isDemoClinic() && (
+            <button
+              onClick={() => void deleteCurrentPresentation()}
+              disabled={switching.current}
+              title={`${slotTitle(activeSlot)} — butunlay o‘chirish`}
+              style={{
+                margin: '8px', padding: '8px 10px', borderRadius: 10, border: '1px solid rgba(239,68,68,0.35)',
+                background: 'rgba(239,68,68,0.10)', color: '#ef4444', fontSize: 12, fontWeight: 700,
+                cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+              }}
+            >
+              <Trash2 size={14} /> Prezentatsiyani o‘chirish
+            </button>
+          )}
         </nav>
 
         {/* ═════════════════════════════════════════════════════════════════ */}
@@ -2061,7 +2463,7 @@ export default function PhotoProtocolStudio({
               onDragOver={(e) => e.preventDefault()}
               onDrop={(e) => {
                 e.preventDefault();
-                void uploadPhotos(e.dataTransfer.files);
+                void uploadMedia(e.dataTransfer.files);
               }}
             >
               {/* Empty Slide Hint */}
@@ -2077,7 +2479,7 @@ export default function PhotoProtocolStudio({
                       onClick={() => fileInput.current?.click()}
                       className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-xs transition shadow-md"
                     >
-                      + {txt.photo}
+                      + {txt.photo} / Video
                     </button>
                     <button
                       onClick={() => addText(true)}
@@ -2475,7 +2877,7 @@ export default function PhotoProtocolStudio({
                           </>
                         )}
 
-                        {selectedEl.type !== 'image' && (
+                        {selectedEl.type !== 'image' && selectedEl.type !== 'video' && (
                           <button
                             className={css.contextMenuItem}
                             onClick={() => {
@@ -2617,7 +3019,7 @@ export default function PhotoProtocolStudio({
               className={`${css.segmentTab} ${inspectorTab === 'content' ? css.active : ''}`}
               onClick={() => setInspectorTab('content')}
             >
-              {selectedEl ? (selectedEl.type === 'image' ? txt.image : txt.text) : txt.slide}
+              {selectedEl ? (selectedEl.type === 'image' ? txt.image : selectedEl.type === 'video' ? 'Video' : txt.text) : txt.slide}
             </button>
             <button
               className={`${css.segmentTab} ${inspectorTab === 'arrange' ? css.active : ''}`}
@@ -2631,7 +3033,7 @@ export default function PhotoProtocolStudio({
             {/* ────────────────────────────────────────────────────────── */}
             {/* CONTENT TAB: TEXT / HEADING CONTROLS                       */}
             {/* ────────────────────────────────────────────────────────── */}
-            {inspectorTab === 'content' && selectedEl && selectedEl.type !== 'image' && (
+            {inspectorTab === 'content' && selectedEl && selectedEl.type !== 'image' && selectedEl.type !== 'video' && (
               <>
                 {/* Font Size Stepper ([-] 24 pt [+]) */}
                 <div className={css.controlGroup}>

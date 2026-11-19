@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useMemo, Suspense } from 'react';
+import React, { useState, useEffect, useMemo, useRef, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '../../lib/auth';
 import { clinicApi } from '../../lib/api';
@@ -33,11 +33,16 @@ import {
   Unlink,
   ArrowLeft,
   Upload,
+  Download,
+  FileSpreadsheet,
   Image as ImageIcon,
   LayoutDashboard,
   Server,
   KeyRound,
-  Sparkles
+  Sparkles,
+  AlertTriangle,
+  CheckCircle,
+  Loader2,
 } from 'lucide-react';
 
 // ────────────────── umumiy uslub tokenlari (bitta joyda — izchillik uchun) ──────────────────
@@ -94,6 +99,27 @@ function SuperAdminPageContent() {
   const [clinicDossier, setClinicDossier] = useState<ClinicDossierData | null>(null);
   const [dossierTab, setDossierTab] =
     useState<'asosiy' | 'xodimlar' | 'bemorlar' | 'storage' | 'modullar' | 'texniklar'>('asosiy');
+
+  // ── Excel Import state ──────────────────────────────────────────────────────
+  type ImportRow = {
+    full_name: string; birth_date: string; phone: string; balance: number;
+    tags: string; _idx: number;
+  };
+  const [xlsxPreview, setXlsxPreview] = useState<ImportRow[] | null>(null);
+  const [xlsxFileName, setXlsxFileName] = useState('');
+  const [xlsxImporting, setXlsxImporting] = useState(false);
+  const [xlsxProgress, setXlsxProgress] = useState(0);
+  const [xlsxResult, setXlsxResult] = useState<{
+    created: number; updated: number; skipped: number; errors: { row: number; name: string; reason: string }[];
+    importedIds?: number[];
+  } | null>(null);
+  const [xlsxDeleting, setXlsxDeleting] = useState(false);
+  const [xlsxExporting, setXlsxExporting] = useState(false);
+  const [xlsxDragOver, setXlsxDragOver] = useState(false);
+  const xlsxInputRef = useRef<HTMLInputElement>(null);
+  // Tanlangan/tashlangan faylni saqlaymiz — drag&drop'da fayl input.files'ga tushmaydi,
+  // shuning uchun importda shu ref ishlatiladi (input.files'ga tayanmaymiz).
+  const xlsxFileRef = useRef<File | null>(null);
 
   useEffect(() => {
     const tabParam = searchParams.get('tab') as Section | null;
@@ -273,6 +299,213 @@ function SuperAdminPageContent() {
     setActiveClinicId(null);
     setClinicDossier(null);
     router.push('/super-admin?tab=clinics');
+  };
+
+  // ── Excel Import handlerlari ────────────────────────────────────────────────
+
+  /** Client-side: XLSX faylini o'qib preview uchun parse qiladi (stdlib zipfile yo'q — ArrayBuffer bilan). */
+  const parseXlsxClient = async (file: File): Promise<ImportRow[]> => {
+    const buf = await file.arrayBuffer();
+    // xlsx = ZIP arxivi — JSZip kerak emas, faqat oddiy unzip
+    // Biz inline minimal parser yozamiz (shared strings + sheet1)
+    const uint8 = new Uint8Array(buf);
+
+    // --- minimal ZIP parser ---
+    const files: Record<string, Uint8Array> = {};
+    let i = 0;
+    while (i < uint8.length - 4) {
+      if (uint8[i] === 0x50 && uint8[i+1] === 0x4B && uint8[i+2] === 0x03 && uint8[i+3] === 0x04) {
+        const compMethod = uint8[i+8] | (uint8[i+9] << 8);
+        const compSize = uint8[i+18] | (uint8[i+19] << 8) | (uint8[i+20] << 16) | (uint8[i+21] << 24);
+        const uncompSize = uint8[i+22] | (uint8[i+23] << 8) | (uint8[i+24] << 16) | (uint8[i+25] << 24);
+        const fnLen = uint8[i+26] | (uint8[i+27] << 8);
+        const extraLen = uint8[i+28] | (uint8[i+29] << 8);
+        const dataStart = i + 30 + fnLen + extraLen;
+        const fnBytes = uint8.slice(i+30, i+30+fnLen);
+        const fname = new TextDecoder().decode(fnBytes);
+        if (compMethod === 0) {
+          files[fname] = uint8.slice(dataStart, dataStart + uncompSize);
+        } else if (compMethod === 8) {
+          try {
+            const { DecompressionStream } = window as any;
+            if (DecompressionStream) {
+              const ds = new DecompressionStream('deflate-raw');
+              const writer = ds.writable.getWriter();
+              const reader = ds.readable.getReader();
+              writer.write(uint8.slice(dataStart, dataStart + compSize));
+              writer.close();
+              const chunks: Uint8Array[] = [];
+              let done = false;
+              while (!done) {
+                const r = await reader.read();
+                if (r.done) done = true;
+                else chunks.push(r.value);
+              }
+              const total = chunks.reduce((s, c) => s + c.length, 0);
+              const out = new Uint8Array(total);
+              let off = 0;
+              for (const c of chunks) { out.set(c, off); off += c.length; }
+              files[fname] = out;
+            }
+          } catch { /* skip */ }
+        }
+        i = dataStart + compSize;
+      } else {
+        i++;
+      }
+    }
+
+    const dec = new TextDecoder('utf-8');
+    const parser = new DOMParser();
+
+    // shared strings
+    const sharedArr: string[] = [];
+    const ssEntry = files['xl/sharedStrings.xml'];
+    if (ssEntry) {
+      const ssDoc = parser.parseFromString(dec.decode(ssEntry), 'application/xml');
+      for (const si of Array.from(ssDoc.getElementsByTagName('si'))) {
+        const tNodes = si.getElementsByTagName('t');
+        sharedArr.push(Array.from(tNodes).map(t => t.textContent || '').join(''));
+      }
+    }
+
+    // sheet1
+    const sheet1Entry = files['xl/worksheets/sheet1.xml'];
+    if (!sheet1Entry) throw new Error('sheet1.xml topilmadi');
+    const shDoc = parser.parseFromString(dec.decode(sheet1Entry), 'application/xml');
+
+    const getCell = (c: Element): string => {
+      const t = c.getAttribute('t') || '';
+      const v = c.getElementsByTagName('v')[0]?.textContent || '';
+      if (t === 's') return sharedArr[parseInt(v)] ?? '';
+      if (t === 'inlineStr') return c.getElementsByTagName('t')[0]?.textContent || '';
+      return v;
+    };
+
+    // 'F5' -> 5 (0-based). xlsx bo'sh katakni TUSHIRIB qoldiradi — shuning uchun
+    // katakning 'r' atributidan haqiqiy ustunni aniqlaymiz, aks holda Источник/Теги
+    // bo'sh bo'lsa Баланс chapga siljib ketadi (noto'g'ri ma'lumot).
+    const colIndex = (ref: string): number => {
+      const letters = (ref.match(/^[A-Za-z]+/) || [''])[0];
+      let idx = 0;
+      for (const ch of letters) idx = idx * 26 + (ch.toUpperCase().charCodeAt(0) - 64);
+      return idx > 0 ? idx - 1 : 0;
+    };
+    const rowEls = Array.from(shDoc.getElementsByTagName('row'));
+    const rawRows = rowEls.map(row => {
+      const cells = Array.from(row.getElementsByTagName('c'));
+      if (!cells.length) return [];
+      const vals: Record<number, string> = {};
+      let maxIdx = 0;
+      cells.forEach((c, pos) => {
+        const ref = c.getAttribute('r') || '';
+        const ci = ref ? colIndex(ref) : pos;
+        vals[ci] = getCell(c);
+        if (ci > maxIdx) maxIdx = ci;
+      });
+      return Array.from({ length: maxIdx + 1 }, (_, k) => vals[k] ?? '');
+    });
+
+    if (rawRows.length < 2) throw new Error('Jadvalda ma\'lumot yo\'q.');
+    const headers = rawRows[0].map(h => h.toLowerCase().trim());
+
+    const findCol = (...pats: string[]) => {
+      for (let ci = 0; ci < headers.length; ci++)
+        for (const p of pats) if (headers[ci].includes(p)) return ci;
+      return -1;
+    };
+    const cName    = findCol('фио', 'ф.и.о', 'имя', 'name', 'full');
+    const cBirth   = findCol('рождения', 'birth', 'дата');
+    const cPhone   = findCol('телефон', 'phone', 'номер');
+    const cTags    = findCol('тег', 'tag');
+    const cBal     = findCol('баланс', 'balance', 'долг');
+
+    const result: ImportRow[] = [];
+    for (let ri = 1; ri < rawRows.length; ri++) {
+      const r = rawRows[ri];
+      const g = (ci: number) => ci >= 0 && ci < r.length ? r[ci].trim() : '';
+      const name = g(cName);
+      if (!name) continue;
+      result.push({
+        full_name: name,
+        birth_date: g(cBirth),
+        phone: g(cPhone),
+        tags: g(cTags),
+        balance: parseFloat(g(cBal).replace(/[^\d.\-]/g, '')) || 0,
+        _idx: ri + 1,
+      });
+    }
+    return result;
+  };
+
+  const handleXlsxFile = async (file: File) => {
+    if (!file.name.toLowerCase().endsWith('.xlsx')) {
+      setToast('Faqat .xlsx fayl qabul qilinadi'); return;
+    }
+    setXlsxPreview(null);
+    setXlsxResult(null);
+    setXlsxFileName(file.name);
+    xlsxFileRef.current = file;
+    try {
+      const rows = await parseXlsxClient(file);
+      setXlsxPreview(rows);
+    } catch (e) {
+      setToast(`Fayl o'qilmadi: ${e instanceof Error ? e.message : e}`);
+    }
+  };
+
+  const handleXlsxImport = async () => {
+    if (!activeClinicId || !xlsxPreview) return;
+    // Drag&drop'da ham ishlashi uchun input.files'ga emas, saqlangan faylga tayanamiz.
+    const file = xlsxFileRef.current ?? xlsxInputRef.current?.files?.[0];
+    if (!file) { setToast('Fayl tanlanmagan'); return; }
+    setXlsxImporting(true);
+    setXlsxProgress(0);
+    setXlsxResult(null);
+    try {
+      const res = await clinicApi.excelImportPatients(activeClinicId, file, (pct) => setXlsxProgress(pct));
+      setXlsxResult(res);
+      setXlsxProgress(100);
+      // dossier'ni yangilaymiz — bemor soni o'zgargan
+      void handleEnterClinic(activeClinicId);
+    } catch (e) {
+      setToast(`Import xatosi: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setXlsxImporting(false);
+    }
+  };
+
+  const handleXlsxDeleteAll = async () => {
+    if (!activeClinicId) return;
+    // Import natijasida yaratilgan/yangilangan bemor ID'lari (tugma faqat shu bo'lsa ko'rinadi).
+    const ids = xlsxResult?.importedIds ?? [];
+    if (!ids.length) { setToast('Import natijasi topilmadi. Avval importa qiling.'); return; }
+    if (!window.confirm(`${ids.length} ta bemor bazadan o'chiriladi. Davom etilsinmi?`)) return;
+    setXlsxDeleting(true);
+    try {
+      const res = await clinicApi.excelDeletePatients(activeClinicId, ids);
+      setToast(`${res.deleted} ta bemor o'chirildi.`);
+      setXlsxPreview(null);
+      setXlsxResult(null);
+      setXlsxFileName('');
+      void handleEnterClinic(activeClinicId);
+    } catch (e) {
+      setToast(`O'chirish xatosi: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setXlsxDeleting(false);
+    }
+  };
+
+  const handleXlsxExport = async () => {
+    if (!activeClinicId) return;
+    setXlsxExporting(true);
+    try {
+      await clinicApi.excelExportPatients(activeClinicId);
+    } catch (e) {
+      setToast(`Export xatosi: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setXlsxExporting(false);
+    }
   };
 
   const refreshClinic = async (clinicId: number) => {
@@ -1190,34 +1423,186 @@ function SuperAdminPageContent() {
           )}
 
           {dossierTab === 'bemorlar' && (
-            <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
-              <table className="w-full text-sm">
-                <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-400 text-xs uppercase">
-                  <tr>
-                    <th className="text-left px-4 py-3 font-semibold">{tr('superadmin.patient')}</th>
-                    <th className="text-left px-4 py-3 font-semibold">{tr('superadmin.phone')}</th>
-                    <th className="text-left px-4 py-3 font-semibold">{tr('superadmin.lang')}</th>
-                    <th className="text-left px-4 py-3 font-semibold">{tr('superadmin.category')}</th>
-                    <th className="text-right px-4 py-3 font-semibold">{tr('superadmin.balance')}</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
-                  {d.patients.map(p => {
-                    const bal = Number(p.balance) || 0;
-                    return (
-                      <tr key={p.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/30">
-                        <td className="px-4 py-3 font-semibold text-slate-900 dark:text-white">{p.full_name}</td>
-                        <td className="px-4 py-3 text-slate-500 font-mono text-xs">{p.phone}</td>
-                        <td className="px-4 py-3">
-                          <span className="px-2 py-0.5 rounded-lg text-[10px] font-semibold bg-blue-50 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300">{(p.service_lang || 'uz').toUpperCase()}</span>
-                        </td>
-                        <td className="px-4 py-3 text-slate-500">{p.category_status || 'Oddiy'}</td>
-                        <td className={`px-4 py-3 text-right font-semibold tabular-nums ${bal < 0 ? 'text-red-500' : bal > 0 ? 'text-emerald-600' : 'text-slate-400'}`}>{uz(bal)} so‘m</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+            <div className="space-y-5">
+              {/* Harakatlar paneli */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white">Bemorlar ({d.patients.length})</h3>
+                  <p className="text-xs text-slate-400 mt-0.5">Excel (.xlsx) faylidan bemorlarni bazaga yuklang yoki mavjud bazani yuklab oling</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => xlsxInputRef.current?.click()}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold transition shadow-sm"
+                  >
+                    <Upload className="w-4 h-4" /> Excel yuklash
+                  </button>
+                  <button
+                    onClick={handleXlsxExport}
+                    disabled={xlsxExporting || d.patients.length === 0}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-800 text-sm font-semibold transition disabled:opacity-50"
+                  >
+                    {xlsxExporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />} Excelga chiqarish
+                  </button>
+                </div>
+              </div>
+              <input
+                ref={xlsxInputRef}
+                type="file"
+                accept=".xlsx"
+                className="hidden"
+                onChange={e => { const f = e.target.files?.[0]; if (f) void handleXlsxFile(f); }}
+              />
+
+              {/* Dropzone — preview yo'q bo'lsa */}
+              {!xlsxPreview && (
+                <div
+                  onDragOver={e => { e.preventDefault(); setXlsxDragOver(true); }}
+                  onDragLeave={() => setXlsxDragOver(false)}
+                  onDrop={e => { e.preventDefault(); setXlsxDragOver(false); const f = e.dataTransfer.files?.[0]; if (f) void handleXlsxFile(f); }}
+                  onClick={() => xlsxInputRef.current?.click()}
+                  className={`cursor-pointer rounded-2xl border-2 border-dashed px-6 py-10 text-center transition ${xlsxDragOver ? 'border-blue-500 bg-blue-50/60 dark:bg-blue-950/30' : 'border-slate-300 dark:border-slate-700 hover:border-blue-400 hover:bg-slate-50 dark:hover:bg-slate-800/40'}`}
+                >
+                  <FileSpreadsheet className="w-9 h-9 mx-auto text-emerald-500 mb-2" />
+                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">Faylni bu yerga tashlang yoki tanlang</p>
+                  <p className="text-xs text-slate-400 mt-1">Ustunlar: ФИО · Дата рождения · Номер телефона · Теги · Баланс</p>
+                </div>
+              )}
+
+              {/* Preview + import boshqaruvi */}
+              {xlsxPreview && (
+                <div className="rounded-2xl border border-slate-200 dark:border-slate-800 overflow-hidden">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-4 py-3 bg-slate-50 dark:bg-slate-800/60 border-b border-slate-200 dark:border-slate-800">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <FileSpreadsheet className="w-5 h-5 text-emerald-500 shrink-0" />
+                      <span className="text-sm font-semibold text-slate-800 dark:text-slate-100 truncate">{xlsxFileName}</span>
+                      <span className="shrink-0 px-2 py-0.5 rounded-lg text-[11px] font-semibold bg-emerald-50 text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-300">{xlsxPreview.length} ta qator</span>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {!xlsxResult && (
+                        <button
+                          onClick={handleXlsxImport}
+                          disabled={xlsxImporting}
+                          className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold transition disabled:opacity-60"
+                        >
+                          {xlsxImporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+                          {xlsxImporting ? 'Yuklanmoqda…' : 'Bazaga yuklash'}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => { setXlsxPreview(null); setXlsxResult(null); setXlsxFileName(''); xlsxFileRef.current = null; if (xlsxInputRef.current) xlsxInputRef.current.value = ''; }}
+                        className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl border border-slate-200 dark:border-slate-700 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800 text-sm font-semibold transition"
+                      >
+                        <X className="w-4 h-4" /> Bekor
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Progress */}
+                  {xlsxImporting && (
+                    <div className="px-4 py-3 border-b border-slate-200 dark:border-slate-800">
+                      <div className="h-2 rounded-full bg-slate-200 dark:bg-slate-700 overflow-hidden">
+                        <div className="h-full bg-emerald-500 transition-all" style={{ width: `${xlsxProgress}%` }} />
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-1">{xlsxProgress}% yuklandi…</p>
+                    </div>
+                  )}
+
+                  {/* Natija */}
+                  {xlsxResult && (
+                    <div className="px-4 py-4 border-b border-slate-200 dark:border-slate-800 bg-emerald-50/50 dark:bg-emerald-950/20">
+                      <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm">
+                        <span className="inline-flex items-center gap-1.5 font-semibold text-emerald-700 dark:text-emerald-300"><CheckCircle className="w-4 h-4" /> Yangi: {xlsxResult.created}</span>
+                        <span className="text-slate-600 dark:text-slate-300">Yangilangan: {xlsxResult.updated}</span>
+                        <span className="text-slate-400">O‘tkazib yuborilgan: {xlsxResult.skipped}</span>
+                        {xlsxResult.errors?.length > 0 && (
+                          <span className="inline-flex items-center gap-1.5 font-semibold text-amber-600 dark:text-amber-400"><AlertTriangle className="w-4 h-4" /> Xatolar: {xlsxResult.errors.length}</span>
+                        )}
+                      </div>
+                      {xlsxResult.errors?.length > 0 && (
+                        <ul className="mt-2 text-xs text-amber-700 dark:text-amber-400 space-y-0.5 max-h-24 overflow-y-auto">
+                          {xlsxResult.errors.slice(0, 10).map((er, k) => (
+                            <li key={k}>• {er.row}-qator ({er.name}): {er.reason}</li>
+                          ))}
+                        </ul>
+                      )}
+                      {!!xlsxResult.importedIds?.length && (
+                        <button
+                          onClick={handleXlsxDeleteAll}
+                          disabled={xlsxDeleting}
+                          className="mt-3 inline-flex items-center gap-2 px-3.5 py-2 rounded-xl border border-red-200 dark:border-red-900/50 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 text-sm font-semibold transition disabled:opacity-60"
+                        >
+                          {xlsxDeleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                          Yuklangan {xlsxResult.importedIds.length} bemorni o‘chirish
+                        </button>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Preview jadvali (dastlabki 100 qator) */}
+                  <div className="overflow-x-auto max-h-[420px] overflow-y-auto">
+                    <table className="w-full text-sm">
+                      <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-400 text-xs uppercase sticky top-0">
+                        <tr>
+                          <th className="text-left px-4 py-2.5 font-semibold">#</th>
+                          <th className="text-left px-4 py-2.5 font-semibold">F.I.O.</th>
+                          <th className="text-left px-4 py-2.5 font-semibold">Tug‘ilgan sana</th>
+                          <th className="text-left px-4 py-2.5 font-semibold">Telefon</th>
+                          <th className="text-right px-4 py-2.5 font-semibold">Balans</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                        {xlsxPreview.slice(0, 100).map((r, k) => (
+                          <tr key={k} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/30">
+                            <td className="px-4 py-2 text-slate-400 tabular-nums">{k + 1}</td>
+                            <td className="px-4 py-2 font-semibold text-slate-900 dark:text-white">{r.full_name}</td>
+                            <td className="px-4 py-2 text-slate-500">{r.birth_date || '—'}</td>
+                            <td className="px-4 py-2 text-slate-500 font-mono text-xs">{r.phone || '—'}</td>
+                            <td className={`px-4 py-2 text-right font-semibold tabular-nums ${r.balance < 0 ? 'text-red-500' : r.balance > 0 ? 'text-emerald-600' : 'text-slate-400'}`}>{uz(r.balance)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                    {xlsxPreview.length > 100 && (
+                      <p className="px-4 py-2 text-xs text-slate-400 text-center">… va yana {xlsxPreview.length - 100} ta qator (yuklaganda hammasi bazaga tushadi)</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Mavjud bemorlar jadvali */}
+              <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
+                <table className="w-full text-sm">
+                  <thead className="bg-slate-50 dark:bg-slate-800/60 text-slate-400 text-xs uppercase">
+                    <tr>
+                      <th className="text-left px-4 py-3 font-semibold">{tr('superadmin.patient')}</th>
+                      <th className="text-left px-4 py-3 font-semibold">{tr('superadmin.phone')}</th>
+                      <th className="text-left px-4 py-3 font-semibold">{tr('superadmin.lang')}</th>
+                      <th className="text-left px-4 py-3 font-semibold">{tr('superadmin.category')}</th>
+                      <th className="text-right px-4 py-3 font-semibold">{tr('superadmin.balance')}</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-slate-800">
+                    {d.patients.length === 0 && (
+                      <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400 text-sm">Hali bemor yo‘q — yuqoridan Excel yuklang</td></tr>
+                    )}
+                    {d.patients.map(p => {
+                      const bal = Number(p.balance) || 0;
+                      return (
+                        <tr key={p.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/30">
+                          <td className="px-4 py-3 font-semibold text-slate-900 dark:text-white">{p.full_name}</td>
+                          <td className="px-4 py-3 text-slate-500 font-mono text-xs">{p.phone}</td>
+                          <td className="px-4 py-3">
+                            <span className="px-2 py-0.5 rounded-lg text-[10px] font-semibold bg-blue-50 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300">{(p.service_lang || 'uz').toUpperCase()}</span>
+                          </td>
+                          <td className="px-4 py-3 text-slate-500">{p.category_status || 'Oddiy'}</td>
+                          <td className={`px-4 py-3 text-right font-semibold tabular-nums ${bal < 0 ? 'text-red-500' : bal > 0 ? 'text-emerald-600' : 'text-slate-400'}`}>{uz(bal)} so‘m</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
 

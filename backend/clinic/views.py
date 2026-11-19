@@ -5,8 +5,12 @@ from rest_framework.decorators import action, api_view
 from rest_framework.response import Response
 from django.utils import timezone
 from django.db.models import Sum, Q, Count
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import datetime
+import zipfile
+import xml.etree.ElementTree as ET
+import io
+import re
 from django.contrib.auth.hashers import check_password, identify_hasher
 
 def _password_matches(raw, stored):
@@ -1502,6 +1506,31 @@ class PatientMediaViewSet(TenantViewSet):
             qs = qs.filter(kind=kind)
         return qs
 
+    def create(self, request, *args, **kwargs):
+        # Media HAR DOIM bemorga biriktiriladi — klinikani BEMORDAN olamiz (eng ishonchli manba).
+        # Shunda frontend X-Clinic-ID'ni noto'g'ri/eskirgan yuborsa ham fayl bemorning TO'G'RI
+        # klinikasiga tushadi (serializer "Obyekt shu klinikaga tegishli emas" 400 bermaydi).
+        # XAVFSIZLIK saqlanadi: boshqa klinika foydalanuvchisi (superadmin emas) baribir rad etiladi.
+        patient_id = request.data.get('patient')
+        patient = Patient.objects.filter(pk=patient_id).first() if patient_id else None
+        if patient and patient.clinic_id:
+            req_cid = get_clinic_id(request)
+            if request.user.is_superuser or not req_cid or int(req_cid) == patient.clinic_id:
+                q = request._request.GET.copy()
+                q['clinic'] = str(patient.clinic_id)
+                request._request.GET = q
+                request._request.META['HTTP_X_CLINIC_ID'] = str(patient.clinic_id)
+        try:
+            return super().create(request, *args, **kwargs)
+        except Exception as exc:
+            import logging
+            logging.getLogger('django').warning(
+                '[patient-media POST RAD] %s: %r | file=%r patient=%r X-Clinic-ID=%r',
+                type(exc).__name__, getattr(exc, 'detail', str(exc)),
+                getattr(request.FILES.get('file'), 'name', None),
+                request.data.get('patient'), request.headers.get('X-Clinic-ID'))
+            raise
+
     def perform_create(self, serializer):
         from rest_framework.exceptions import ValidationError
         from django.db import transaction
@@ -1513,10 +1542,24 @@ class PatientMediaViewSet(TenantViewSet):
             raise ValidationError({'file': 'Fayl ruxsat etilgan hajmdan katta.'})
         from pathlib import PurePath
         suffix = PurePath(f.name).suffix.lower()
-        if suffix not in {'.jpg', '.jpeg', '.png', '.webp', '.dcm', '.dicom', '.zip', '.stl', '.ply', '.obj', '.pdf'}:
-            raise ValidationError({'file': 'Fayl turi ruxsat etilmagan.'})
+        # Ruxsat etilgan turlar KENGAYTIRILDI: barcha keng tarqalgan rasm formatlari
+        # (HEIC/HEIF — iPhone, gif/bmp/avif/tiff) + VIDEO (mp4/webm/mov/m4v) foto-protokol uchun.
+        allowed_suffixes = {
+            '.jpg', '.jpeg', '.png', '.webp', '.gif', '.bmp', '.avif', '.tif', '.tiff',
+            '.heic', '.heif', '.jfif',
+            '.dcm', '.dicom', '.zip', '.stl', '.ply', '.obj', '.pdf',
+            '.mp4', '.webm', '.mov', '.m4v', '.ogg', '.ogv',
+        }
+        if suffix not in allowed_suffixes:
+            raise ValidationError({'file': f'Fayl turi ruxsat etilmagan: {suffix or "kengaytmasiz"}.'})
+        # Klinika aniq bo'lmasa — 400 (aks holda .get(pk=None) 500 berardi).
+        if not clinic_id:
+            raise ValidationError({'file': 'Klinika aniqlanmadi (X-Clinic-ID yo‘q).'})
         with transaction.atomic():
-            clinic = ClinicTenant.objects.select_for_update().get(pk=clinic_id)
+            try:
+                clinic = ClinicTenant.objects.select_for_update().get(pk=clinic_id)
+            except ClinicTenant.DoesNotExist:
+                raise ValidationError({'file': 'Klinika topilmadi.'})
             total = PatientMedia.objects.filter(clinic_id=clinic_id).aggregate(n=Sum('file_size'))['n'] or 0
             if total + f.size > float(clinic.storage_quota_gb) * 1024 ** 3:
                 raise ValidationError({'file': 'Klinika xotira limiti tugadi.'})
@@ -1560,12 +1603,14 @@ class PatientMediaViewSet(TenantViewSet):
         instance.delete()
 
 
-@api_view(['GET', 'POST'])
+@api_view(['GET', 'POST', 'DELETE'])
 def photo_protocol(request):
-    """Bemor foto-protokol hujjati (slaydlar JSON) — BAZADA.
+    """Bemor foto-protokol PREZENTATSIYALARI (3 tagacha slot) — BAZADA.
 
-    GET  ?clinic=<id>&patient=<id> -> {exists, doc}
-    POST body: {clinic?, patient, doc}
+    GET  ?patient=<id>&slot=<1..3>      -> {exists, doc, title, slot}
+    GET  ?patient=<id>&presentations=1  -> {presentations:[{slot,title,hasContent,updated_at}]}
+    POST {clinic?, patient, slot, doc, title?} -> slotni saqlaydi
+    DELETE {clinic?, patient, slot}     -> slotni o'chiradi
     """
     clinic_id = get_clinic_id(request) or request.data.get('clinic') or request.query_params.get('clinic')
     try:
@@ -1582,22 +1627,51 @@ def photo_protocol(request):
 
     from django.shortcuts import get_object_or_404
     get_object_or_404(Patient, pk=patient_id, clinic_id=clinic_id)
-    if request.method == 'GET':
-        pp = PhotoProtocol.objects.filter(patient_id=patient_id, clinic_id=clinic_id).first()
-        if not pp:
-            return Response({'exists': False, 'doc': []})
-        return Response({'exists': True, 'doc': pp.doc or []})
 
+    def _slot_num(val, default=1):
+        try:
+            s = int(val)
+            return s if 1 <= s <= 3 else default
+        except (ValueError, TypeError):
+            return default
+
+    if request.method == 'GET':
+        # Prezentatsiyalar ro'yxati (tablar uchun)
+        if request.query_params.get('presentations'):
+            rows = PhotoProtocol.objects.filter(patient_id=patient_id, clinic_id=clinic_id).order_by('slot')
+            items = [{
+                'slot': r.slot,
+                'title': r.title or f'Prezentatsiya {r.slot}',
+                'hasContent': bool(r.doc),
+                'updated_at': r.updated_at.isoformat() if r.updated_at else None,
+            } for r in rows]
+            return Response({'presentations': items})
+        slot = _slot_num(request.query_params.get('slot'))
+        pp = PhotoProtocol.objects.filter(patient_id=patient_id, clinic_id=clinic_id, slot=slot).first()
+        if not pp:
+            return Response({'exists': False, 'doc': [], 'title': '', 'slot': slot})
+        return Response({'exists': True, 'doc': pp.doc or [], 'title': pp.title or '', 'slot': slot})
+
+    if request.method == 'DELETE':
+        slot = _slot_num(request.data.get('slot') or request.query_params.get('slot'))
+        PhotoProtocol.objects.filter(patient_id=patient_id, clinic_id=clinic_id, slot=slot).delete()
+        return Response({'ok': True, 'deleted': slot})
+
+    # POST — slotni saqlash
+    slot = _slot_num(request.data.get('slot'))
     doc = request.data.get('doc')
     if doc is None:
         doc = []
     from .photo_assets import persist_images
     doc = persist_images(doc, patient_id, clinic_id)
+    defaults = {'doc': doc, 'clinic_id': clinic_id}
+    title = request.data.get('title')
+    if isinstance(title, str) and title.strip():
+        defaults['title'] = title.strip()[:120]
     pp, _created = PhotoProtocol.objects.update_or_create(
-        patient_id=patient_id,
-        defaults={'doc': doc, 'clinic_id': clinic_id},
+        patient_id=patient_id, slot=slot, defaults=defaults,
     )
-    return Response({'ok': True, 'exists': True, 'doc': pp.doc or []})
+    return Response({'ok': True, 'exists': True, 'doc': pp.doc or [], 'title': pp.title or '', 'slot': slot})
 
 
 @api_view(['GET'])
@@ -1664,4 +1738,390 @@ def _doc_has_image(doc):
             return True
     return False
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+# EXCEL IMPORT / EXPORT  —  superadmin paneli uchun
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _parse_xlsx_rows(fileobj):
+    """XLSX faylidan (zipfile+xml) qator ro'yxatini qaytaradi.
+    Har qator dict: {full_name, birth_date_str, phone, tags, balance_str}
+    """
+    with zipfile.ZipFile(fileobj) as z:
+        # Shared strings
+        shared = []
+        if 'xl/sharedStrings.xml' in z.namelist():
+            ss_xml = ET.fromstring(z.read('xl/sharedStrings.xml'))
+            ns = {'x': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+            for si in ss_xml.findall('.//x:si', ns):
+                texts = [t.text or '' for t in si.findall('.//x:t', ns)]
+                shared.append(''.join(texts))
+
+        # Birinchi sheet
+        ws_xml = ET.fromstring(z.read('xl/worksheets/sheet1.xml'))
+        ns = {'x': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
+
+        def cell_value(c):
+            t = c.get('t', '')
+            v_el = c.find('x:v', ns)
+            if v_el is None:
+                return ''
+            if t == 's':
+                idx = int(v_el.text)
+                return shared[idx] if idx < len(shared) else ''
+            if t == 'inlineStr':
+                is_el = c.find('.//x:t', ns)
+                return is_el.text if is_el is not None else ''
+            return v_el.text or ''
+
+        def col_index(ref):
+            # 'F5' -> 5 (0-based). xlsx bo'sh katakni TUSHIRIB qoldiradi, shuning uchun
+            # katakning 'r' (masalan "F5") atributidan haqiqiy ustunni aniqlaymiz —
+            # aks holda Источник/Теги bo'sh bo'lsa Баланс chapga siljib ketadi.
+            letters = ''.join(ch for ch in ref if ch.isalpha())
+            idx = 0
+            for ch in letters:
+                idx = idx * 26 + (ord(ch.upper()) - ord('A') + 1)
+            return idx - 1 if idx else 0
+
+        rows_raw = []
+        for row in ws_xml.findall('.//x:row', ns):
+            cells = row.findall('x:c', ns)
+            if not cells:
+                rows_raw.append([])
+                continue
+            vals = {}
+            max_idx = 0
+            for pos, c in enumerate(cells):
+                ref = c.get('r', '')
+                ci = col_index(ref) if ref else pos
+                vals[ci] = cell_value(c)
+                if ci > max_idx:
+                    max_idx = ci
+            rows_raw.append([vals.get(i, '') for i in range(max_idx + 1)])
+
+    if not rows_raw:
+        return []
+
+    headers = [h.strip().lower() for h in rows_raw[0]]
+
+    # Ustun indekslarini topamiz (nomi bo'yicha moslashuvchan)
+    def find_col(patterns):
+        for i, h in enumerate(headers):
+            for p in patterns:
+                if p in h:
+                    return i
+        return -1
+
+    col_name    = find_col(['фио', 'ф.и.о', 'имя', 'name', 'full'])
+    col_birth   = find_col(['рождения', 'birth', 'дата'])
+    col_phone   = find_col(['телефон', 'phone', 'номер'])
+    col_tags    = find_col(['тег', 'tag'])
+    col_balance = find_col(['баланс', 'balance', 'долг'])
+
+    parsed = []
+    for row in rows_raw[1:]:
+        def get(i):
+            return row[i].strip() if i >= 0 and i < len(row) else ''
+
+        name = get(col_name)
+        if not name:
+            continue  # ism yo'q — o'tkazib yuboramiz
+
+        parsed.append({
+            'full_name':     name,
+            'birth_date_str': get(col_birth),
+            'phone':         get(col_phone),
+            'tags':          get(col_tags),
+            'balance_str':   get(col_balance),
+        })
+    return parsed
+
+
+def _clean_phone(raw: str) -> str:
+    """'+998 90 918 18 94'  →  '+99890918918' — faqat raqamlar va bosh + saqlanadi."""
+    digits = re.sub(r'[^\d+]', '', raw)
+    return digits[:20]
+
+
+def _parse_date(raw: str):
+    """'DD.MM.YYYY' yoki 'YYYY-MM-DD' — datetime.date yoki None."""
+    raw = raw.strip()
+    for fmt in ('%d.%m.%Y', '%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y'):
+        try:
+            return datetime.datetime.strptime(raw, fmt).date()
+        except ValueError:
+            pass
+    return None
+
+
+def _parse_balance(raw: str):
+    """'-50750000' → Decimal('-50750000'). Bo'sh yoki yaroqsiz → 0."""
+    cleaned = re.sub(r'[^\d.\-]', '', raw)
+    if not cleaned:
+        return Decimal('0')
+    try:
+        return Decimal(cleaned)
+    except InvalidOperation:
+        return Decimal('0')
+
+
+@api_view(['POST'])
+def excel_import_patients(request):
+    """Superadmin: XLSX faylini yuklaydi va klinika bemorlarini importa qiladi.
+
+    POST /api/patients/excel-import/?clinic=<id>
+    multipart: file=<xlsx>
+
+    Qaytaradi: {total, created, updated, skipped, errors:[{row,reason}]}
+    """
+    if not request.user.is_authenticated or not request.user.is_superuser:
+        return Response({'detail': 'Faqat superadmin.'}, status=403)
+
+    clinic_id = request.query_params.get('clinic') or request.data.get('clinic')
+    if not clinic_id:
+        return Response({'detail': 'clinic parametri kerak.'}, status=400)
+    try:
+        clinic_id = int(clinic_id)
+        clinic = ClinicTenant.objects.get(pk=clinic_id)
+    except (ValueError, ClinicTenant.DoesNotExist):
+        return Response({'detail': 'Klinika topilmadi.'}, status=404)
+
+    xlsx_file = request.FILES.get('file')
+    if not xlsx_file:
+        return Response({'detail': 'file yuklang (xlsx).'}, status=400)
+    if not xlsx_file.name.lower().endswith(('.xlsx', '.xls')):
+        return Response({'detail': 'Faqat .xlsx fayl qabul qilinadi.'}, status=400)
+    if xlsx_file.size > 20 * 1024 * 1024:
+        return Response({'detail': 'Fayl 20 MB dan katta bo\'lmasin.'}, status=400)
+
+    try:
+        rows = _parse_xlsx_rows(io.BytesIO(xlsx_file.read()))
+    except Exception as exc:
+        return Response({'detail': f'Fayl o\'qilmadi: {exc}'}, status=400)
+
+    created_count = 0
+    updated_count = 0
+    skipped_count = 0
+    imported_ids = []   # yaratilgan + yangilangan bemor ID'lari (o'chirish tugmasi uchun)
+    errors = []
+
+    for idx, row in enumerate(rows, start=2):  # 2-qatordan (1 sarlavha)
+        full_name = row['full_name']
+        if not full_name:
+            skipped_count += 1
+            continue
+
+        phone = _clean_phone(row['phone'])
+        balance = _parse_balance(row['balance_str'])
+        birth_date = _parse_date(row['birth_date_str'])
+        tags = row['tags'].strip()
+        notes_val = f'[Excel import teglari: {tags}]' if tags else ''
+
+        try:
+            obj = None
+            if phone:
+                # Telefon bo'yicha mavjud bemorni topamiz (dublikat bo'lsa birinchisi —
+                # get_or_create MultipleObjectsReturned bermasin).
+                obj = Patient.objects.filter(clinic=clinic, phone=phone).first()
+
+            if obj:
+                obj.full_name = full_name
+                if balance != Decimal('0'):
+                    obj.balance = balance
+                if birth_date:
+                    obj.birth_date = birth_date
+                if notes_val and not obj.notes:
+                    obj.notes = notes_val
+                obj.save(update_fields=['full_name', 'balance', 'birth_date', 'notes'])
+                updated_count += 1
+            else:
+                obj = Patient.objects.create(
+                    clinic=clinic,
+                    full_name=full_name,
+                    phone=phone,
+                    balance=balance,
+                    birth_date=birth_date,
+                    notes=notes_val,
+                )
+                created_count += 1
+            imported_ids.append(obj.id)
+        except Exception as exc:
+            errors.append({'row': idx, 'name': full_name, 'reason': str(exc)})
+
+    return Response({
+        'ok': True,
+        'total': len(rows),
+        'created': created_count,
+        'updated': updated_count,
+        'skipped': skipped_count,
+        'importedIds': imported_ids,
+        'errors': errors[:50],  # ko'pi bilan 50 ta xato
+    })
+
+
+@api_view(['DELETE'])
+def excel_delete_imported_patients(request):
+    """Superadmin: ID ro'yxati bo'yicha bemorlarni o'chiradi.
+
+    DELETE /api/patients/excel-delete/?clinic=<id>
+    JSON body: {ids: [1,2,3,...]}
+    """
+    if not request.user.is_authenticated or not request.user.is_superuser:
+        return Response({'detail': 'Faqat superadmin.'}, status=403)
+
+    clinic_id = request.query_params.get('clinic') or request.data.get('clinic')
+    ids = request.data.get('ids', [])
+    if not ids or not isinstance(ids, list):
+        return Response({'detail': 'ids ro\'yxati kerak.'}, status=400)
+
+    try:
+        clinic_id = int(clinic_id)
+    except (ValueError, TypeError):
+        return Response({'detail': 'clinic kerak.'}, status=400)
+
+    # Faqat shu klinikaning bemorlarini o'chiramiz (xavfsizlik)
+    qs = Patient.objects.filter(clinic_id=clinic_id, id__in=ids)
+    deleted, _ = qs.delete()
+    return Response({'ok': True, 'deleted': deleted})
+
+
+@api_view(['GET'])
+def excel_export_patients(request):
+    """Superadmin: klinika bemorlarini XLSX formatida yuklab beradi.
+
+    GET /api/patients/excel-export/?clinic=<id>
+    """
+    if not request.user.is_authenticated or not request.user.is_superuser:
+        return Response({'detail': 'Faqat superadmin.'}, status=403)
+
+    clinic_id = request.query_params.get('clinic')
+    if not clinic_id:
+        return Response({'detail': 'clinic kerak.'}, status=400)
+    try:
+        clinic_id = int(clinic_id)
+    except ValueError:
+        return Response({'detail': 'clinic noto\'g\'ri.'}, status=400)
+
+    patients = Patient.objects.filter(clinic_id=clinic_id).order_by('full_name')
+
+    # XLSX ni Python stdlib bilan yaratamiz (openpyxl yo'q)
+    # Minimal xlsx: 1 sheet, shared strings, to'g'ri namespace
+    NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+    REL_NS = 'http://schemas.openxmlformats.org/package/2006/relationships'
+
+    headers = ['ФИО', 'Дата рождения', 'Номер телефона', 'Баланс', 'Категория', 'Заметки']
+
+    # Shared strings ro'yxati — barcha matn qiymatlar
+    shared = []
+    shared_map = {}
+
+    def add_shared(val: str) -> int:
+        if val not in shared_map:
+            shared_map[val] = len(shared)
+            shared.append(val)
+        return shared_map[val]
+
+    # Rows data
+    rows_data = []
+    for h in headers:
+        # sarlavha
+        pass
+    rows_data.append(headers)
+    for p in patients:
+        bd = p.birth_date.strftime('%d.%m.%Y') if p.birth_date else ''
+        rows_data.append([
+            p.full_name or '',
+            bd,
+            p.phone or '',
+            str(p.balance or 0),
+            p.category_status or '',
+            p.notes or '',
+        ])
+
+    # Shared strings indekslarini yig'amiz
+    for row in rows_data:
+        for cell in row:
+            add_shared(str(cell))
+
+    def esc(s):
+        return str(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", '&apos;')
+
+    # sheet1.xml
+    sheet_lines = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">',
+        '<sheetData>',
+    ]
+    col_letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    for r_idx, row in enumerate(rows_data, 1):
+        sheet_lines.append(f'<row r="{r_idx}">')
+        for c_idx, val in enumerate(row):
+            col = col_letters[c_idx]
+            ref = f'{col}{r_idx}'
+            si = shared_map.get(str(val), 0)
+            sheet_lines.append(f'<c r="{ref}" t="s"><v>{si}</v></c>')
+        sheet_lines.append('</row>')
+    sheet_lines += ['</sheetData>', '</worksheet>']
+    sheet_xml = '\n'.join(sheet_lines).encode('utf-8')
+
+    # sharedStrings.xml
+    ss_lines = [
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>',
+        f'<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="{len(shared)}" uniqueCount="{len(shared)}">',
+    ]
+    for s in shared:
+        ss_lines.append(f'<si><t xml:space="preserve">{esc(s)}</t></si>')
+    ss_lines.append('</sst>')
+    ss_xml = '\n'.join(ss_lines).encode('utf-8')
+
+    # workbook.xml
+    wb_xml = b'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"
+          xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Bemorlar" sheetId="1" r:id="rId1"/></sheets>
+</workbook>'''
+
+    # workbook.xml.rels
+    wb_rels = b'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+  <Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>
+</Relationships>'''
+
+    # _rels/.rels
+    rels = b'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>'''
+
+    # [Content_Types].xml
+    ct = b'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>
+</Types>'''
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr('[Content_Types].xml', ct)
+        zf.writestr('_rels/.rels', rels)
+        zf.writestr('xl/workbook.xml', wb_xml)
+        zf.writestr('xl/_rels/workbook.xml.rels', wb_rels)
+        zf.writestr('xl/worksheets/sheet1.xml', sheet_xml)
+        zf.writestr('xl/sharedStrings.xml', ss_xml)
+
+    buf.seek(0)
+    from django.http import HttpResponse
+    today = datetime.date.today().strftime('%Y-%m-%d')
+    fname = f'bemorlar_klinika_{clinic_id}_{today}.xlsx'
+    resp = HttpResponse(
+        buf.read(),
+        content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    )
+    resp['Content-Disposition'] = f'attachment; filename="{fname}"'
+    return resp
 

@@ -10,7 +10,8 @@ from .views import (
     global_search, dashboard_stats, pulse_monitor, auth_login, update_profile, serve_dental_media_sample,
     request_login_code, verify_login_code, monthly_plan,
     PatientMediaViewSet, photo_protocol, patient_media_presence, ServiceCatalogItemViewSet,
-    DoctorNaryadRateViewSet, ServiceCategoryViewSet
+    DoctorNaryadRateViewSet, ServiceCategoryViewSet,
+    excel_import_patients, excel_delete_imported_patients, excel_export_patients,
 )
 from . import telegram_auth
 from . import whatsapp_api
@@ -60,6 +61,11 @@ urlpatterns = [
     path('auth/telegram/verify/', telegram_login.verify_code),
     # MUHIM: router'dan OLDIN — aks holda /patient-media/<pk> bilan to'qnashadi
     path('patient-media/presence/', patient_media_presence, name='patient_media_presence'),
+    # Excel Import / Export — ROUTER'DAN OLDIN bo'lishi SHART, aks holda
+    # /patients/excel-import/ ni router'ning /patients/<pk>/ tutib oladi (pk='excel-import').
+    path('patients/excel-import/', excel_import_patients, name='excel_import_patients'),
+    path('patients/excel-delete/', excel_delete_imported_patients, name='excel_delete_imported_patients'),
+    path('patients/excel-export/', excel_export_patients, name='excel_export_patients'),
     path('', include(router.urls)),
     path('auth/login/', auth_login, name='auth_login'),
     path('auth/request-code/', request_login_code, name='request_login_code'),

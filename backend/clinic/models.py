@@ -312,12 +312,21 @@ class PhotoProtocol(models.Model):
     fayllariga URL orqali bog'lanadi (JSON ichida base64 shishmaydi).
     """
     clinic = models.ForeignKey('ClinicTenant', on_delete=models.CASCADE, null=True, blank=True, related_name='photo_protocols')
-    patient = models.OneToOneField('Patient', on_delete=models.CASCADE, related_name='photo_protocol')
+    # Bir bemorda 3 tagacha PREZENTATSIYA (slayd-to'plam) bo'lishi mumkin — shuning uchun
+    # OneToOne EMAS, slot bilan ForeignKey. slot 1..3, har (patient, slot) BITTA yozuv.
+    patient = models.ForeignKey('Patient', on_delete=models.CASCADE, related_name='photo_protocols')
+    slot = models.PositiveSmallIntegerField(default=1)  # 1..3
+    title = models.CharField(max_length=120, blank=True)  # prezentatsiya nomi (ixtiyoriy)
     doc = models.JSONField(default=list, blank=True)
     updated_at = models.DateTimeField(auto_now=True)
 
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['patient', 'slot'], name='uniq_photoprotocol_patient_slot'),
+        ]
+
     def __str__(self):
-        return f"Foto-protokol (bemor {self.patient_id})"
+        return f"Foto-protokol (bemor {self.patient_id}, slot {self.slot})"
 
 
 class ClinicMonthlyPlan(models.Model):

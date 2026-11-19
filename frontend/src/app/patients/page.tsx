@@ -150,22 +150,16 @@ function PatientsContent() {
       const hasDebt = p.balance < 0;
 
       // 3. Check for incomplete profile / data
+      // "TO'LIQMAS" FAQAT eng muhim aloqa maydoni — TELEFON yo'q bo'lsa (bemorga bog'lanib
+      // bo'lmaydi). Tug'ilgan sana va tibbiy tarix YANGI yoki Excel'dan IMPORT qilingan
+      // bemorda bo'lmasligi TABIIY (kelib davolangach to'ldiriladi) — ular "to'liqmas" EMAS.
+      // Shu sabab import qilingan bemorlar endi binafsha ("to'liqmas") ko'rinmaydi.
       const missingFields: string[] = [];
       const hasPhone = p.phone && p.phone.trim().replace(/[^0-9]/g, '').length >= 7;
       if (!hasPhone) {
         missingFields.push(tr('patients.phone'));
       }
-      const hasBirth = p.birth_date && p.birth_date !== '—' && p.birth_date.trim().length > 0;
-      if (!hasBirth) {
-        missingFields.push(tr('patients.birthDate'));
-      }
-      const hasHistory =
-        (p.medical_history && p.medical_history.trim().length > 2) ||
-        (p.notes && p.notes.trim().length > 2);
-      if (!hasHistory) {
-        missingFields.push(tr('patients.medicalHistory'));
-      }
-      const isIncomplete = missingFields.length > 0;
+      const isIncomplete = !hasPhone;
 
       // 4. Good / Active
       const isGood = !hasDebt && !staleApt && !isIncomplete;

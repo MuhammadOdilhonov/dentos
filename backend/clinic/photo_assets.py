@@ -17,15 +17,24 @@ def persist_images(doc, patient_id, clinic_id):
         if isinstance(value, str) and value.startswith('blob:'):
             raise ValidationError({'doc': 'Vaqtinchalik blob URL o‘rniga faylni yuklang.'})
         if isinstance(value, str) and value.startswith('data:image/'):
-            match = re.fullmatch(r'data:image/(png|jpeg|webp);base64,([A-Za-z0-9+/=\s]+)', value)
+            # FORMAT CHEKLOVI YUMSHATILDI: endi har qanday rasm subtipi (png/jpeg/webp/gif/
+            # bmp/avif/tiff/heic/heif/svg...) qabul qilinadi. Frontend rasmlarni canvas orqali
+            # JPEG'ga qayta kodlaydi, lekin to'g'ridan-to'g'ri boshqa format yuborilsa ham saqlanadi.
+            match = re.fullmatch(r'data:image/([a-zA-Z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)', value)
             if not match:
-                raise ValidationError({'doc': 'PNG, JPEG yoki WebP rasm kerak.'})
+                raise ValidationError({'doc': 'Rasm formati noto‘g‘ri.'})
+            subtype = match[1].lower()
+            ext = {
+                'jpeg': 'jpg', 'jpg': 'jpg', 'png': 'png', 'webp': 'webp', 'gif': 'gif',
+                'bmp': 'bmp', 'avif': 'avif', 'tiff': 'tiff', 'x-tiff': 'tiff',
+                'heic': 'heic', 'heif': 'heif', 'svg+xml': 'svg',
+            }.get(subtype, 'img')
             try:
                 raw = base64.b64decode(match[2], validate=True)
             except ValueError:
                 raise ValidationError({'doc': 'Buzilgan rasm.'})
-            if len(raw) > 10 * 1024 * 1024:
-                raise ValidationError({'doc': 'Bitta foto 10 MB dan oshmasin.'})
+            if len(raw) > 30 * 1024 * 1024:
+                raise ValidationError({'doc': 'Bitta foto 30 MB dan oshmasin.'})
             digest = hashlib.sha256(raw).hexdigest()
             media = PatientMedia.objects.filter(patient_id=patient_id, clinic_id=clinic_id,
                                                  kind='foto', meta__sha256=digest).first()
@@ -39,8 +48,8 @@ def persist_images(doc, patient_id, clinic_id):
                     if total + len(raw) > float(clinic.storage_quota_gb) * 1024 ** 3:
                         raise ValidationError({'doc': 'Klinika xotira limiti tugadi.'})
                     media = PatientMedia.objects.create(patient_id=patient_id, clinic_id=clinic_id, kind='foto',
-                        file=ContentFile(raw, name=f'photo.{match[1]}'), file_name=f'photo.{match[1]}',
-                        file_size=len(raw), file_type=f'image/{match[1]}', meta={'sha256': digest})
+                        file=ContentFile(raw, name=f'photo.{ext}'), file_name=f'photo.{ext}',
+                        file_size=len(raw), file_type=f'image/{subtype}', meta={'sha256': digest})
             return f'/api/patient-media/{media.pk}/download/'
         # A chart may only reference files belonging to its patient.
         if isinstance(value, str) and '/api/patient-media/' in value:

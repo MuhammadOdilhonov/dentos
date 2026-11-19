@@ -622,6 +622,77 @@ export const clinicApi = {
     return newP;
   },
 
+  // ── Excel Import / Export — superadmin paneli ──────────────────────────────
+
+  /** XLSX faylini yuklaydi va klinika bemorlarini importa qiladi (superadmin). */
+  async excelImportPatients(
+    clinicId: number,
+    file: File,
+    onProgress?: (pct: number) => void
+  ): Promise<{ ok: boolean; total: number; created: number; updated: number; skipped: number; importedIds: number[]; errors: { row: number; name: string; reason: string }[] }> {
+    const form = new FormData();
+    form.append('file', file);
+    // XMLHttpRequest — progress kuzatish uchun
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', `${API_BASE}/patients/excel-import/?clinic=${clinicId}`);
+      // Cookie auth + cookie-CSRF himoyasi: AccountMiddleware yozish (POST) uchun
+      // 'X-Dentos-Request: 1' headerini TALAB qiladi — bo'lmasa 403 ("CSRF tekshiruvi
+      // rad etdi") beradi va katta fayl yuklanayotganda brauzer buni "tarmoq xatosi"
+      // deb ko'rsatadi. apiFetch buni avtomatik qo'yadi; XHR'da qo'lda qo'shamiz.
+      xhr.withCredentials = true;
+      xhr.setRequestHeader('X-Dentos-Request', '1');
+      if (onProgress) {
+        xhr.upload.onprogress = (e) => {
+          if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100));
+        };
+      }
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try { resolve(JSON.parse(xhr.responseText)); }
+          catch { reject(new Error('Javob noto\'g\'ri formatda.')); }
+        } else {
+          try {
+            const err = JSON.parse(xhr.responseText);
+            reject(new Error(err.detail || `Server xatosi: ${xhr.status}`));
+          } catch { reject(new Error(`Server xatosi: ${xhr.status}`)); }
+        }
+      };
+      xhr.onerror = () => reject(new Error('Tarmoq xatosi.'));
+      xhr.send(form);
+    });
+  },
+
+  /** Superadmin: ID ro'yxati bo'yicha bemorlarni o'chiradi. */
+  async excelDeletePatients(clinicId: number, ids: number[]): Promise<{ ok: boolean; deleted: number }> {
+    const res = await apiFetch(`${API_BASE}/patients/excel-delete/?clinic=${clinicId}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error((err as any).detail || `Xato: ${res.status}`);
+    }
+    return res.json();
+  },
+
+  /** Superadmin: klinika bemorlarini XLSX formatida yuklab beradi. */
+  async excelExportPatients(clinicId: number): Promise<void> {
+    const res = await apiFetch(`${API_BASE}/patients/excel-export/?clinic=${clinicId}`, {
+      method: 'GET',
+    });
+    if (!res.ok) throw new Error(`Export xatosi: ${res.status}`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    const today = new Date().toISOString().split('T')[0];
+    a.download = `bemorlar_klinika_${clinicId}_${today}.xlsx`;
+    a.click();
+    URL.revokeObjectURL(url);
+  },
+
   async updatePatient(patientId: number, data: Partial<Patient>): Promise<void> {
     if (demoBlocked()) return;
     bustApiCache();
@@ -1336,6 +1407,38 @@ export const clinicApi = {
     } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; return false; }
   },
 
+  // uploadPatientMedia bilan bir xil, lekin yaratilgan yozuvni (id + file_url) QAYTARADI.
+  // Foto-protokolga video qo'yish uchun kerak: videoni bazaga yuklab, element src'siga
+  // /api/patient-media/<id>/download/ URL beramiz (base64 EMAS — JSON limitini buzmaydi).
+  async uploadPatientMediaRecord(
+    patientId: number, kind: 'foto' | 'rentgen' | 'skan', file: Blob | File,
+    fileName?: string, meta?: Record<string, any>, overrideClinicId?: number
+  ): Promise<any | null> {
+    const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
+    if (!cid || isDemoClinic(cid)) return null; // demo: bazaga yozilmaydi
+    try {
+      const fd = new FormData();
+      fd.append('patient', String(patientId));
+      fd.append('kind', kind);
+      fd.append('file', file, fileName || (file as File).name || `${kind}.bin`);
+      if (meta) fd.append('meta', JSON.stringify(meta));
+      const res = await apiFetch(`${API_BASE}/patient-media/`, {
+        method: 'POST', headers: { 'X-Clinic-ID': String(cid) }, body: fd,
+      });
+      if (!res.ok) {
+        let detail = '';
+        try { const j = await res.json(); detail = j?.file || j?.detail || JSON.stringify(j); } catch {}
+        throw new ApiError(detail || 'Video yuklab bo‘lmadi', res.status);
+      }
+      const rec = await res.json();
+      const slot = _mediaPresenceCache[String(patientId)] || { foto: false, rentgen: false, skan: false };
+      slot[kind] = true;
+      _mediaPresenceCache[String(patientId)] = slot;
+      bustApiCache();
+      return rec;
+    } catch (error) { if (error instanceof ApiError) throw error; return null; }
+  },
+
   async listPatientMedia(patientId: number, kind?: 'foto' | 'rentgen' | 'skan', overrideClinicId?: number): Promise<any[]> {
     const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
     if (!cid) return [];
@@ -1376,24 +1479,48 @@ export const clinicApi = {
   },
 
   // ── Foto-protokol hujjati (BAZADA) ──
-  async fetchPatientPhotoDoc(patientId: number, overrideClinicId?: number): Promise<any[] | null> {
+  async fetchPatientPhotoDoc(patientId: number, overrideClinicId?: number, slot: number = 1): Promise<any[] | null> {
     const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
     if (!cid) return null;
     try {
       // report=false — bu O'QISH; muvaffaqiyatsiz bo'lsa global "Saqlanmadi" (yozish) bannerini
       // chiqarMAYDI. Xatoda `null` qaytaramiz: chaqiruvchi (studio) buni "o'qilmadi" deb biladi
       // va BO'SH hujjat bilan ustidan yozmaydi; [] esa "server bo'sh" (haqiqiy) degani.
-      const res = await apiFetch(`${API_BASE}/photo-protocol/?clinic=${cid}&patient=${patientId}`, { headers: { 'X-Clinic-ID': String(cid) }, next: { revalidate: 0 } }, false);
+      const res = await apiFetch(`${API_BASE}/photo-protocol/?clinic=${cid}&patient=${patientId}&slot=${slot}`, { headers: { 'X-Clinic-ID': String(cid) }, next: { revalidate: 0 } }, false);
       if (!res.ok) return null;
       const data = await res.json();
       return Array.isArray(data.doc) ? data.doc : [];
     } catch { return null; }
   },
 
+  // Bemorning PREZENTATSIYALARI ro'yxati (3 tagacha slot) — tablar uchun.
+  async listPatientPresentations(patientId: number, overrideClinicId?: number): Promise<Array<{ slot: number; title: string; hasContent: boolean; updated_at: string | null }>> {
+    const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
+    if (!cid) return [];
+    try {
+      const res = await apiFetch(`${API_BASE}/photo-protocol/?clinic=${cid}&patient=${patientId}&presentations=1`, { headers: { 'X-Clinic-ID': String(cid) }, next: { revalidate: 0 } }, false);
+      if (!res.ok) return [];
+      const data = await res.json();
+      return Array.isArray(data.presentations) ? data.presentations : [];
+    } catch { return []; }
+  },
+
+  async deletePatientPresentation(patientId: number, slot: number, overrideClinicId?: number): Promise<boolean> {
+    const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
+    if (!cid || isDemoClinic(cid)) return false;
+    try {
+      const res = await apiFetch(`${API_BASE}/photo-protocol/`, {
+        method: 'DELETE', headers: { 'Content-Type': 'application/json', 'X-Clinic-ID': String(cid) },
+        body: JSON.stringify({ patient: patientId, clinic: cid, slot }),
+      }, false);
+      return res.ok;
+    } catch { return false; }
+  },
+
   // Server CANONICAL doc'ni qaytaradi (base64 rasmlar /api/patient-media/.../download/ ga
   // aylantirilgan). Buni { ok, doc } sifatida qaytaramiz — studio uni yangi lokal tahrirlarni
   // yo'qotmasdan singdiradi (keyingi saqlashlarda katta base64 qayta yuborilmaydi).
-  async savePatientPhotoDocBackend(patientId: number, doc: any[], overrideClinicId?: number): Promise<{ ok: boolean; doc: any[] | null }> {
+  async savePatientPhotoDocBackend(patientId: number, doc: any[], overrideClinicId?: number, slot: number = 1, title?: string): Promise<{ ok: boolean; doc: any[] | null }> {
     const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
     if (!cid || isDemoClinic(cid)) return { ok: false, doc: null };
     try {
@@ -1402,7 +1529,7 @@ export const clinicApi = {
       // holati va qayta-urinish tugmasi bilan boshqaradi.
       const res = await apiFetch(`${API_BASE}/photo-protocol/`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Clinic-ID': String(cid) },
-        body: JSON.stringify({ patient: patientId, clinic: cid, doc }),
+        body: JSON.stringify({ patient: patientId, clinic: cid, doc, slot, ...(title !== undefined ? { title } : {}) }),
       }, false);
       let canonical: any[] | null = null;
       if (res.ok) {
