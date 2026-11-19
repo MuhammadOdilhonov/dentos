@@ -1569,11 +1569,22 @@ class PatientMediaViewSet(TenantViewSet):
 
     @action(detail=True, methods=['get'])
     def download(self, request, pk=None):
-        from django.http import FileResponse
-        from .storage import open_media_for_read
+        from django.http import FileResponse, HttpResponseRedirect
+        from .storage import open_media_for_read, media_remote_url
         media = self.get_object()
         if not media.file:
             return Response(status=404)
+        # VIDEO (remote): Django proksisi orqali oqitish SEKIN va seek (oldinga o'tish)
+        # ishlamaydi. Ruxsat get_object() da tekshirilgach, brauzer to'g'ridan-to'g'ri
+        # Cloupard presigned URL'dan oqizadi (tez + Range/seek). Lokal fayl (presigned
+        # yo'q) yoki rasm → avvalgidek proksi (kichik foto autentifikatsiyasi saqlanadi).
+        from pathlib import PurePath
+        is_video = (media.file_type or '').lower().startswith('video/') or \
+            PurePath(media.file_name or '').suffix.lower() in {'.mp4', '.webm', '.mov', '.m4v', '.ogg', '.ogv'}
+        if is_video:
+            remote = media_remote_url(media)
+            if remote:
+                return HttpResponseRedirect(remote)
         # Proxy through the authenticated backend: no storage credential or permanent public URL
         # reaches the browser. open_media_for_read fayl saqlangan backend'dan ochadi
         # (eski local/B2 fayllar yangi Cloupard'ga ko'chmasa ham ochiladi).
