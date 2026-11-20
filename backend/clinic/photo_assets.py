@@ -45,8 +45,9 @@ def persist_images(doc, patient_id, clinic_id):
                 with transaction.atomic():
                     clinic = ClinicTenant.objects.select_for_update().get(pk=clinic_id)
                     total = PatientMedia.objects.filter(clinic_id=clinic_id).aggregate(n=Sum('file_size'))['n'] or 0
-                    if total + len(raw) > float(clinic.storage_quota_gb) * 1024 ** 3:
-                        raise ValidationError({'doc': 'Klinika xotira limiti tugadi.'})
+                    cloud_quota = float(clinic.cloud_storage_quota_gb if clinic.cloud_storage_quota_gb is not None else (clinic.storage_quota_gb if clinic.storage_quota_gb is not None else 1000.0))
+                    if total + len(raw) > cloud_quota * 1024 ** 3:
+                        raise ValidationError({'doc': f"Klinika Cloud (Cloupard) xotira limiti to‘ldi ({cloud_quota} GB)."})
                     media = PatientMedia.objects.create(patient_id=patient_id, clinic_id=clinic_id, kind='foto',
                         file=ContentFile(raw, name=f'photo.{ext}'), file_name=f'photo.{ext}',
                         file_size=len(raw), file_type=f'image/{subtype}', meta={'sha256': digest})

@@ -104,7 +104,8 @@ class AccountMiddleware:
             elif write and path.startswith(('/api/employees/', '/api/branches/', '/api/workplaces/', '/api/specialties/')) and principal.role not in ('director', 'deputy_director', 'admin'):
                 return JsonResponse({'detail': 'Xodimlarni boshqarish ruxsati yo‘q.'}, status=403)
         response = self.get_response(request)
-        response['Cache-Control'] = 'no-store'
+        if 'Cache-Control' not in response:
+            response['Cache-Control'] = 'no-store'
         return response
 
 class TenantPermission(BasePermission):

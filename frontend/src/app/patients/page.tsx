@@ -41,10 +41,13 @@ import {
   Sparkles,
   ExternalLink,
   Layers,
-  ArrowRight
+  ArrowRight,
+  Trash2,
+  Loader2
 } from 'lucide-react';
 
 type StatusFilterType = 'all' | 'debt' | 'stale_appointments' | 'incomplete_profile' | 'good';
+type SourceFilterType = 'all' | 'dentos' | 'excel';
 type TabType = 'list' | 'foto' | 'rentgen' | 'skan';
 
 const PAGE_SIZE = 12; // 10-20 oralig'ida har bir sahifa yuklanadi
@@ -62,6 +65,7 @@ function PatientsContent() {
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilterType>('all');
+  const [sourceFilter, setSourceFilter] = useState<SourceFilterType>('all');
   const [categoryFilter, setCategoryFilter] = useState('All');
   const [viewMode, setViewMode] = useState<'table' | 'cards'>('table');
   const [isNewPatientModalOpen, setIsNewPatientModalOpen] = useState(false);
@@ -76,6 +80,27 @@ function PatientsContent() {
 
   // Media presence (yashil ptichka) BAZADAN — re-render uchun hisoblagich
   const [mediaPresenceTick, setMediaPresenceTick] = useState(0);
+
+  // Barcha bemorlarni bittada o'chirish holati
+  const [isClearAllModalOpen, setIsClearAllModalOpen] = useState(false);
+  const [isClearingAll, setIsClearingAll] = useState(false);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const handleConfirmClearAll = async () => {
+    setIsClearingAll(true);
+    try {
+      const res = await clinicApi.clearAllPatients();
+      setPatients([]);
+      setAppointments([]);
+      setIsClearAllModalOpen(false);
+      setToastMessage(res.message || "Barcha bemorlar ma'lumotlari to‘liq o‘chirildi");
+      setTimeout(() => setToastMessage(null), 3500);
+    } catch (e: any) {
+      alert(e?.message || "O'chirishda xatolik yuz berdi");
+    } finally {
+      setIsClearingAll(false);
+    }
+  };
 
   // Load data
   useEffect(() => {
@@ -115,7 +140,7 @@ function PatientsContent() {
   // Reset pagination count on search, filter, or tab change
   useEffect(() => {
     setVisibleCount(PAGE_SIZE);
-  }, [search, statusFilter, categoryFilter, activeTab]);
+  }, [search, statusFilter, sourceFilter, categoryFilter, activeTab]);
 
   const handleCreatePatient = async (patientData: Partial<Patient>) => {
     const created = await clinicApi.createPatient(patientData);
@@ -193,9 +218,22 @@ function PatientsContent() {
     };
   }, [patientStats]);
 
-  // Filtered list based on search, category and status
+  // Manba (Dentos vs Excel) bo'yicha hisob
+  const sourceCounts = useMemo(() => {
+    const dentos = patients.filter((p) => p.source !== 'excel').length;
+    const excel = patients.filter((p) => p.source === 'excel').length;
+    return {
+      all: patients.length,
+      dentos,
+      excel
+    };
+  }, [patients]);
+
+  // Filtered list based on search, category, status and source
   const filteredList = useMemo(() => {
     return patientStats.filter(({ patient: p, hasDebt, staleApt, isIncomplete, isGood }) => {
+      if (sourceFilter === 'dentos' && p.source === 'excel') return false;
+      if (sourceFilter === 'excel' && p.source !== 'excel') return false;
       if (categoryFilter !== 'All' && categoryFilter !== 'Все' && p.category_status !== categoryFilter) {
         return false;
       }
@@ -216,7 +254,7 @@ function PatientsContent() {
       }
       return true;
     });
-  }, [patientStats, categoryFilter, statusFilter, search]);
+  }, [patientStats, sourceFilter, categoryFilter, statusFilter, search]);
 
   // Infinite Scroll IntersectionObserver
   useEffect(() => {
@@ -382,6 +420,13 @@ function PatientsContent() {
             <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800">
               {filteredList.length} {tk('pt_cnt_patients')}
             </span>
+            <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500" />
+              <span>{sourceCounts.dentos} Dentos</span>
+              <span className="text-slate-300 dark:text-slate-600">·</span>
+              <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" />
+              <span>{sourceCounts.excel} Excel</span>
+            </span>
             {activeTab !== 'list' && (() => {
               const totals = clinicApi.getMediaTotals();
               const n = totals ? (activeTab === 'foto' ? totals.foto : activeTab === 'rentgen' ? totals.rentgen : totals.skan) : 0;
@@ -442,6 +487,18 @@ function PatientsContent() {
             <UserPlus className="w-4 h-4" />
             <span>+ {t.addPatient}</span>
           </button>
+
+          {patients.length > 0 && (
+            <button
+              onClick={() => setIsClearAllModalOpen(true)}
+              className="flex items-center space-x-1.5 px-3 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-600 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 dark:text-rose-300 border border-rose-200 dark:border-rose-900/50 rounded-xl text-xs font-bold transition active:scale-95 shrink-0"
+              title="Barcha bemorlar ma'lumotlarini tozalash"
+            >
+              <Trash2 className="w-4 h-4" />
+              <span className="hidden sm:inline">Barcha bemorlar ma'lumoti qolmasin</span>
+              <span className="sm:hidden">Tozalash</span>
+            </button>
+          )}
         </div>
       </div>
 
@@ -497,6 +554,54 @@ function PatientsContent() {
             })}
           </div>
         )}
+
+        {/* Manba / Toifa filtrlari: Dentos (Yaratilgan) vs Excel (Yuklangan) */}
+        <div className="flex items-center gap-2 flex-wrap pt-2 border-t border-slate-100 dark:border-slate-800 text-xs">
+          <span className="font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mr-1">
+            Toifa:
+          </span>
+          <button
+            onClick={() => setSourceFilter('all')}
+            className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 ${
+              sourceFilter === 'all'
+                ? 'bg-slate-800 text-white dark:bg-slate-100 dark:text-slate-900 shadow-sm'
+                : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+            }`}
+          >
+            <span>Barchasi</span>
+            <span className={`px-1.5 py-0.2 rounded-md text-[10px] ${sourceFilter === 'all' ? 'bg-black/20 text-white' : 'bg-slate-200 dark:bg-slate-700'}`}>
+              {sourceCounts.all}
+            </span>
+          </button>
+          <button
+            onClick={() => setSourceFilter('dentos')}
+            className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 ${
+              sourceFilter === 'dentos'
+                ? 'bg-blue-600 text-white shadow-sm shadow-blue-500/25'
+                : 'bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/50'
+            }`}
+          >
+            <span className="w-2 h-2 rounded-full bg-blue-500" />
+            <span>Dentos (Yaratilgan)</span>
+            <span className={`px-1.5 py-0.2 rounded-md text-[10px] ${sourceFilter === 'dentos' ? 'bg-black/20 text-white' : 'bg-blue-200 dark:bg-blue-900 text-blue-800 dark:text-blue-200'}`}>
+              {sourceCounts.dentos}
+            </span>
+          </button>
+          <button
+            onClick={() => setSourceFilter('excel')}
+            className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 ${
+              sourceFilter === 'excel'
+                ? 'bg-emerald-600 text-white shadow-sm shadow-emerald-500/25'
+                : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/50'
+            }`}
+          >
+            <span className="w-2 h-2 rounded-full bg-emerald-500" />
+            <span>Excel (Yuklangan)</span>
+            <span className={`px-1.5 py-0.2 rounded-md text-[10px] ${sourceFilter === 'excel' ? 'bg-black/20 text-white' : 'bg-emerald-200 dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200'}`}>
+              {sourceCounts.excel}
+            </span>
+          </button>
+        </div>
       </div>
 
       {/* ───────────────────────────────────────────────────────── */}
@@ -544,11 +649,16 @@ function PatientsContent() {
                         )}
                         <div className="min-w-0">
                           {/* Ism + karta raqami — bir qatorda */}
-                          <div className="flex items-center gap-1.5 min-w-0">
+                          <div className="flex items-center gap-1.5 min-w-0 flex-wrap">
                             <h4 className="font-bold text-sm text-slate-900 dark:text-white truncate group-hover:text-blue-600 dark:group-hover:text-sky-400 transition">
                               {p.full_name}
                             </h4>
                             <span className="text-[11px] font-mono text-slate-400 shrink-0">#{p.id}</span>
+                            {p.source === 'excel' ? (
+                              <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 shrink-0">Excel (Yuklangan)</span>
+                            ) : (
+                              <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 shrink-0">Dentos (Yaratilgan)</span>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -700,9 +810,16 @@ function PatientsContent() {
                       />
                     </td>
                     <td className="py-3.5 px-4">
-                      <span className="font-bold text-slate-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-sky-400 transition">
-                        {p.full_name}
-                      </span>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="font-bold text-slate-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-sky-400 transition">
+                          {p.full_name}
+                        </span>
+                        {p.source === 'excel' ? (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 shrink-0">Excel (Yuklangan)</span>
+                        ) : (
+                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 shrink-0">Dentos (Yaratilgan)</span>
+                        )}
+                      </div>
                       <span className="text-[11px] font-mono text-slate-400 block">#{p.id}</span>
                     </td>
                     <td className="py-3.5 px-4 font-mono text-slate-600 dark:text-slate-300">
@@ -775,6 +892,73 @@ function PatientsContent() {
         onClose={() => setIsNewPatientModalOpen(false)}
         onSave={handleCreatePatient}
       />
+
+      {/* Barcha bemorlarni o'chirish tasdiqlash modali */}
+      {isClearAllModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs animate-in fade-in">
+          <div className="bg-white dark:bg-slate-900 rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 dark:border-slate-800 space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-xl bg-rose-100 dark:bg-rose-950/60 flex items-center justify-center text-rose-600 dark:text-rose-400 shrink-0">
+                <AlertTriangle className="w-6 h-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                  Barcha bemorlar ma'lumotlarini o‘chirish
+                </h3>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                  Qaytarib bo‘lmas amal
+                </p>
+              </div>
+            </div>
+
+            <div className="p-3.5 rounded-xl bg-rose-50 dark:bg-rose-950/30 border border-rose-200 dark:border-rose-900/40 text-xs text-rose-700 dark:text-rose-300 leading-relaxed space-y-1.5">
+              <p className="font-semibold">
+                Diqqat! Klinikadagi jami {patients.length} nafar bemorning barcha ma’lumotlari:
+              </p>
+              <ul className="list-disc pl-4 space-y-0.5 text-[11px]">
+                <li>Ambulator tibbiy kartalari va tish formulalari</li>
+                <li>Fotoprotokollar, rentgen va 3D skan fayllari</li>
+                <li>Barcha qabullar va moliya/to‘lov tarixlari</li>
+              </ul>
+              <p className="font-bold text-rose-800 dark:text-rose-200 mt-1">
+                butunlay yo‘q qilinadi. Buni ortga qaytarib bo‘lmaydi!
+              </p>
+            </div>
+
+            <p className="text-xs text-slate-600 dark:text-slate-300">
+              Haqiqatan ham barcha bemorlar ma’lumotini o‘chirib yuborishni tasdiqlaysizmi?
+            </p>
+
+            <div className="flex items-center justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                disabled={isClearingAll}
+                onClick={() => setIsClearAllModalOpen(false)}
+                className="px-4 py-2.5 rounded-xl text-xs font-semibold text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800 transition"
+              >
+                Bekor qilish
+              </button>
+              <button
+                type="button"
+                disabled={isClearingAll}
+                onClick={handleConfirmClearAll}
+                className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold bg-rose-600 hover:bg-rose-700 text-white shadow-md shadow-rose-600/25 transition disabled:opacity-50"
+              >
+                {isClearingAll ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
+                Ha, barchasini o‘chirish
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast bildirishnomasi */}
+      {toastMessage && (
+        <div className="fixed bottom-6 right-6 z-50 px-4 py-3 rounded-xl bg-slate-900 text-white dark:bg-white dark:text-slate-900 text-xs font-bold shadow-xl border border-slate-700 dark:border-slate-200 animate-in fade-in slide-in-from-bottom-3 flex items-center gap-2">
+          <CheckCircle2 className="w-4 h-4 text-emerald-500" />
+          <span>{toastMessage}</span>
+        </div>
+      )}
     </div>
   );
 }

@@ -9,6 +9,8 @@ import { clinicApi } from '../lib/api';
 import {
   ChevronLeft,
   ChevronRight,
+  ChevronDown,
+  Calendar,
   Printer,
   Maximize2,
   SlidersHorizontal,
@@ -24,6 +26,53 @@ import {
   Lock,
   UserPlus
 } from 'lucide-react';
+
+const MONTH_NAMES: Record<'uz' | 'ru' | 'en', string[]> = {
+  uz: ['Yanvar', 'Fevral', 'Mart', 'Aprel', 'May', 'Iyun', 'Iyul', 'Avgust', 'Sentabr', 'Oktabr', 'Noyabr', 'Dekabr'],
+  ru: ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'],
+  en: ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+};
+
+const MONTH_NAMES_GENITIVE: Record<'uz' | 'ru' | 'en', string[]> = {
+  uz: ['yanvar', 'fevral', 'mart', 'aprel', 'may', 'iyun', 'iyul', 'avgust', 'sentabr', 'oktabr', 'noyabr', 'dekabr'],
+  ru: ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'],
+  en: ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+};
+
+const WEEKDAY_NAMES_FULL: Record<'uz' | 'ru' | 'en', string[]> = {
+  uz: ['Yakshanba', 'Dushanba', 'Seshanba', 'Chorshanba', 'Payshanba', 'Juma', 'Shanba'],
+  ru: ['Воскресенье', 'Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота'],
+  en: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+};
+
+const WEEKDAY_NAMES_SHORT: Record<'uz' | 'ru' | 'en', string[]> = {
+  uz: ['Du', 'Se', 'Cho', 'Pay', 'Ju', 'Sha', 'Yak'],
+  ru: ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'],
+  en: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+};
+
+const formatCalendarDate = (d: Date, lang: string): string => {
+  const l: 'uz' | 'ru' | 'en' = (lang === 'uz' || lang === 'ru' || lang === 'en') ? lang : 'ru';
+  const day = d.getDate();
+  const month = MONTH_NAMES_GENITIVE[l][d.getMonth()];
+  const weekday = WEEKDAY_NAMES_FULL[l][d.getDay()];
+
+  if (l === 'uz') {
+    return `${weekday}, ${day}-${month}`;
+  }
+  if (l === 'ru') {
+    const capitalizedMonth = month.charAt(0).toUpperCase() + month.slice(1);
+    return `${weekday}, ${day} ${capitalizedMonth}`;
+  }
+  return `${weekday}, ${MONTH_NAMES.en[d.getMonth()]} ${day}`;
+};
+
+const formatPickerMonthTitle = (d: Date, lang: string): string => {
+  const l: 'uz' | 'ru' | 'en' = (lang === 'uz' || lang === 'ru' || lang === 'en') ? lang : 'ru';
+  const month = MONTH_NAMES[l][d.getMonth()];
+  const year = d.getFullYear();
+  return `${month} ${year}`;
+};
 
 interface CalendarGridProps {
   currentDate: Date;
@@ -271,13 +320,11 @@ export default function CalendarGrid({
     clinicApi.saveUserPref('calendar_doctor_order', ids);
   };
 
-  // Format date display dynamically by active locale
+  // Format date display dynamically by active locale (human-readable, robust across environments)
   const localeMap = { uz: 'uz-UZ', ru: 'ru-RU', en: 'en-US' };
-  const dateString = currentDate.toLocaleDateString(localeMap[language] || 'ru-RU', {
-    day: 'numeric',
-    month: 'long',
-    weekday: 'long'
-  });
+  const dateString = useMemo(() => {
+    return formatCalendarDate(currentDate, language);
+  }, [currentDate, language]);
 
   const handlePrevDay = () => {
     const d = new Date(currentDate);
@@ -397,6 +444,90 @@ export default function CalendarGrid({
       monthCells.push(d);
     }
   }
+
+  // Mini calendar datepicker state & logic
+  const [isDatePickerOpen, setIsDatePickerOpen] = useState(false);
+  const [pickerMonthDate, setPickerMonthDate] = useState<Date>(() => new Date(currentDate));
+  const datePickerRef = React.useRef<HTMLDivElement>(null);
+
+  // Sync picker month when currentDate changes and picker is closed
+  React.useEffect(() => {
+    if (!isDatePickerOpen) {
+      setPickerMonthDate(new Date(currentDate));
+    }
+  }, [currentDate, isDatePickerOpen]);
+
+  // Click outside and Escape key to close popover
+  React.useEffect(() => {
+    if (!isDatePickerOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (datePickerRef.current && !datePickerRef.current.contains(e.target as Node)) {
+        setIsDatePickerOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setIsDatePickerOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isDatePickerOpen]);
+
+  const handlePrevPickerMonth = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setPickerMonthDate((prev) => new Date(prev.getFullYear(), prev.getMonth() - 1, 1));
+  };
+
+  const handleNextPickerMonth = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setPickerMonthDate((prev) => new Date(prev.getFullYear(), prev.getMonth() + 1, 1));
+  };
+
+  const handlePickerToday = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const today = new Date();
+    setPickerMonthDate(today);
+    onDateChange(today);
+    setViewMode('day');
+    setIsDatePickerOpen(false);
+  };
+
+  const handleSelectPickerDate = (cellDate: Date) => {
+    onDateChange(new Date(cellDate));
+    setViewMode('day');
+    setIsDatePickerOpen(false);
+  };
+
+  // Month title: "Ноябрь 2026" / "Noyabr 2026" / "November 2026"
+  const pickerMonthTitle = useMemo(() => {
+    return formatPickerMonthTitle(pickerMonthDate, language);
+  }, [pickerMonthDate, language]);
+
+  // Month grid cells for picker (Mon..Sun)
+  const pickerCells = useMemo(() => {
+    const year = pickerMonthDate.getFullYear();
+    const month = pickerMonthDate.getMonth();
+    const first = new Date(year, month, 1);
+    const startDow = (first.getDay() + 6) % 7; // Monday = 0
+    const gridStart = new Date(first);
+    gridStart.setDate(first.getDate() - startDow);
+
+    const lastDayOfMonth = new Date(year, month + 1, 0).getDate();
+    const totalCells = (startDow + lastDayOfMonth) > 35 ? 42 : 35;
+
+    const cells: Date[] = [];
+    for (let i = 0; i < totalCells; i++) {
+      const d = new Date(gridStart);
+      d.setDate(gridStart.getDate() + i);
+      cells.push(d);
+    }
+    return cells;
+  }, [pickerMonthDate]);
 
   // Unified grid columns for time-based views (day = doctors/chairs, 3day/week = dates)
   interface GridCol {
@@ -520,35 +651,169 @@ export default function CalendarGrid({
 
   return (
     <div className="flex flex-col h-full bg-white dark:bg-slate-900 rounded-2xl shadow-sm border border-slate-200 dark:border-slate-800 overflow-hidden select-none transition-colors">
-      {/* 2.1. Taqvim Boshqaruvi (Filtrlar paneli) */}
-      <div className="p-3.5 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/90 flex flex-wrap items-center justify-between gap-3 transition-colors">
+      {/* 2.1. Taqvim Boshqaruvi (Filtrlar paneli) — z-40 ensures popovers float above scrollable grid */}
+      <div className="p-3.5 border-b border-slate-200 dark:border-slate-800 bg-slate-50/70 dark:bg-slate-900/90 flex flex-wrap items-center justify-between gap-3 transition-colors relative z-40">
         {/* Date Navigator */}
         <div className="flex items-center space-x-2">
           <div className="flex items-center bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl p-0.5 shadow-xs">
             <button
               onClick={handlePrevDay}
-              className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg text-slate-600 dark:text-slate-300 transition"
+              className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg text-slate-600 dark:text-slate-300 transition cursor-pointer"
               title={tr('calgrid.previous')}
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
             <button
               onClick={handleToday}
-              className="px-3 py-1 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg text-xs font-bold text-slate-800 dark:text-slate-100 transition"
+              className="px-3 py-1 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg text-xs font-bold text-slate-800 dark:text-slate-100 transition cursor-pointer"
             >
               {t.today}
             </button>
             <button
               onClick={handleNextDay}
-              className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg text-slate-600 dark:text-slate-300 transition"
+              className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg text-slate-600 dark:text-slate-300 transition cursor-pointer"
               title={tr('calgrid.next')}
             >
               <ChevronRight className="w-4 h-4" />
             </button>
           </div>
 
-          <div className="px-3 py-1.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl shadow-xs">
-            <span className="text-xs font-bold text-slate-800 dark:text-slate-100 capitalize">{dateString}</span>
+          {/* Interactive Date Trigger Button with Mini-Calendar Popover */}
+          <div className="relative z-50" ref={datePickerRef}>
+            <button
+              type="button"
+              onClick={() => {
+                setPickerMonthDate(new Date(currentDate));
+                setIsDatePickerOpen((prev) => !prev);
+              }}
+              className={`flex items-center gap-2 px-3 py-1.5 bg-white dark:bg-slate-800 border rounded-xl shadow-xs hover:bg-slate-50 dark:hover:bg-slate-700/60 transition cursor-pointer select-none ${
+                isDatePickerOpen
+                  ? 'border-blue-500 ring-2 ring-blue-500/20 text-blue-600 dark:text-blue-400'
+                  : 'border-slate-200 dark:border-slate-700 text-slate-800 dark:text-slate-100 hover:border-slate-300 dark:hover:border-slate-600'
+              }`}
+              title={language === 'uz' ? 'Taqvimdan sanani tanlash' : language === 'en' ? 'Select date from calendar' : 'Выбрать дату из календаря'}
+            >
+              <Calendar className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400 shrink-0" />
+              <span className="text-xs font-bold capitalize">{dateString}</span>
+              <ChevronDown
+                className={`w-3.5 h-3.5 text-slate-400 transition-transform duration-200 ${
+                  isDatePickerOpen ? 'rotate-180 text-blue-600 dark:text-blue-400' : ''
+                }`}
+              />
+            </button>
+
+            {/* Mini Calendar Modal / Popover */}
+            {isDatePickerOpen && (
+              <div
+                className="absolute top-full left-0 mt-2 z-50 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/80 rounded-2xl shadow-2xl p-3.5 w-[300px] sm:w-[320px] select-none animate-in fade-in zoom-in-95 duration-150"
+              >
+                {/* Header: Prev month, Month Year Title, Next month */}
+                <div className="flex items-center justify-between pb-2.5 mb-2 border-b border-slate-100 dark:border-slate-800">
+                  <button
+                    type="button"
+                    onClick={handlePrevPickerMonth}
+                    className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-600 dark:text-slate-300 transition cursor-pointer"
+                    title={language === 'uz' ? 'Oldingi oy' : language === 'en' ? 'Previous month' : 'Предыдущий месяц'}
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+
+                  <div className="text-xs font-bold text-slate-800 dark:text-slate-100 capitalize tracking-wide">
+                    {pickerMonthTitle}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleNextPickerMonth}
+                    className="p-1.5 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-600 dark:text-slate-300 transition cursor-pointer"
+                    title={language === 'uz' ? 'Keyingi oy' : language === 'en' ? 'Next month' : 'Следующий месяц'}
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+
+                {/* Weekdays Row: Du, Se, Cho, Pay, Ju, Sha, Yak / Пн, Вт, Ср, Чт, Пт, Сб, Вс */}
+                <div className="grid grid-cols-7 gap-1 text-center mb-1.5">
+                  {([0, 1, 2, 3, 4, 5, 6] as const).map((i) => {
+                    const l: 'uz' | 'ru' | 'en' = (language === 'uz' || language === 'ru' || language === 'en') ? language : 'ru';
+                    const dayLabel = WEEKDAY_NAMES_SHORT[l][i];
+                    const isWeekend = i >= 5;
+                    return (
+                      <div
+                        key={i}
+                        className={`text-[11px] font-bold uppercase py-1 ${
+                          isWeekend ? 'text-rose-500/80 dark:text-rose-400/80' : 'text-slate-400 dark:text-slate-500'
+                        }`}
+                      >
+                        {dayLabel}
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {/* Days Grid (1 to 30/31 with padding) */}
+                <div className="grid grid-cols-7 gap-1">
+                  {pickerCells.map((cell) => {
+                    const inMonth = cell.getMonth() === pickerMonthDate.getMonth();
+                    const isToday = isSameDay(cell, new Date());
+                    const isSelected = isSameDay(cell, currentDate);
+                    const hasAppts = appointments.some((a) => isSameDay(aptDate(a), cell));
+
+                    let cellStyle = '';
+                    if (isSelected && isToday) {
+                      cellStyle = 'bg-blue-600 text-white font-bold ring-2 ring-blue-300 dark:ring-blue-400 shadow-xs';
+                    } else if (isSelected) {
+                      cellStyle = 'bg-blue-600 text-white font-bold shadow-xs hover:bg-blue-700';
+                    } else if (isToday) {
+                      cellStyle = 'bg-blue-100 text-blue-700 dark:bg-blue-950/80 dark:text-blue-300 font-extrabold ring-2 ring-blue-500 hover:bg-blue-200 dark:hover:bg-blue-900';
+                    } else if (inMonth) {
+                      cellStyle = 'text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 font-medium';
+                    } else {
+                      cellStyle = 'text-slate-300 dark:text-slate-600 hover:bg-slate-50 dark:hover:bg-slate-800/40 text-[11px]';
+                    }
+
+                    return (
+                      <button
+                        key={cell.toISOString()}
+                        type="button"
+                        onClick={() => handleSelectPickerDate(cell)}
+                        className={`relative h-8 w-8 sm:h-8.5 sm:w-8.5 mx-auto rounded-xl flex flex-col items-center justify-center text-xs transition-all cursor-pointer ${cellStyle}`}
+                        title={formatCalendarDate(cell, language)}
+                      >
+                        <span>{cell.getDate()}</span>
+                        {hasAppts && (
+                          <span
+                            className={`w-1 h-1 rounded-full mt-0.5 ${
+                              isSelected ? 'bg-white' : isToday ? 'bg-blue-600 dark:bg-blue-400' : 'bg-blue-500'
+                            }`}
+                          />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {/* Footer: Quick "Bugun" action + Close */}
+                <div className="mt-3 pt-2.5 border-t border-slate-100 dark:border-slate-800 flex items-center justify-between">
+                  <button
+                    type="button"
+                    onClick={handlePickerToday}
+                    className="text-xs font-semibold text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 hover:underline cursor-pointer flex items-center gap-1.5"
+                  >
+                    <span className="w-2 h-2 rounded-full bg-blue-500 inline-block animate-pulse" />
+                    <span>{t.today}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setIsDatePickerOpen(false)}
+                    className="text-xs text-slate-500 hover:text-slate-700 dark:text-slate-400 dark:hover:text-slate-200 hover:underline cursor-pointer"
+                  >
+                    {language === 'uz' ? 'Yopish' : language === 'en' ? 'Close' : 'Закрыть'}
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
 
@@ -650,7 +915,7 @@ export default function CalendarGrid({
       {/* 2.1.B. Real-time Daily Financial & Operational Statistics Bar —
           FAQAT moliyaviy ruxsatli rollarga. Administrator/kassa (reception) KO'RMAYDI. */}
       {canSeeFinance && (
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 px-3.5 py-2.5 bg-slate-100/70 dark:bg-slate-900/60 border-b border-slate-200 dark:border-slate-800 transition-colors">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2.5 px-3.5 py-2.5 bg-slate-100/70 dark:bg-slate-900/60 border-b border-slate-200 dark:border-slate-800 transition-colors relative z-10">
         {/* 1. Received Payment (Kirim / Paid) */}
         <div className="bg-white dark:bg-[#1E293B] p-2.5 rounded-xl border border-slate-200/80 dark:border-slate-700/80 shadow-2xs flex items-center justify-between">
           <div className="min-w-0">
@@ -739,7 +1004,7 @@ export default function CalendarGrid({
 
       {/* 2.2. Calendar body — month = month grid, otherwise a time grid */}
       {viewMode === 'month' ? (
-        <div className="flex-1 overflow-auto p-3 bg-slate-50/30 dark:bg-slate-900/20">
+        <div className="flex-1 overflow-auto p-3 bg-slate-50/30 dark:bg-slate-900/20 relative z-10">
           <div className="grid grid-cols-7 gap-1.5 mb-1.5">
             {[0, 1, 2, 3, 4, 5, 6].map((i) => {
               const ref = new Date(2024, 0, 1 + i); // Mon..Sun
@@ -796,9 +1061,9 @@ export default function CalendarGrid({
           </div>
         </div>
       ) : (
-        <div className="flex-1 overflow-auto relative flex flex-col bg-slate-50/30 dark:bg-slate-900/20">
+        <div className="flex-1 overflow-auto relative z-10 flex flex-col bg-slate-50/30 dark:bg-slate-900/20">
           {/* Sticky header (doctors/chairs for day, dates for 3-day/week) */}
-          <div className="sticky top-0 z-30 flex bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shadow-xs" style={{ minWidth: gridMinWidthPx }}>
+          <div className="sticky top-0 z-20 flex bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shadow-xs" style={{ minWidth: gridMinWidthPx }}>
             <div className="w-20 flex-shrink-0 p-3 bg-slate-100/90 dark:bg-slate-800/90 border-r border-slate-200 dark:border-slate-700/80 flex items-center justify-center text-xs font-bold text-slate-500 dark:text-slate-400">
               <Clock className="w-4 h-4 mr-1 text-slate-400 dark:text-slate-500" />
               <span>{t.time}</span>

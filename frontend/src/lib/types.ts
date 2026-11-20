@@ -168,6 +168,8 @@ export interface PlatformSetting {
   plan_tier: string;
   storage_quota_gb: number;
   storage_used_gb: number;
+  cloud_storage_quota_gb?: number;
+  server_storage_quota_gb?: number;
   enabled_modules: Record<string, boolean>;
   max_doctors: number;
   updated_at?: string;
@@ -186,6 +188,7 @@ export interface Patient {
   avatar_color?: string;
   service_lang?: 'uz' | 'ru' | 'en'; // xizmat tili — xabar shu tilda yuboriladi
   default_percent?: number | null;
+  source?: 'dentos' | 'excel';
   created_at: string;
   clinic?: number | null;
   photo?: string;
@@ -538,6 +541,37 @@ export interface DentalLabOrder {
   created_at?: string;
 }
 
+export interface StorageBreakdownItem {
+  label?: string;
+  bytes: number;
+  mb: number;
+  gb: number;
+  count: number;
+}
+
+export interface StorageCategoryData {
+  storage_name: string;
+  quota_gb: number;
+  used_bytes: number;
+  used_mb: number;
+  used_gb: number;
+  free_gb: number;
+  free_mb?: number;
+  usage_percent: number;
+  warning: boolean;
+  warning_threshold_gb: number;
+  warning_message: string;
+  limit_exceeded: boolean;
+  breakdown: Record<string, StorageBreakdownItem>;
+}
+
+export interface ClinicStorageDetail {
+  clinic_id: number;
+  clinic_name: string;
+  cloud: StorageCategoryData;
+  server: StorageCategoryData;
+}
+
 export interface ClinicTenant {
   id: number;
   name: string;
@@ -549,8 +583,17 @@ export interface ClinicTenant {
   max_doctors: number;
   doctors_count?: number;
   patients_count?: number;
+  dentos_patients_count?: number;
+  excel_patients_count?: number;
   storage_quota_gb: number;
   storage_used_gb: number;
+  cloud_storage_quota_gb?: number;
+  server_storage_quota_gb?: number;
+  cloud_storage_used_gb?: number;
+  server_storage_used_gb?: number;
+  cloud_warning?: boolean;
+  server_warning?: boolean;
+  storage_detail?: ClinicStorageDetail;
   enabled_modules: {
     sms?: boolean;
     telegram?: boolean;
@@ -583,11 +626,17 @@ export interface ClinicDossierData {
   clinic: ClinicTenant;
   employees: Employee[];
   patients: Patient[];
+  patients_count?: number;
+  dentos_patients_count?: number;
+  excel_patients_count?: number;
   storage: {
     quota_gb: number;
     used_gb: number;
     free_gb: number;
     usage_percent: number;
+    warning?: boolean;
+    cloud?: StorageCategoryData;
+    server?: StorageCategoryData;
     breakdown: {
       dicom_kt_gb: number;
       photos_gb: number;

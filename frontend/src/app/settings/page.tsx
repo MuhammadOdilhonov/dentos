@@ -44,9 +44,12 @@ import {
   EyeOff,
   User,
   UserCog,
-  Save
+  Save,
+  Cloud,
+  Server,
+  AlertTriangle
 } from 'lucide-react';
-import { WorkplaceItem, SpecialtyItem, Branch, specialtyLabel } from '../../lib/types';
+import { WorkplaceItem, SpecialtyItem, Branch, specialtyLabel, ClinicStorageDetail } from '../../lib/types';
 
 type MsgTemplate = { id: number; title: string; uz: string; ru: string; en: string };
 
@@ -70,7 +73,27 @@ export default function SettingsPage() {
 
 
   // Bo'limlar
-  const [activeSection, setActiveSection] = useState<'profile' | 'social' | 'templates' | 'reminders' | 'chairs' | 'specialties' | 'branches'>('profile');
+  const [activeSection, setActiveSection] = useState<'profile' | 'social' | 'templates' | 'reminders' | 'chairs' | 'specialties' | 'branches' | 'storage'>('profile');
+
+  // ── Xotira va Quotalar (Cloud Cloupard & Asosiy Server) ──
+  const [storageDetail, setStorageDetail] = useState<ClinicStorageDetail | null>(null);
+  const [storageLoading, setStorageLoading] = useState(false);
+
+  const loadStorageDetail = async () => {
+    setStorageLoading(true);
+    try {
+      const data = await clinicApi.getClinicStorage();
+      if (data) setStorageDetail(data);
+    } catch (e) {
+      console.error('Failed to load clinic storage', e);
+    } finally {
+      setStorageLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadStorageDetail();
+  }, []);
 
   // ── Profil ma'lumotlari (F.I.O, Telefon, Gmail) ──
   const [profileName, setProfileName] = useState(user?.name || '');
@@ -1032,6 +1055,23 @@ export default function SettingsPage() {
             >
               <Stethoscope className="w-4 h-4" />
               <span>{tr('settings2.specialties')}</span>
+            </button>
+
+            <button
+              onClick={() => setActiveSection('storage')}
+              className={`w-full flex items-center justify-between px-3.5 py-2.5 rounded-xl text-sm font-semibold transition ${
+                activeSection === 'storage'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800'
+              }`}
+            >
+              <div className="flex items-center gap-2.5">
+                <HardDrive className="w-4 h-4" />
+                <span>Xotira va Quotalar</span>
+              </div>
+              {storageDetail && (storageDetail.cloud.warning || storageDetail.server.warning) && (
+                <span className="w-2.5 h-2.5 rounded-full bg-amber-400 animate-pulse" />
+              )}
             </button>
 
 
@@ -2447,6 +2487,231 @@ export default function SettingsPage() {
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+
+          {/* ══════════════ 6. XOTIRA VA QUOTALAR (STORAGE & QUOTAS) ══════════════ */}
+          {activeSection === 'storage' && (
+            <div className="space-y-6 animate-in fade-in">
+              {/* Header */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-white dark:bg-slate-900 p-5 rounded-2xl border border-slate-200 dark:border-slate-800 shadow-xs">
+                <div>
+                  <h2 className="text-base font-black text-slate-900 dark:text-white flex items-center gap-2">
+                    <HardDrive className="w-5 h-5 text-blue-600" />
+                    <span>Xotira va Quotalar balansi</span>
+                  </h2>
+                  <p className="text-xs text-slate-500 mt-1">
+                    Klinikaning Cloupard Cloud media xotirasi va Asosiy Server xotirasi bo‘yicha to‘liq hisoboti
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={loadStorageDetail}
+                  disabled={storageLoading}
+                  className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-xs font-bold text-slate-700 dark:text-slate-200 flex items-center gap-2 transition"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${storageLoading ? 'animate-spin' : ''}`} />
+                  <span>Yangilash</span>
+                </button>
+              </div>
+
+              {/* Warning notifications banner if either Cloud <= 10GB or Server <= 1GB */}
+              {storageDetail && (storageDetail.cloud.warning || storageDetail.server.warning) && (
+                <div className="p-4 rounded-2xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 text-xs space-y-1.5 shadow-xs">
+                  <div className="flex items-center gap-2 font-bold text-sm text-amber-800 dark:text-amber-300">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>Xotira limitidan ogohlantirish!</span>
+                  </div>
+                  {storageDetail.cloud.warning && (
+                    <p className="pl-6 text-amber-800/90 dark:text-amber-200/90">
+                      • <strong>Cloud (Cloupard S3):</strong> Atigi <strong>{storageDetail.cloud.free_gb} GB</strong> joy qoldi (10 GB dan kam). Yangi foto, video, rentgen yoki skan yuklash to‘xtamasligi uchun administrator orqali Cloud kvotani oshiring.
+                    </p>
+                  )}
+                  {storageDetail.server.warning && (
+                    <p className="pl-6 text-amber-800/90 dark:text-amber-200/90">
+                      • <strong>Asosiy Server:</strong> Atigi <strong>{storageDetail.server.free_mb} MB ({storageDetail.server.free_gb} GB)</strong> joy qoldi (1 GB dan kam). Yangi bemor, uchrashuv va tibbiy yozuvlar kiritilishi uchun server xotirasini oshiring.
+                    </p>
+                  )}
+                </div>
+              )}
+
+              {storageLoading && !storageDetail ? (
+                <div className="py-16 text-center text-slate-400">
+                  <Loader2 className="w-8 h-8 animate-spin mx-auto text-blue-600 mb-2" />
+                  <p className="text-xs font-semibold">Xotira ma'lumotlari hisoblanmoqda...</p>
+                </div>
+              ) : storageDetail ? (
+                <div className="space-y-6">
+                  {/* ──────────────────────────────────────────────────────────
+                      1. CLOUD STORAGE (Cloupard S3)
+                      ────────────────────────────────────────────────────────── */}
+                  <div className="p-6 rounded-2xl border border-sky-200 dark:border-sky-900/60 bg-sky-50/40 dark:bg-sky-950/20 space-y-5">
+                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-sky-600 text-white flex items-center justify-center shadow-sm">
+                          <Cloud className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h3 className="font-bold text-base text-slate-900 dark:text-white">Cloud Xotira (Cloupard S3)</h3>
+                            {storageDetail.cloud.warning ? (
+                              <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                                <AlertTriangle className="w-3 h-3 text-amber-600" /> 10 GB dan kam qoldi!
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+                                Faol
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-slate-500 mt-0.5">Barcha bemor fotosuratlari, videolari, rentgen/KT va 3D skanlar</p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-2xl font-bold text-slate-900 dark:text-white tabular-nums">
+                          {storageDetail.cloud.used_gb > 1 ? `${storageDetail.cloud.used_gb} GB` : `${storageDetail.cloud.used_mb} MB`}
+                          <span className="text-sm font-medium text-slate-400"> / {storageDetail.cloud.quota_gb} GB</span>
+                        </p>
+                        <p className="text-xs font-semibold text-emerald-600 tabular-nums">Bo‘sh: {storageDetail.cloud.free_gb} GB</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-xs font-semibold text-slate-500">
+                        <span>Bandlik: {storageDetail.cloud.usage_percent}%</span>
+                        <span>{storageDetail.cloud.used_gb} GB ishlatildi</span>
+                      </div>
+                      <div className="h-3 rounded-full bg-slate-200/80 dark:bg-slate-800 overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all duration-300 ${
+                            storageDetail.cloud.warning ? 'bg-amber-500' : 'bg-gradient-to-r from-sky-500 to-blue-600'
+                          }`}
+                          style={{ width: `${Math.max(2, Math.min(100, storageDetail.cloud.usage_percent))}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Cloud Breakdown */}
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5 pt-1">
+                      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4">
+                        <p className="text-[11px] font-semibold text-slate-400 uppercase">Klinik Fotosuratlar & Video</p>
+                        <p className="text-lg font-bold text-sky-600 mt-1 tabular-nums">
+                          {storageDetail.cloud.breakdown.foto.mb > 1024
+                            ? `${storageDetail.cloud.breakdown.foto.gb} GB`
+                            : `${storageDetail.cloud.breakdown.foto.mb} MB`}
+                        </p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">{storageDetail.cloud.breakdown.foto.count} ta slayd & video fayli</p>
+                      </div>
+                      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4">
+                        <p className="text-[11px] font-semibold text-slate-400 uppercase">Rentgen & 3D KT / CBCT</p>
+                        <p className="text-lg font-bold text-sky-600 mt-1 tabular-nums">
+                          {storageDetail.cloud.breakdown.rentgen.mb > 1024
+                            ? `${storageDetail.cloud.breakdown.rentgen.gb} GB`
+                            : `${storageDetail.cloud.breakdown.rentgen.mb} MB`}
+                        </p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">{storageDetail.cloud.breakdown.rentgen.count} ta tomografiya arxivi</p>
+                      </div>
+                      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4">
+                        <p className="text-[11px] font-semibold text-slate-400 uppercase">3D Skan (STL / PLY / OBJ)</p>
+                        <p className="text-lg font-bold text-sky-600 mt-1 tabular-nums">
+                          {storageDetail.cloud.breakdown.skan.mb > 1024
+                            ? `${storageDetail.cloud.breakdown.skan.gb} GB`
+                            : `${storageDetail.cloud.breakdown.skan.mb} MB`}
+                        </p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">{storageDetail.cloud.breakdown.skan.count} ta 3D model fayli</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* ──────────────────────────────────────────────────────────
+                      2. MAIN SERVER STORAGE (Baza & Matnlar)
+                      ────────────────────────────────────────────────────────── */}
+                  <div className="p-6 rounded-2xl border border-indigo-200 dark:border-indigo-900/60 bg-indigo-50/40 dark:bg-indigo-950/20 space-y-5">
+                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+                      <div className="flex items-center gap-3">
+                        <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-sm">
+                          <Server className="w-5 h-5" />
+                        </div>
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <h3 className="font-bold text-base text-slate-900 dark:text-white">Asosiy Server Xotirasi</h3>
+                            {storageDetail.server.warning ? (
+                              <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                                <AlertTriangle className="w-3 h-3 text-amber-600" /> 1 GB dan kam qoldi!
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+                                Normal
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-xs text-slate-500 mt-0.5">Barcha matnlar, shifokorlar suratlari, filiallar, moliya va hisobotlar</p>
+                        </div>
+                      </div>
+                      <div className="text-right">
+                        <p className="text-2xl font-bold text-slate-900 dark:text-white tabular-nums">
+                          {storageDetail.server.used_mb} MB
+                          <span className="text-sm font-medium text-slate-400"> / {storageDetail.server.quota_gb} GB</span>
+                        </p>
+                        <p className="text-xs font-semibold text-emerald-600 tabular-nums">Bo‘sh: {storageDetail.server.free_gb} GB ({storageDetail.server.free_mb} MB)</p>
+                      </div>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <div className="flex items-center justify-between text-xs font-semibold text-slate-500">
+                        <span>Server bandlik: {storageDetail.server.usage_percent}%</span>
+                        <span>{storageDetail.server.used_mb} MB ishlatildi</span>
+                      </div>
+                      <div className="h-3 rounded-full bg-slate-200/80 dark:bg-slate-800 overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all duration-300 ${
+                            storageDetail.server.warning ? 'bg-amber-500' : 'bg-gradient-to-r from-indigo-500 to-purple-600'
+                          }`}
+                          style={{ width: `${Math.max(2, Math.min(100, storageDetail.server.usage_percent))}%` }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Server Breakdown ("ipidan ignasigacha") */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5 pt-1">
+                      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4">
+                        <p className="text-[11px] font-semibold text-slate-400 uppercase">Shifokorlar rasmlari & Logo</p>
+                        <p className="text-base font-bold text-indigo-600 mt-1 tabular-nums">{storageDetail.server.breakdown.doctor_avatars.mb} MB</p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">{storageDetail.server.breakdown.doctor_avatars.count} ta shifokor surati va logo</p>
+                      </div>
+                      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4">
+                        <p className="text-[11px] font-semibold text-slate-400 uppercase">Bemorlar va tibbiy yozuvlar</p>
+                        <p className="text-base font-bold text-indigo-600 mt-1 tabular-nums">{storageDetail.server.breakdown.patients_records.mb} MB</p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">{storageDetail.server.breakdown.patients_records.count} ta bemor va anamnez yozuvlari</p>
+                      </div>
+                      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4">
+                        <p className="text-[11px] font-semibold text-slate-400 uppercase">Moliya va hisobotlar</p>
+                        <p className="text-base font-bold text-indigo-600 mt-1 tabular-nums">{storageDetail.server.breakdown.finance_reports.mb} MB</p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">{storageDetail.server.breakdown.finance_reports.count} ta kassa va to‘lov operatsiyalari</p>
+                      </div>
+                      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4">
+                        <p className="text-[11px] font-semibold text-slate-400 uppercase">Filiallar va xodimlar</p>
+                        <p className="text-base font-bold text-indigo-600 mt-1 tabular-nums">{storageDetail.server.breakdown.branches_staff.mb} MB</p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">{storageDetail.server.breakdown.branches_staff.count} ta filial va xodim ma'lumotlari</p>
+                      </div>
+                      <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:col-span-2 lg:col-span-2">
+                        <p className="text-[11px] font-semibold text-slate-400 uppercase">Telegram xabarlar, qabullar, ombor va lab</p>
+                        <p className="text-base font-bold text-indigo-600 mt-1 tabular-nums">{storageDetail.server.breakdown.other_system_text.mb} MB</p>
+                        <p className="text-[11px] text-slate-500 mt-0.5">{storageDetail.server.breakdown.other_system_text.count} ta qabul, vazifa, ombor va Telegram muloqotlari</p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 text-xs text-slate-500 flex items-center justify-between">
+                    <span>Xotira kvotasini kengaytirish kerak bo‘lsa, tizim boshqaruvchisi (Superadmin) bilan bog‘laning.</span>
+                    <span className="font-semibold text-slate-700 dark:text-slate-300">dentOS Storage Engine v2</span>
+                  </div>
+                </div>
+              ) : (
+                <div className="py-12 text-center text-slate-400 text-xs">
+                  Xotira ma'lumotlari olinmadi. "Yangilash" tugmasini bosing.
+                </div>
+              )}
             </div>
           )}
         </section>

@@ -377,10 +377,15 @@ class BranchViewSet(TenantViewSet):
 
     def perform_create(self, serializer):
         clinic_id = get_clinic_id(self.request)
-        if clinic_id and not serializer.validated_data.get('clinic'):
-            serializer.save(clinic_id=clinic_id)
-        else:
-            serializer.save()
+        if clinic_id:
+            from .storage_calculator import compute_clinic_storage
+            st = compute_clinic_storage(clinic_id)
+            if st and st['server']['limit_exceeded']:
+                raise ValidationError({'detail': f"Klinika server xotira limiti to‘ldi ({st['server']['quota_gb']} GB)."})
+            if not serializer.validated_data.get('clinic'):
+                serializer.save(clinic_id=clinic_id)
+                return
+        serializer.save()
 
 class WorkplaceViewSet(TenantViewSet):
     queryset = Workplace.objects.filter(is_active=True).order_by('id')
@@ -400,10 +405,15 @@ class WorkplaceViewSet(TenantViewSet):
 
     def perform_create(self, serializer):
         clinic_id = get_clinic_id(self.request)
-        if clinic_id and not serializer.validated_data.get('clinic'):
-            serializer.save(clinic_id=clinic_id)
-        else:
-            serializer.save()
+        if clinic_id:
+            from .storage_calculator import compute_clinic_storage
+            st = compute_clinic_storage(clinic_id)
+            if st and st['server']['limit_exceeded']:
+                raise ValidationError({'detail': f"Klinika server xotira limiti to‘ldi ({st['server']['quota_gb']} GB)."})
+            if not serializer.validated_data.get('clinic'):
+                serializer.save(clinic_id=clinic_id)
+                return
+        serializer.save()
 
 class SpecialtyViewSet(TenantViewSet):
     queryset = Specialty.objects.filter(is_active=True).order_by('id')
@@ -644,10 +654,15 @@ class PatientViewSet(TenantViewSet):
 
     def perform_create(self, serializer):
         clinic_id = get_clinic_id(self.request)
-        if clinic_id and not serializer.validated_data.get('clinic'):
-            serializer.save(clinic_id=clinic_id)
-        else:
-            serializer.save()
+        if clinic_id:
+            from .storage_calculator import compute_clinic_storage
+            st = compute_clinic_storage(clinic_id)
+            if st and st['server']['limit_exceeded']:
+                raise ValidationError({'detail': f"Klinika server xotira limiti to‘ldi ({st['server']['quota_gb']} GB)."})
+            if not serializer.validated_data.get('clinic'):
+                serializer.save(clinic_id=clinic_id)
+                return
+        serializer.save()
 
 class AppointmentViewSet(TenantViewSet):
     queryset = Appointment.objects.all().select_related('patient', 'doctor').order_by('start_time')
@@ -704,10 +719,15 @@ class AppointmentViewSet(TenantViewSet):
 
     def perform_create(self, serializer):
         clinic_id = get_clinic_id(self.request)
-        if clinic_id and not serializer.validated_data.get('clinic'):
-            serializer.save(clinic_id=clinic_id)
-        else:
-            serializer.save()
+        if clinic_id:
+            from .storage_calculator import compute_clinic_storage
+            st = compute_clinic_storage(clinic_id)
+            if st and st['server']['limit_exceeded']:
+                raise ValidationError({'detail': f"Klinika server xotira limiti to‘ldi ({st['server']['quota_gb']} GB)."})
+            if not serializer.validated_data.get('clinic'):
+                serializer.save(clinic_id=clinic_id)
+                return
+        serializer.save()
 
     def perform_update(self, serializer):
         instance = serializer.save()
@@ -856,10 +876,15 @@ class FinancialTransactionViewSet(TenantViewSet):
 
     def perform_create(self, serializer):
         clinic_id = get_clinic_id(self.request)
-        if clinic_id and not serializer.validated_data.get('clinic'):
-            serializer.save(clinic_id=clinic_id)
-        else:
-            serializer.save()
+        if clinic_id:
+            from .storage_calculator import compute_clinic_storage
+            st = compute_clinic_storage(clinic_id)
+            if st and st['server']['limit_exceeded']:
+                raise ValidationError({'detail': f"Klinika server xotira limiti to‘ldi ({st['server']['quota_gb']} GB)."})
+            if not serializer.validated_data.get('clinic'):
+                serializer.save(clinic_id=clinic_id)
+                return
+        serializer.save()
 
 class ClinicTaskViewSet(TenantViewSet):
     queryset = ClinicTask.objects.all().select_related('assignee', 'patient', 'branch', 'creator').order_by('-created_at')
@@ -888,10 +913,15 @@ class ClinicTaskViewSet(TenantViewSet):
 
     def perform_create(self, serializer):
         clinic_id = get_clinic_id(self.request)
-        if clinic_id and not serializer.validated_data.get('clinic'):
-            serializer.save(clinic_id=clinic_id)
-        else:
-            serializer.save()
+        if clinic_id:
+            from .storage_calculator import compute_clinic_storage
+            st = compute_clinic_storage(clinic_id)
+            if st and st['server']['limit_exceeded']:
+                raise ValidationError({'detail': f"Klinika server xotira limiti to‘ldi ({st['server']['quota_gb']} GB)."})
+            if not serializer.validated_data.get('clinic'):
+                serializer.save(clinic_id=clinic_id)
+                return
+        serializer.save()
 
 class WarehouseItemViewSet(TenantViewSet):
     queryset = WarehouseItem.objects.all().order_by('name')
@@ -951,10 +981,15 @@ class DentalLabOrderViewSet(TenantViewSet):
 
     def perform_create(self, serializer):
         clinic_id = get_clinic_id(self.request)
-        if clinic_id and not serializer.validated_data.get('clinic'):
-            serializer.save(clinic_id=clinic_id)
-        else:
-            serializer.save()
+        if clinic_id:
+            from .storage_calculator import compute_clinic_storage
+            st = compute_clinic_storage(clinic_id)
+            if st and st['server']['limit_exceeded']:
+                raise ValidationError({'detail': f"Klinika server xotira limiti to‘ldi ({st['server']['quota_gb']} GB)."})
+            if not serializer.validated_data.get('clinic'):
+                serializer.save(clinic_id=clinic_id)
+                return
+        serializer.save()
 
     @action(detail=True, methods=['post'])
     def update_status(self, request, pk=None):
@@ -1183,8 +1218,10 @@ class PlatformSettingViewSet(TenantViewSet):
         obj, _ = PlatformSetting.objects.get_or_create(id=1, defaults={
             'clinic_name': 'Dentos Stomatologiya Klinikasi',
             'plan_tier': 'Pro',
-            'storage_quota_gb': 50.0,
-            'storage_used_gb': 4.8,
+            'storage_quota_gb': 1000.0,
+            'storage_used_gb': 0.0,
+            'cloud_storage_quota_gb': 1000.0,
+            'server_storage_quota_gb': 10.0,
             'enabled_modules': {
                 'sms_reminders': True,
                 'telegram_reminders': True,
@@ -1198,8 +1235,14 @@ class PlatformSettingViewSet(TenantViewSet):
         })
         if request.method == 'POST':
             data = request.data
-            if 'storage_quota_gb' in data:
+            if 'cloud_storage_quota_gb' in data:
+                obj.cloud_storage_quota_gb = data['cloud_storage_quota_gb']
+                obj.storage_quota_gb = data['cloud_storage_quota_gb']
+            elif 'storage_quota_gb' in data:
                 obj.storage_quota_gb = data['storage_quota_gb']
+                obj.cloud_storage_quota_gb = data['storage_quota_gb']
+            if 'server_storage_quota_gb' in data:
+                obj.server_storage_quota_gb = data['server_storage_quota_gb']
             if 'storage_used_gb' in data:
                 obj.storage_used_gb = data['storage_used_gb']
             if 'plan_tier' in data:
@@ -1219,9 +1262,82 @@ class ClinicTenantViewSet(TenantViewSet):
         instance = serializer.instance
         # Demo klinika (id=1) — xotira kvotasi 1 GB da QOTIB qoladi, oshirib bo'lmaydi
         if instance and instance.id == 1:
-            serializer.save(storage_quota_gb=1)
+            serializer.save(storage_quota_gb=1, cloud_storage_quota_gb=1, server_storage_quota_gb=1)
         else:
-            serializer.save()
+            cloud_q = serializer.validated_data.get('cloud_storage_quota_gb') or serializer.validated_data.get('storage_quota_gb')
+            if cloud_q is not None:
+                serializer.save(cloud_storage_quota_gb=cloud_q, storage_quota_gb=cloud_q)
+            else:
+                serializer.save()
+
+    def destroy(self, request, *args, **kwargs):
+        if not request.user.is_authenticated or not request.user.is_superuser:
+            return Response({'detail': 'Faqat superadmin klinikani o‘chira oladi.'}, status=status.HTTP_403_FORBIDDEN)
+        instance = self.get_object()
+        if instance.id == 1:
+            return Response({'detail': 'Demo klinikani (id=1) o‘chirish mumkin emas.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        clinic_id = instance.id
+        clinic_name = instance.name
+
+        import logging
+        logger = logging.getLogger(__name__)
+        from django.db import transaction
+
+        with transaction.atomic():
+            # 1. Barcha PatientMedia fayllarini disk va Cloupard'dan tozalash
+            media_files = PatientMedia.objects.filter(clinic_id=clinic_id)
+            for m in media_files:
+                if m.file:
+                    try:
+                        m.file.delete(save=False)
+                    except Exception as e:
+                        logger.warning(f"Clinic delete: media file removal failed: {e}")
+            media_files.delete()
+
+            # 2. Xodimlarning django auth User akkauntlarini o'chirish (agar mavjud bo'lsa)
+            from django.contrib.auth.models import User as DjangoAuthUser
+            employee_user_ids = list(Employee.objects.filter(clinic_id=clinic_id, user__isnull=False).values_list('user_id', flat=True))
+            if employee_user_ids:
+                DjangoAuthUser.objects.filter(id__in=employee_user_ids).delete()
+
+            # 3. Klinika PlatformUser foydalanuvchilarini (direktor, admin va h.k.) butunlay o'chirish
+            PlatformUser.objects.filter(clinic_id=clinic_id).delete()
+
+            # 4. Zubnoy texniklarning linked_clinics ro'yxatidan bu klinikani tozalash
+            for tech in DentalTechnician.objects.all():
+                if tech.linked_clinics:
+                    new_linked = [c for c in tech.linked_clinics if c != clinic_name and str(c) != str(clinic_id)]
+                    if len(new_linked) != len(tech.linked_clinics):
+                        tech.linked_clinics = new_linked
+                        tech.save(update_fields=['linked_clinics'])
+
+            # 5. Telegram sessiyasi bo'lsa, uni uzish va sessions.json'dan tozalash
+            try:
+                from .telegram_auth import _load_sessions, _save_sessions, _manager, _logout
+                sessions = _load_sessions()
+                removed_any = False
+                for phone, s in list(sessions.items()):
+                    if str(s.get('clinic_id')) == str(clinic_id):
+                        sessions.pop(phone, None)
+                        removed_any = True
+                        if s.get('session'):
+                            try:
+                                _manager.run(_logout(s['session']))
+                            except Exception:
+                                pass
+                if removed_any:
+                    _save_sessions(sessions)
+            except Exception as e:
+                logger.warning(f"Clinic delete: Telegram session cleanup error: {e}")
+
+            # 6. Klinikaning o'zini o'chirish (CASCADE orqali Patient, Appointment, FinancialTransaction, Branch va barcha jadvallar o'chadi)
+            instance.delete()
+
+        return Response({
+            'ok': True,
+            'message': f"«{clinic_name}» klinikasi va uning barcha ma'lumotlari butunlay o‘chirildi."
+        }, status=status.HTTP_200_OK)
 
     def create(self, request, *args, **kwargs):
         import re, random, string
@@ -1280,15 +1396,22 @@ class ClinicTenantViewSet(TenantViewSet):
         clinic = self.get_object()
         # FAQAT shu klinikaga tegishli xodim/bemor (aks holda boshqa klinika ma'lumoti oqib ketadi)
         employees = Employee.objects.filter(clinic_id=clinic.id).order_by('id')
-        patients = Patient.objects.filter(clinic_id=clinic.id).order_by('-created_at')[:50]
+        patients_qs = Patient.objects.filter(clinic_id=clinic.id).order_by('-created_at')
+        total_patients_count = patients_qs.count()
+        dentos_patients_count = patients_qs.filter(source='dentos').count()
+        excel_patients_count = patients_qs.filter(source='excel').count()
+        patients = list(patients_qs[:1000])
 
         tech_ids = clinic.linked_technicians or []
         linked_techs = DentalTechnician.objects.filter(id__in=tech_ids)
         all_techs = DentalTechnician.objects.all()
 
-        from .serializers import compute_storage_used_gb
-        storage_quota = float(clinic.storage_quota_gb)
-        storage_used = compute_storage_used_gb(clinic.id)  # REAL ma'lumot bo'yicha
+        from .storage_calculator import compute_clinic_storage
+        storage_info = compute_clinic_storage(clinic.id) or {}
+        cloud = storage_info.get('cloud', {})
+        server = storage_info.get('server', {})
+        storage_quota = cloud.get('quota_gb', float(clinic.storage_quota_gb or 1000.0))
+        storage_used = cloud.get('used_gb', 0.0)
 
         # Direktorning HAQIQIY login (PlatformUser username) — passportda to'g'ri ko'rsatish uchun
         director_user = PlatformUser.objects.filter(clinic_id=clinic.id, role='director').first()
@@ -1297,24 +1420,55 @@ class ClinicTenantViewSet(TenantViewSet):
         # Superadmin direktor parolini ko'rishi/boshqarishi uchun qaytaramiz
         clinic_data['director_password'] = ''
 
+        cloud_breakdown = cloud.get('breakdown', {})
+        foto_item = cloud_breakdown.get('foto', {})
+        rentgen_item = cloud_breakdown.get('rentgen', {})
+        skan_item = cloud_breakdown.get('skan', {})
+
         return Response({
             'clinic': clinic_data,
             'employees': EmployeeSerializer(employees, many=True).data,
             'patients': PatientSerializer(patients, many=True).data,
+            'patients_count': total_patients_count,
+            'dentos_patients_count': dentos_patients_count,
+            'excel_patients_count': excel_patients_count,
             'storage': {
                 'quota_gb': storage_quota,
                 'used_gb': storage_used,
-                'free_gb': max(0.0, round(storage_quota - storage_used, 2)),
-                'usage_percent': min(100.0, round((storage_used / (storage_quota or 1.0)) * 100, 1)),
+                'free_gb': cloud.get('free_gb', max(0.0, round(storage_quota - storage_used, 2))),
+                'usage_percent': cloud.get('usage_percent', min(100.0, round((storage_used / (storage_quota or 1.0)) * 100, 1))),
+                'warning': cloud.get('warning', False) or server.get('warning', False),
+                'cloud': cloud,
+                'server': server,
                 'breakdown': {
-                    'dicom_kt_gb': round(storage_used * 0.58, 2),
-                    'photos_gb': round(storage_used * 0.26, 2),
-                    'backups_gb': round(storage_used * 0.16, 2)
+                    'dicom_kt_gb': round(rentgen_item.get('gb', 0.0) + skan_item.get('gb', 0.0), 3),
+                    'photos_gb': round(foto_item.get('gb', 0.0), 3),
+                    'backups_gb': round(server.get('used_gb', 0.0), 3)
                 }
             },
             'linked_technicians': DentalTechnicianSerializer(linked_techs, many=True).data,
             'all_available_technicians': DentalTechnicianSerializer(all_techs, many=True).data
         })
+
+    @action(detail=True, methods=['get'])
+    def storage(self, request, pk=None):
+        clinic = self.get_object()
+        from .storage_calculator import compute_clinic_storage
+        return Response(compute_clinic_storage(clinic.id))
+
+    @action(detail=False, methods=['get'], url_path='my-storage')
+    def my_storage(self, request):
+        clinic_id = request.headers.get('X-Clinic-ID') or getattr(request, 'clinic_id', None)
+        if not clinic_id and request.user.is_authenticated and hasattr(request.user, 'clinic') and request.user.clinic:
+            clinic_id = request.user.clinic.id
+        if not clinic_id:
+            clinic = ClinicTenant.objects.first()
+            clinic_id = clinic.id if clinic else 1
+        from .storage_calculator import compute_clinic_storage
+        info = compute_clinic_storage(clinic_id)
+        if not info:
+            return Response({'detail': 'Klinika topilmadi.'}, status=404)
+        return Response(info)
 
     @action(detail=True, methods=['post'])
     def set_director_credentials(self, request, pk=None):
@@ -1561,15 +1715,16 @@ class PatientMediaViewSet(TenantViewSet):
             except ClinicTenant.DoesNotExist:
                 raise ValidationError({'file': 'Klinika topilmadi.'})
             total = PatientMedia.objects.filter(clinic_id=clinic_id).aggregate(n=Sum('file_size'))['n'] or 0
-            if total + f.size > float(clinic.storage_quota_gb) * 1024 ** 3:
-                raise ValidationError({'file': 'Klinika xotira limiti tugadi.'})
+            cloud_quota = float(clinic.cloud_storage_quota_gb if clinic.cloud_storage_quota_gb is not None else (clinic.storage_quota_gb if clinic.storage_quota_gb is not None else 1000.0))
+            if total + f.size > cloud_quota * 1024 ** 3:
+                raise ValidationError({'file': f"Klinika Cloud (Cloupard) xotira limiti to‘ldi ({cloud_quota} GB)."})
             # storage_backend tegi PatientMedia.save() ichida avtomatik qo'yiladi (3 tur ham).
             serializer.save(clinic=clinic, file_name=f.name, file_size=f.size,
                             file_type=getattr(f, 'content_type', '') or 'application/octet-stream')
 
     @action(detail=True, methods=['get'])
     def download(self, request, pk=None):
-        from django.http import FileResponse, HttpResponseRedirect
+        from django.http import FileResponse, HttpResponseRedirect, HttpResponseNotModified
         from .storage import open_media_for_read, media_remote_url
         media = self.get_object()
         if not media.file:
@@ -1585,12 +1740,19 @@ class PatientMediaViewSet(TenantViewSet):
             remote = media_remote_url(media)
             if remote:
                 return HttpResponseRedirect(remote)
+
+        etag = f'"{media.id}-{media.file_size}"'
+        if_none_match = request.headers.get('If-None-Match')
+        if if_none_match and if_none_match.strip('"') == etag.strip('"'):
+            return HttpResponseNotModified()
+
         # Proxy through the authenticated backend: no storage credential or permanent public URL
         # reaches the browser. open_media_for_read fayl saqlangan backend'dan ochadi
         # (eski local/B2 fayllar yangi Cloupard'ga ko'chmasa ham ochiladi).
         response = FileResponse(open_media_for_read(media), content_type=media.file_type or 'application/octet-stream',
                                 as_attachment=False, filename=media.file_name)
-        response['Cache-Control'] = 'private, no-store'
+        response['Cache-Control'] = 'private, max-age=86400, must-revalidate'
+        response['ETag'] = etag
         response['X-Content-Type-Options'] = 'nosniff'
         return response
 
@@ -1944,7 +2106,8 @@ def excel_import_patients(request):
                     obj.birth_date = birth_date
                 if notes_val and not obj.notes:
                     obj.notes = notes_val
-                obj.save(update_fields=['full_name', 'balance', 'birth_date', 'notes'])
+                obj.source = 'excel'
+                obj.save(update_fields=['full_name', 'balance', 'birth_date', 'notes', 'source'])
                 updated_count += 1
             else:
                 obj = Patient.objects.create(
@@ -1954,6 +2117,7 @@ def excel_import_patients(request):
                     balance=balance,
                     birth_date=birth_date,
                     notes=notes_val,
+                    source='excel',
                 )
                 created_count += 1
             imported_ids.append(obj.id)
@@ -1971,30 +2135,122 @@ def excel_import_patients(request):
     })
 
 
-@api_view(['DELETE'])
+def _delete_patients_and_media(clinic_id, ids=None, delete_all=False):
+    """Klinika bemorlarini va ularning barcha media fayllarini (Cloupard/disk) to'liq tozalaydi."""
+    from django.db import transaction
+    from .models import Patient, PatientMedia, FinancialTransaction
+    from .reception_models import ReceptionContact
+    import logging
+    logger = logging.getLogger(__name__)
+
+    with transaction.atomic():
+        if delete_all:
+            pts_qs = Patient.objects.filter(clinic_id=clinic_id)
+        else:
+            pts_qs = Patient.objects.filter(clinic_id=clinic_id, id__in=ids or [])
+
+        patient_ids = list(pts_qs.values_list('id', flat=True))
+        if not patient_ids:
+            return 0
+
+        # 1. Barcha PatientMedia fayllarini disk va Cloupard'dan tozalash
+        media_qs = PatientMedia.objects.filter(clinic_id=clinic_id, patient_id__in=patient_ids)
+        for m in media_qs:
+            if m.file:
+                try:
+                    m.file.delete(save=False)
+                except Exception as e:
+                    logger.warning(f"Patient media delete error: {e}")
+        media_qs.delete()
+
+        # 2. Bemorlarga tegishli to'lov tranzaksiyalari
+        FinancialTransaction.objects.filter(clinic_id=clinic_id, patient_id__in=patient_ids).delete()
+
+        # 3. Reception bog'lanmalari
+        ReceptionContact.objects.filter(clinic_id=clinic_id, patient_id__in=patient_ids).delete()
+
+        # 4. Bemorlarni o'chirish (CASCADE: Appointment, PatientRecord, PhotoProtocol, DentalLabOrder)
+        Patient.objects.filter(clinic_id=clinic_id, id__in=patient_ids).delete()
+
+        return len(patient_ids)
+
+
+def _check_clinic_admin_or_superadmin(request, clinic_id_param):
+    """Superadmin yoki klinikaning o'z direktori/admini ekanligini tekshiradi."""
+    if not request.user.is_authenticated:
+        return None, Response({'detail': 'Kirish talab qilinadi.'}, status=401)
+
+    if request.user.is_superuser:
+        if not clinic_id_param:
+            return None, Response({'detail': 'Klinika identifikatori (clinic) kerak.'}, status=400)
+        try:
+            target_cid = int(clinic_id_param)
+        except (ValueError, TypeError):
+            return None, Response({'detail': 'Klinika identifikatori noto‘g‘ri.'}, status=400)
+    else:
+        # Klinika xodimi: faqat o'z direktori yoki admini
+        user_role = getattr(request.user, 'role', None)
+        if user_role not in ('director', 'deputy_director', 'admin'):
+            return None, Response({'detail': 'Faqat klinika rahbari yoki administratoriga ruxsat berilgan.'}, status=403)
+
+        user_cid = getattr(request.user, 'clinic_id', None)
+        if not user_cid:
+            principal = getattr(getattr(request, '_request', None), 'crm_principal', None)
+            user_cid = getattr(principal, 'clinic_id', None)
+
+        if not user_cid:
+            return None, Response({'detail': 'Klinika aniqlanmadi.'}, status=400)
+
+        if clinic_id_param and str(clinic_id_param) != str(user_cid):
+            return None, Response({'detail': 'Boshqa klinika ma\'lumotlarini o‘chirish taqiqlangan.'}, status=403)
+
+        target_cid = int(user_cid)
+
+    if target_cid == 1:
+        return None, Response({'detail': 'Demo klinika (id=1) bemorlarini o‘chirish mumkin emas.'}, status=400)
+
+    return target_cid, None
+
+
+@api_view(['DELETE', 'POST'])
 def excel_delete_imported_patients(request):
-    """Superadmin: ID ro'yxati bo'yicha bemorlarni o'chiradi.
+    """Superadmin yoki klinika admini: ID ro'yxati bo'yicha yoki barcha bemorlarni o'chiradi.
 
     DELETE /api/patients/excel-delete/?clinic=<id>
-    JSON body: {ids: [1,2,3,...]}
+    JSON body: {ids: [1,2,3,...]} yoki {all: true}
     """
-    if not request.user.is_authenticated or not request.user.is_superuser:
-        return Response({'detail': 'Faqat superadmin.'}, status=403)
+    clinic_param = request.query_params.get('clinic') or request.data.get('clinic')
+    clinic_id, err_resp = _check_clinic_admin_or_superadmin(request, clinic_param)
+    if err_resp:
+        return err_resp
 
-    clinic_id = request.query_params.get('clinic') or request.data.get('clinic')
+    delete_all = bool(request.data.get('all') or request.query_params.get('all') in ('1', 'true', 'True'))
     ids = request.data.get('ids', [])
-    if not ids or not isinstance(ids, list):
-        return Response({'detail': 'ids ro\'yxati kerak.'}, status=400)
 
-    try:
-        clinic_id = int(clinic_id)
-    except (ValueError, TypeError):
-        return Response({'detail': 'clinic kerak.'}, status=400)
+    if not delete_all and (not ids or not isinstance(ids, list)):
+        return Response({'detail': 'ids ro\'yxati yoki all=true parametri kerak.'}, status=400)
 
-    # Faqat shu klinikaning bemorlarini o'chiramiz (xavfsizlik)
-    qs = Patient.objects.filter(clinic_id=clinic_id, id__in=ids)
-    deleted, _ = qs.delete()
+    deleted = _delete_patients_and_media(clinic_id=clinic_id, ids=ids, delete_all=delete_all)
     return Response({'ok': True, 'deleted': deleted})
+
+
+@api_view(['POST', 'DELETE'])
+def clear_all_patients(request):
+    """Klinika rahbari/admini yoki superadmin: klinikaning BARCHA bemorlarini to'liq o'chiradi.
+
+    POST or DELETE /api/patients/clear-all/?clinic=<id>
+    """
+    clinic_param = request.query_params.get('clinic') or request.data.get('clinic')
+    clinic_id, err_resp = _check_clinic_admin_or_superadmin(request, clinic_param)
+    if err_resp:
+        return err_resp
+
+    deleted = _delete_patients_and_media(clinic_id=clinic_id, delete_all=True)
+    return Response({
+        'ok': True,
+        'deleted': deleted,
+        'message': f"Klinikaning barcha bemorlari ({deleted} ta) va ularning ma'lumotlari to‘liq o‘chirildi."
+    })
 
 
 @api_view(['GET'])

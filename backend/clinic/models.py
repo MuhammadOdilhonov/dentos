@@ -73,6 +73,11 @@ class Patient(models.Model):
     medical_history = models.TextField(blank=True)
     notes = models.TextField(blank=True)
     service_lang = models.CharField(max_length=5, default='uz')  # xizmat tili: uz/ru/en — xabar shu tilda yuboriladi
+    SOURCE_CHOICES = (
+        ('dentos', 'Dentos'),
+        ('excel', 'Excel'),
+    )
+    source = models.CharField(max_length=20, choices=SOURCE_CHOICES, default='dentos')
     # Bemorga maxsus foiz (%). Belgilangan bo'lsa — naryadda xizmatning standart
     # foizi o'rniga shu qo'llanadi. null = standart foiz ishlatiladi.
     default_percent = models.PositiveSmallIntegerField(null=True, blank=True)
@@ -247,6 +252,8 @@ class ClinicTenant(models.Model):
     max_doctors = models.PositiveIntegerField(default=10)
     storage_quota_gb = models.DecimalField(max_digits=8, decimal_places=2, default=50.0)
     storage_used_gb = models.DecimalField(max_digits=8, decimal_places=2, default=0.0)  # yangi klinika 0 GB dan boshlaydi, real data bo'yicha hisoblanadi
+    cloud_storage_quota_gb = models.DecimalField(max_digits=8, decimal_places=2, default=1000.0) # Cloupard S3 kvotasi (GB, masalan 1000 GB = 1 TB)
+    server_storage_quota_gb = models.DecimalField(max_digits=8, decimal_places=2, default=10.0) # Asosiy server ma'lumotlari kvotasi (GB, masalan 10 GB)
     enabled_modules = models.JSONField(default=dict, blank=True)
     linked_technicians = models.JSONField(default=list, blank=True) # list of technician IDs or usernames
     has_auto_reminders = models.BooleanField(default=False) # Avtomatik eslatma va nlp status yangilash moduli
@@ -254,6 +261,11 @@ class ClinicTenant(models.Model):
     ai_agent_settings = models.JSONField(default=dict, blank=True) # AI konsultatsiya va qabul sozlamalari
     status = models.CharField(max_length=20, default='active') # active, paused
     created_at = models.DateTimeField(auto_now_add=True)
+
+    def save(self, *args, **kwargs):
+        if self.cloud_storage_quota_gb and not self.storage_quota_gb:
+            self.storage_quota_gb = self.cloud_storage_quota_gb
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return f"{self.name} ({self.branch})"
@@ -413,6 +425,8 @@ class PlatformSetting(models.Model):
     plan_tier = models.CharField(max_length=50, default='Pro')
     storage_quota_gb = models.DecimalField(max_digits=8, decimal_places=2, default=50.0)
     storage_used_gb = models.DecimalField(max_digits=8, decimal_places=2, default=4.8)
+    cloud_storage_quota_gb = models.DecimalField(max_digits=8, decimal_places=2, default=1000.0)
+    server_storage_quota_gb = models.DecimalField(max_digits=8, decimal_places=2, default=10.0)
     enabled_modules = models.JSONField(default=dict, blank=True)
     max_doctors = models.PositiveIntegerField(default=15)
     updated_at = models.DateTimeField(auto_now=True)

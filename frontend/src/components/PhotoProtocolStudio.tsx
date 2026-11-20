@@ -235,6 +235,146 @@ export function PhotoProtocolFirstPage({ patientId }: { patientId: number }) {
   );
 }
 
+// ── BEMOR FOTO/VIDEO SESSIYA KESHI ──────────────────────────────────────────
+// Slaydlar orasida o'tganda (1 -> 2 -> 3 -> 1) har safar tarmoqdan qayta so'ramaydi.
+// Bemor fotosiga kirganda xotirada tezkor blob URL sifatida saqlanadi, chiqib ketganda (unmount)
+// esa barcha blob URL'lar tozalanadi (revokeObjectURL) — xotira oqishi yoki brauzer qotishi bo'lmaydi!
+const patientMediaCache = new Map<string, string>(); // src -> blobUrl
+const mediaFetchingMap = new Map<string, Promise<string>>();
+const MAX_CACHE_ITEMS = 120; // xotirani ortiqcha to'ldirmaslik uchun cheklov
+
+export function getCachedMediaUrl(src: string): string {
+  if (!src || src.startsWith('data:') || src.startsWith('blob:')) return src;
+  return patientMediaCache.get(src) || src;
+}
+
+export function cacheMediaUrl(src: string): Promise<string> {
+  if (!src || src.startsWith('data:') || src.startsWith('blob:')) return Promise.resolve(src);
+  if (patientMediaCache.has(src)) return Promise.resolve(patientMediaCache.get(src)!);
+  if (mediaFetchingMap.has(src)) return mediaFetchingMap.get(src)!;
+
+  const promise = (async () => {
+    try {
+      const res = await fetch(src, { credentials: 'include' });
+      if (!res.ok) throw new Error('Fetch failed');
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+
+      // LRU: If cache exceeds limit, revoke the oldest
+      if (patientMediaCache.size >= MAX_CACHE_ITEMS) {
+        const oldestKey = patientMediaCache.keys().next().value;
+        if (oldestKey) {
+          const oldUrl = patientMediaCache.get(oldestKey);
+          if (oldUrl && oldUrl.startsWith('blob:')) {
+            try {
+              URL.revokeObjectURL(oldUrl);
+            } catch {}
+          }
+          patientMediaCache.delete(oldestKey);
+        }
+      }
+
+      patientMediaCache.set(src, blobUrl);
+      return blobUrl;
+    } catch {
+      return src; // fallback
+    } finally {
+      mediaFetchingMap.delete(src);
+    }
+  })();
+
+  mediaFetchingMap.set(src, promise);
+  return promise;
+}
+
+export function clearPatientMediaCache() {
+  for (const [_, url] of patientMediaCache.entries()) {
+    if (url && url.startsWith('blob:')) {
+      try {
+        URL.revokeObjectURL(url);
+      } catch {}
+    }
+  }
+  patientMediaCache.clear();
+  mediaFetchingMap.clear();
+}
+
+function CachedMediaImage({
+  src,
+  alt,
+  style,
+  draggable
+}: {
+  src?: string;
+  alt: string;
+  style?: React.CSSProperties;
+  draggable?: boolean;
+}) {
+  const safeSrc = src || '';
+  const [resolvedSrc, setResolvedSrc] = useState(() => getCachedMediaUrl(safeSrc));
+
+  useEffect(() => {
+    let active = true;
+    const current = getCachedMediaUrl(safeSrc);
+    if (current !== resolvedSrc) {
+      setResolvedSrc(current);
+    }
+    if (safeSrc && !safeSrc.startsWith('data:') && !safeSrc.startsWith('blob:') && current === safeSrc) {
+      void cacheMediaUrl(safeSrc).then((cached) => {
+        if (active && cached) setResolvedSrc(cached);
+      });
+    }
+    return () => {
+      active = false;
+    };
+  }, [safeSrc]);
+
+  return <img src={resolvedSrc} alt={alt} draggable={draggable} style={style} />;
+}
+
+function CachedMediaVideo({
+  src,
+  controls,
+  playsInline,
+  preload = 'auto',
+  style
+}: {
+  src?: string;
+  controls?: boolean;
+  playsInline?: boolean;
+  preload?: string;
+  style?: React.CSSProperties;
+}) {
+  const safeSrc = src || '';
+  const [resolvedSrc, setResolvedSrc] = useState(() => getCachedMediaUrl(safeSrc));
+
+  useEffect(() => {
+    let active = true;
+    const current = getCachedMediaUrl(safeSrc);
+    if (current !== resolvedSrc) {
+      setResolvedSrc(current);
+    }
+    if (safeSrc && !safeSrc.startsWith('data:') && !safeSrc.startsWith('blob:') && current === safeSrc) {
+      void cacheMediaUrl(safeSrc).then((cached) => {
+        if (active && cached) setResolvedSrc(cached);
+      });
+    }
+    return () => {
+      active = false;
+    };
+  }, [safeSrc]);
+
+  return (
+    <video
+      src={resolvedSrc}
+      controls={controls}
+      playsInline={playsInline}
+      preload={preload}
+      style={style}
+    />
+  );
+}
+
 // Visual Element Renderer inside Keynote Canvas
 function Visual({ el, isMasking = false }: { el: Element; isMasking?: boolean }) {
   if (el.type === 'image') {
@@ -249,8 +389,8 @@ function Visual({ el, isMasking = false }: { el: Element; isMasking?: boolean })
           boxShadow: el.shadow ? '0 10px 30px rgba(0,0,0,0.25)' : undefined
         }}
       >
-        <img
-          src={el.src}
+        <CachedMediaImage
+          src={el.src || ''}
           alt={el.caption || 'Foto'}
           draggable={false}
           style={{
@@ -283,11 +423,11 @@ function Visual({ el, isMasking = false }: { el: Element; isMasking?: boolean })
           boxShadow: el.shadow ? '0 10px 30px rgba(0,0,0,0.25)' : undefined
         }}
       >
-        <video
-          src={el.src}
+        <CachedMediaVideo
+          src={el.src || ''}
           controls={!isMasking}
           playsInline
-          preload="metadata"
+          preload="auto"
           style={{
             width: '100%',
             height: '100%',
@@ -866,6 +1006,25 @@ export default function PhotoProtocolStudio({
       live.current = false;
     };
   }, [loadDoc]);
+
+  // Bemor fotosuratlaridan chiqib ketganda barcha blob URL'larni tozalash (xotira oqishini oldini oladi)
+  useEffect(() => {
+    return () => {
+      clearPatientMediaCache();
+    };
+  }, [patientId]);
+
+  // Slaydlardagi barcha rasm va videolarni fonda oldindan keshlab olish (slaydlar o'tganda 0ms kechikish)
+  useEffect(() => {
+    if (!slides || !slides.length) return;
+    for (const s of slides) {
+      for (const el of s.elements) {
+        if ((el.type === 'image' || el.type === 'video') && el.src) {
+          void cacheMediaUrl(el.src);
+        }
+      }
+    }
+  }, [slides]);
 
   // Responsive Canvas Scaling to Viewport Width
   useEffect(() => {

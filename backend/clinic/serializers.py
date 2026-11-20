@@ -321,7 +321,14 @@ def compute_storage_used_gb(clinic_id):
 class ClinicTenantSerializer(TenantModelSerializer):
     doctors_count = serializers.SerializerMethodField()
     patients_count = serializers.SerializerMethodField()
+    dentos_patients_count = serializers.SerializerMethodField()
+    excel_patients_count = serializers.SerializerMethodField()
     storage_used_gb = serializers.SerializerMethodField()
+    cloud_storage_used_gb = serializers.SerializerMethodField()
+    server_storage_used_gb = serializers.SerializerMethodField()
+    cloud_warning = serializers.SerializerMethodField()
+    server_warning = serializers.SerializerMethodField()
+    storage_detail = serializers.SerializerMethodField()
 
     class Meta:
         model = ClinicTenant
@@ -333,9 +340,40 @@ class ClinicTenantSerializer(TenantModelSerializer):
     def get_patients_count(self, obj):
         return Patient.objects.filter(clinic_id=obj.id).count()
 
+    def get_dentos_patients_count(self, obj):
+        return Patient.objects.filter(clinic_id=obj.id, source='dentos').count()
+
+    def get_excel_patients_count(self, obj):
+        return Patient.objects.filter(clinic_id=obj.id, source='excel').count()
+
+    def _get_storage(self, obj):
+        if not hasattr(obj, '_cached_storage_info'):
+            from .storage_calculator import compute_clinic_storage
+            obj._cached_storage_info = compute_clinic_storage(obj.id)
+        return obj._cached_storage_info
+
     def get_storage_used_gb(self, obj):
-        # Har doim REAL ma'lumot bo'yicha hisoblab qaytaramiz (bazadagi eski qiymatni emas)
-        return compute_storage_used_gb(obj.id)
+        st = self._get_storage(obj)
+        return st['cloud']['used_gb'] if st else compute_storage_used_gb(obj.id)
+
+    def get_cloud_storage_used_gb(self, obj):
+        st = self._get_storage(obj)
+        return st['cloud']['used_gb'] if st else 0.0
+
+    def get_server_storage_used_gb(self, obj):
+        st = self._get_storage(obj)
+        return st['server']['used_gb'] if st else 0.0
+
+    def get_cloud_warning(self, obj):
+        st = self._get_storage(obj)
+        return st['cloud']['warning'] if st else False
+
+    def get_server_warning(self, obj):
+        st = self._get_storage(obj)
+        return st['server']['warning'] if st else False
+
+    def get_storage_detail(self, obj):
+        return self._get_storage(obj)
 
 class PlatformUserSerializer(TenantModelSerializer):
     role_label = serializers.SerializerMethodField()

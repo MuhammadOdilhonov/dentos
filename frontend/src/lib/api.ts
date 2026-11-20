@@ -5,7 +5,7 @@ import {
   ClinicTask, WarehouseItem, DentalLabOrder, DashboardStats,
   NaryadDraftItem, NaryadLogEntry, NaryadCatalogItem, DoctorNaryadAssignment,
   TreatmentPlanStage, DentalTechnician, PlatformSetting, DoctorCertificate, DoctorDiploma,
-  TechnicianPriceItem, ClinicTenant, ClinicDossierData, WorkplaceItem, SpecialtyItem,
+  TechnicianPriceItem, ClinicTenant, ClinicDossierData, ClinicStorageDetail, WorkplaceItem, SpecialtyItem,
   EmployeeScheduleInterval, EmployeeDaySchedule, Branch, ServiceCategory
 } from './types';
 import {
@@ -649,7 +649,10 @@ export const clinicApi = {
       }
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
-          try { resolve(JSON.parse(xhr.responseText)); }
+          try {
+            bustApiCache();
+            resolve(JSON.parse(xhr.responseText));
+          }
           catch { reject(new Error('Javob noto\'g\'ri formatda.')); }
         } else {
           try {
@@ -663,17 +666,35 @@ export const clinicApi = {
     });
   },
 
-  /** Superadmin: ID ro'yxati bo'yicha bemorlarni o'chiradi. */
-  async excelDeletePatients(clinicId: number, ids: number[]): Promise<{ ok: boolean; deleted: number }> {
+  /** Superadmin yoki klinika admini: ID ro'yxati yoki barcha bemorlarni o'chiradi. */
+  async excelDeletePatients(clinicId: number, ids: number[] | 'all'): Promise<{ ok: boolean; deleted: number }> {
+    const body = ids === 'all' ? { all: true } : { ids };
     const res = await apiFetch(`${API_BASE}/patients/excel-delete/?clinic=${clinicId}`, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids }),
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       throw new Error((err as any).detail || `Xato: ${res.status}`);
     }
+    bustApiCache();
+    return res.json();
+  },
+
+  /** Bemorlarni to'liq (barchasini) o'chirish — ruxsat bilan tozalash. */
+  async clearAllPatients(clinicId?: number): Promise<{ ok: boolean; deleted: number; message?: string }> {
+    const url = clinicId ? `${API_BASE}/patients/clear-all/?clinic=${clinicId}` : `${API_BASE}/patients/clear-all/`;
+    const res = await apiFetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ clinic: clinicId, all: true }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error((err as any).detail || `Xato: ${res.status}`);
+    }
+    bustApiCache();
     return res.json();
   },
 
@@ -3731,6 +3752,11 @@ export const clinicApi = {
 
   async getClinicDossier(id: number): Promise<ClinicDossierData | null> {
     return safeFetch<ClinicDossierData | null>(`${API_BASE}/clinics/${id}/dossier/`, null);
+  },
+
+  async getClinicStorage(id?: number): Promise<ClinicStorageDetail | null> {
+    const url = id ? `${API_BASE}/clinics/${id}/storage/` : `${API_BASE}/clinics/my-storage/`;
+    return safeFetch<ClinicStorageDetail | null>(url, null);
   },
 
   // Superadmin: klinika direktorining Gmail (login) va/yoki parolini o'zgartiradi.

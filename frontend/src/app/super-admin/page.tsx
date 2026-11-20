@@ -11,6 +11,7 @@ import PhoneInput from '../../components/PhoneInput';
 import {
   ShieldCheck,
   HardDrive,
+  Cloud,
   SlidersHorizontal,
   Users,
   Wrench,
@@ -99,6 +100,7 @@ function SuperAdminPageContent() {
   const [clinicDossier, setClinicDossier] = useState<ClinicDossierData | null>(null);
   const [dossierTab, setDossierTab] =
     useState<'asosiy' | 'xodimlar' | 'bemorlar' | 'storage' | 'modullar' | 'texniklar'>('asosiy');
+  const [dossierPatientSourceFilter, setDossierPatientSourceFilter] = useState<'all' | 'dentos' | 'excel'>('all');
 
   // ── Excel Import state ──────────────────────────────────────────────────────
   type ImportRow = {
@@ -164,7 +166,9 @@ function SuperAdminPageContent() {
     director_password: '',
     phone: '+998 90 ',
     max_doctors: 10,
-    storage_quota_gb: 50,
+    storage_quota_gb: 1000,
+    cloud_storage_quota_gb: 1000,
+    server_storage_quota_gb: 10,
     plan_tier: 'Professional',
     has_auto_reminders: true,
     has_ai_agent: false
@@ -181,7 +185,9 @@ function SuperAdminPageContent() {
       director_password: generatedPass,
       phone: '+998 90 ',
       max_doctors: 10,
-      storage_quota_gb: 50,
+      storage_quota_gb: 1000,
+      cloud_storage_quota_gb: 1000,
+      server_storage_quota_gb: 10,
       plan_tier: 'Professional',
       has_auto_reminders: true,
       has_ai_agent: false
@@ -466,7 +472,11 @@ function SuperAdminPageContent() {
       const res = await clinicApi.excelImportPatients(activeClinicId, file, (pct) => setXlsxProgress(pct));
       setXlsxResult(res);
       setXlsxProgress(100);
-      // dossier'ni yangilaymiz — bemor soni o'zgargan
+      // dossier va klinika ro'yxatini yangilaymiz — bemor soni va statistika yangilansin
+      try {
+        const freshClinics = await clinicApi.getClinics();
+        setClinics(freshClinics);
+      } catch {}
       void handleEnterClinic(activeClinicId);
     } catch (e) {
       setToast(`Import xatosi: ${e instanceof Error ? e.message : e}`);
@@ -477,20 +487,43 @@ function SuperAdminPageContent() {
 
   const handleXlsxDeleteAll = async () => {
     if (!activeClinicId) return;
-    // Import natijasida yaratilgan/yangilangan bemor ID'lari (tugma faqat shu bo'lsa ko'rinadi).
+    // Import natijasida yaratilgan/yangilangan bemor ID'lari
     const ids = xlsxResult?.importedIds ?? [];
-    if (!ids.length) { setToast('Import natijasi topilmadi. Avval importa qiling.'); return; }
-    if (!window.confirm(`${ids.length} ta bemor bazadan o'chiriladi. Davom etilsinmi?`)) return;
+    if (!ids.length) {
+      return handleDeleteAllClinicPatients();
+    }
+    if (!window.confirm(`${ids.length} ta yuklangan bemor bazadan o‘chiriladi. Davom etilsinmi?`)) return;
     setXlsxDeleting(true);
     try {
       const res = await clinicApi.excelDeletePatients(activeClinicId, ids);
-      setToast(`${res.deleted} ta bemor o'chirildi.`);
+      showToast(`${res.deleted} ta bemor o‘chirildi.`);
       setXlsxPreview(null);
       setXlsxResult(null);
       setXlsxFileName('');
+      clinicApi.getClinics().then(setClinics).catch(() => {});
       void handleEnterClinic(activeClinicId);
     } catch (e) {
-      setToast(`O'chirish xatosi: ${e instanceof Error ? e.message : e}`);
+      showToast(`O‘chirish xatosi: ${e instanceof Error ? e.message : e}`);
+    } finally {
+      setXlsxDeleting(false);
+    }
+  };
+
+  const handleDeleteAllClinicPatients = async () => {
+    if (!activeClinicId) return;
+    const count = clinicDossier?.patients?.length || 0;
+    if (!window.confirm(`Diqqat! Ushbu klinikaning barcha (${count} ta) bemorlari va ularning barcha ma'lumotlari (qabullar, fotolar, to'lovlar) butunlay o‘chiriladi.\n\nDavom etilsinmi?`)) return;
+    setXlsxDeleting(true);
+    try {
+      const res = await clinicApi.clearAllPatients(activeClinicId);
+      showToast(res.message || `${res.deleted} ta bemor o‘chirildi.`);
+      setXlsxPreview(null);
+      setXlsxResult(null);
+      setXlsxFileName('');
+      clinicApi.getClinics().then(setClinics).catch(() => {});
+      void handleEnterClinic(activeClinicId);
+    } catch (e) {
+      showToast(`O‘chirish xatosi: ${e instanceof Error ? e.message : e}`);
     } finally {
       setXlsxDeleting(false);
     }
@@ -541,7 +574,9 @@ function SuperAdminPageContent() {
         phone: clinicForm.phone.trim(),
         plan_tier: clinicForm.plan_tier,
         max_doctors: Number(clinicForm.max_doctors) || 10,
-        storage_quota_gb: Number(clinicForm.storage_quota_gb) || 50,
+        storage_quota_gb: Number(clinicForm.cloud_storage_quota_gb) || Number(clinicForm.storage_quota_gb) || 1000,
+        cloud_storage_quota_gb: Number(clinicForm.cloud_storage_quota_gb) || 1000,
+        server_storage_quota_gb: Number(clinicForm.server_storage_quota_gb) || 10,
         storage_used_gb: 0,
         has_auto_reminders: Boolean(clinicForm.has_auto_reminders),
         has_ai_agent: Boolean(clinicForm.has_ai_agent),
@@ -581,7 +616,9 @@ function SuperAdminPageContent() {
         director_password: '',
         phone: '+998 90 ',
         max_doctors: 10,
-        storage_quota_gb: 50,
+        storage_quota_gb: 1000,
+        cloud_storage_quota_gb: 1000,
+        server_storage_quota_gb: 10,
         plan_tier: 'Professional',
         has_auto_reminders: true,
         has_ai_agent: false
@@ -597,11 +634,23 @@ function SuperAdminPageContent() {
   };
 
   const handleDeleteClinic = async (id: number, name: string) => {
-    if (!confirm(`«${name}» klinikasini tizimdan o‘chirasizmi?`)) return;
-    await clinicApi.deleteClinic(id);
-    setClinics(clinics.filter(c => c.id !== id));
-    if (activeClinicId === id) handleExitClinic();
-    showToast(`«${name}» o‘chirildi`);
+    if (id === 1) {
+      showToast("Demo klinikani (id=1) o'chirish mumkin emas");
+      return;
+    }
+    if (!confirm(`«${name}» klinikasini va uning BARCHA ma'lumotlarini (xodimlar, bemorlar, fotolar, rentgenlar, moliya) butunlay o‘chirib yuborishni tasdiqlaysizmi?\n\nBu amalni ortga qaytarib bo‘lmaydi!`)) return;
+    try {
+      const ok = await clinicApi.deleteClinic(id);
+      if (ok) {
+        setClinics(clinics.filter(c => c.id !== id));
+        if (activeClinicId === id) handleExitClinic();
+        showToast(`«${name}» klinikasi va barcha ma'lumotlari butunlay o‘chirildi`);
+      } else {
+        showToast("Klinikani o'chirishda xatolik yuz berdi");
+      }
+    } catch (e: any) {
+      showToast(e?.message || "Klinikani o'chirishda xatolik yuz berdi");
+    }
   };
 
   const handleToggleLinkTech = async (techId: number, action: 'link' | 'unlink') => {
@@ -618,10 +667,10 @@ function SuperAdminPageContent() {
 
   const handleUpdateClinicStorage = async (newQuota: number) => {
     if (!activeClinicId || !clinicDossier) return;
-    await clinicApi.updateClinic(activeClinicId, { storage_quota_gb: newQuota });
+    await clinicApi.updateClinic(activeClinicId, { storage_quota_gb: newQuota, cloud_storage_quota_gb: newQuota });
     setClinicDossier({
       ...clinicDossier,
-      clinic: { ...clinicDossier.clinic, storage_quota_gb: newQuota },
+      clinic: { ...clinicDossier.clinic, storage_quota_gb: newQuota, cloud_storage_quota_gb: newQuota },
       storage: {
         ...clinicDossier.storage,
         quota_gb: newQuota,
@@ -629,7 +678,58 @@ function SuperAdminPageContent() {
         usage_percent: Math.min(100, Number(((clinicDossier.storage.used_gb / newQuota) * 100).toFixed(1)))
       }
     });
-    setClinics(clinics.map(c => (c.id === activeClinicId ? { ...c, storage_quota_gb: newQuota } : c)));
+    setClinics(clinics.map(c => (c.id === activeClinicId ? { ...c, storage_quota_gb: newQuota, cloud_storage_quota_gb: newQuota } : c)));
+  };
+
+  const handleUpdateClinicCloudStorage = async (newCloudQuota: number) => {
+    if (!activeClinicId || !clinicDossier) return;
+    await clinicApi.updateClinic(activeClinicId, { cloud_storage_quota_gb: newCloudQuota, storage_quota_gb: newCloudQuota });
+    const currentCloud = clinicDossier.storage.cloud;
+    const used = currentCloud?.used_gb ?? clinicDossier.storage.used_gb;
+    const free = Math.max(0, Number((newCloudQuota - used).toFixed(2)));
+    setClinicDossier({
+      ...clinicDossier,
+      clinic: { ...clinicDossier.clinic, cloud_storage_quota_gb: newCloudQuota, storage_quota_gb: newCloudQuota },
+      storage: {
+        ...clinicDossier.storage,
+        quota_gb: newCloudQuota,
+        free_gb: free,
+        usage_percent: Math.min(100, Number(((used / (newCloudQuota || 1)) * 100).toFixed(1))),
+        cloud: currentCloud ? {
+          ...currentCloud,
+          quota_gb: newCloudQuota,
+          free_gb: free,
+          usage_percent: Math.min(100, Number(((used / (newCloudQuota || 1)) * 100).toFixed(1))),
+          warning: free <= 10.0
+        } : undefined
+      }
+    });
+    setClinics(clinics.map(c => (c.id === activeClinicId ? { ...c, cloud_storage_quota_gb: newCloudQuota, storage_quota_gb: newCloudQuota } : c)));
+    showToast(`Cloud xotira kvotasi ${newCloudQuota} GB ga o‘rnatildi`);
+  };
+
+  const handleUpdateClinicServerStorage = async (newServerQuota: number) => {
+    if (!activeClinicId || !clinicDossier) return;
+    await clinicApi.updateClinic(activeClinicId, { server_storage_quota_gb: newServerQuota });
+    const currentServer = clinicDossier.storage.server;
+    const used = currentServer?.used_gb ?? 0;
+    const free = Math.max(0, Number((newServerQuota - used).toFixed(2)));
+    setClinicDossier({
+      ...clinicDossier,
+      clinic: { ...clinicDossier.clinic, server_storage_quota_gb: newServerQuota },
+      storage: {
+        ...clinicDossier.storage,
+        server: currentServer ? {
+          ...currentServer,
+          quota_gb: newServerQuota,
+          free_gb: free,
+          usage_percent: Math.min(100, Number(((used / (newServerQuota || 1)) * 100).toFixed(1))),
+          warning: free <= 1.0
+        } : undefined
+      }
+    });
+    setClinics(clinics.map(c => (c.id === activeClinicId ? { ...c, server_storage_quota_gb: newServerQuota } : c)));
+    showToast(`Server xotira kvotasi ${newServerQuota} GB ga o‘rnatildi`);
   };
 
   const handleUpdateClinicDetails = async (updates: Partial<ClinicTenant>) => {
@@ -982,9 +1082,13 @@ function SuperAdminPageContent() {
                       <p className="text-base font-bold text-slate-900 dark:text-white tabular-nums">{clinic.doctors_count || 0}</p>
                       <p className="text-[10px] text-slate-400 font-medium">{tr('superadmin.doctor')}</p>
                     </div>
-                    <div className="rounded-xl bg-slate-50 dark:bg-slate-800/50 py-2.5">
+                    <div className="rounded-xl bg-slate-50 dark:bg-slate-800/50 py-2.5 px-1.5" title={`Dentos: ${clinic.dentos_patients_count ?? '—'} · Excel: ${clinic.excel_patients_count ?? '—'}`}>
                       <p className="text-base font-bold text-slate-900 dark:text-white tabular-nums">{uz(clinic.patients_count || 0)}</p>
-                      <p className="text-[10px] text-slate-400 font-medium">{tr('superadmin.patient')}</p>
+                      <p className="text-[10px] text-slate-400 font-medium">
+                        {(clinic.excel_patients_count || 0) > 0 ? (
+                          <span className="text-[9px] text-emerald-600 dark:text-emerald-400 font-semibold">{clinic.excel_patients_count} Excel</span>
+                        ) : tr('superadmin.patient')}
+                      </p>
                     </div>
                     <div className="rounded-xl bg-slate-50 dark:bg-slate-800/50 py-2.5">
                       <p className="text-base font-bold text-slate-900 dark:text-white tabular-nums">{(clinic.linked_technicians || []).length}</p>
@@ -992,14 +1096,25 @@ function SuperAdminPageContent() {
                     </div>
                   </div>
 
-                  <div className="mt-4 space-y-1.5">
+                  <div className="mt-4 space-y-2">
                     <div className="flex items-center justify-between text-xs">
-                      <span className="text-slate-400">{tr('superadmin.storageUsage')}</span>
-                      <span className="font-semibold text-slate-700 dark:text-slate-200 tabular-nums">{fmtStorage(u)} / {q} GB</span>
+                      <span className="text-slate-400 flex items-center gap-1"><Cloud className="w-3.5 h-3.5 text-sky-500" /> Cloud (Cloupard)</span>
+                      <span className="font-semibold text-slate-700 dark:text-slate-200 tabular-nums">
+                        {fmtStorage(clinic.cloud_storage_used_gb ?? clinic.storage_used_gb)} / {clinic.cloud_storage_quota_gb ?? clinic.storage_quota_gb ?? 1000} GB
+                      </span>
                     </div>
-                    <div className="h-1.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
-                      <div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-sky-500" style={{ width: `${Math.max(3, pct)}%` }} />
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-400 flex items-center gap-1"><Server className="w-3.5 h-3.5 text-indigo-500" /> Asosiy Server</span>
+                      <span className="font-semibold text-slate-700 dark:text-slate-200 tabular-nums">
+                        {fmtStorage(clinic.server_storage_used_gb ?? 0)} / {clinic.server_storage_quota_gb ?? 10} GB
+                      </span>
                     </div>
+                    {(clinic.cloud_warning || clinic.server_warning) && (
+                      <div className="px-2.5 py-1 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-600 dark:text-amber-400 text-[11px] font-bold flex items-center gap-1.5 animate-pulse">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        <span>{clinic.cloud_warning ? 'Cloud xotira tugamoqda (10 GB dan kam)!' : 'Server xotira tugamoqda (1 GB dan kam)!'}</span>
+                      </div>
+                    )}
                   </div>
 
                   <div className="mt-5 pt-4 border-t border-slate-100 dark:border-slate-800 flex items-center gap-2">
@@ -1020,75 +1135,130 @@ function SuperAdminPageContent() {
   }
 
   function StorageSection() {
-    const platQuota = Number(platform?.storage_quota_gb) || 100;
+    const totalCloudQuota = clinics.reduce((s, c) => s + (Number(c.cloud_storage_quota_gb || c.storage_quota_gb) || 1000), 0);
+    const totalCloudUsed = clinics.reduce((s, c) => s + (Number(c.cloud_storage_used_gb || c.storage_used_gb) || 0), 0);
+    const totalServerQuota = clinics.reduce((s, c) => s + (Number(c.server_storage_quota_gb) || 10), 0);
+    const totalServerUsed = clinics.reduce((s, c) => s + (Number(c.server_storage_used_gb) || 0), 0);
+
+    const cloudPct = Math.min(100, Math.round((totalCloudUsed / (totalCloudQuota || 1)) * 100));
+    const serverPct = Math.min(100, Math.round((totalServerUsed / (totalServerQuota || 1)) * 100));
+
     return (
       <div className="space-y-6 animate-in fade-in duration-150">
-        <div className={`${CARD} p-6 sm:p-7`}>
-          <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4 pb-5 border-b border-slate-100 dark:border-slate-800">
-            <div>
-              <h2 className="text-lg font-bold text-slate-900 dark:text-white">{tr('superadmin.platformQuota')}</h2>
-              <p className="text-sm text-slate-400 mt-0.5">{tr('superadmin.storageSubtitle')}</p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+          {/* Cloud Storage (Cloupard S3) Overview */}
+          <div className={`${CARD} p-6 border-sky-200 dark:border-sky-900/60 bg-sky-50/20 dark:bg-sky-950/10`}>
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-sky-600 text-white flex items-center justify-center">
+                  <Cloud className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 dark:text-white">Cloud (Cloupard S3)</h3>
+                  <p className="text-xs text-slate-400">Fotolar, videolar, rentgen, 3D skan</p>
+                </div>
+              </div>
+              <div className="text-right">
+                <p className="text-xl font-bold text-sky-600 tabular-nums">{fmtStorage(totalCloudUsed)}</p>
+                <p className="text-[11px] text-slate-400">jami {totalCloudQuota >= 1000 ? `${(totalCloudQuota / 1000).toFixed(1)} TB` : `${totalCloudQuota} GB`}</p>
+              </div>
             </div>
-            <div className="text-right">
-              <p className="text-3xl font-bold text-blue-600 tabular-nums">{fmtStorage(stats.used)}</p>
-              <p className="text-xs text-slate-400">jami {stats.quota} GB ajratilgan</p>
+            <div className="mt-4 space-y-1.5">
+              <div className="flex items-center justify-between text-xs font-semibold">
+                <span className="text-slate-500">Band: {cloudPct}%</span>
+                <span className="text-emerald-600">Bo‘sh: {fmtStorage(totalCloudQuota - totalCloudUsed)}</span>
+              </div>
+              <div className="h-2.5 rounded-full bg-slate-200/80 dark:bg-slate-800 overflow-hidden">
+                <div className="h-full rounded-full bg-gradient-to-r from-sky-500 to-blue-600" style={{ width: `${Math.max(2, cloudPct)}%` }} />
+              </div>
             </div>
           </div>
 
-          <div className="mt-6 space-y-2">
-            <div className="flex items-center justify-between text-xs font-semibold">
-              <span className="text-slate-500">Band: {fmtStorage(stats.used)} ({stats.usagePct}%)</span>
-              <span className="text-emerald-600">Bo‘sh: {fmtStorage(stats.quota - stats.used)}</span>
+          {/* Main Server Storage Overview */}
+          <div className={`${CARD} p-6 border-indigo-200 dark:border-indigo-900/60 bg-indigo-50/20 dark:bg-indigo-950/10`}>
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100 dark:border-slate-800">
+              <div className="flex items-center gap-3">
+                <div className="w-9 h-9 rounded-xl bg-indigo-600 text-white flex items-center justify-center">
+                  <Server className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 dark:text-white">Asosiy Server (DB & Text)</h3>
+                  <p className="text-xs text-slate-400">Matnlar, hisobotlar, xodimlar suratlari</p>
+                </div>
+              </div>
+              <div className="text-right">
+                <p className="text-xl font-bold text-indigo-600 tabular-nums">{fmtStorage(totalServerUsed)}</p>
+                <p className="text-[11px] text-slate-400">jami {totalServerQuota} GB</p>
+              </div>
             </div>
-            <div className="h-3 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
-              <div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-sky-500" style={{ width: `${Math.max(3, stats.usagePct)}%` }} />
-            </div>
-          </div>
-
-          <div className="mt-6 pt-5 border-t border-slate-100 dark:border-slate-800 space-y-3">
-            <label className={LABEL}>
-              Platforma umumiy kvotasi: <strong className="text-blue-600">{platQuota} GB</strong>
-            </label>
-            <input
-              type="range"
-              min={10}
-              max={500}
-              step={10}
-              value={platQuota}
-              onChange={e => platform && setPlatform({ ...platform, storage_quota_gb: Number(e.target.value) })}
-              className="w-full accent-blue-600 cursor-pointer"
-            />
-            <div className="flex justify-end">
-              <button onClick={handleSavePlatform} className={BTN_PRIMARY}>
-                <Save className="w-4 h-4" /> Kvotani saqlash
-              </button>
+            <div className="mt-4 space-y-1.5">
+              <div className="flex items-center justify-between text-xs font-semibold">
+                <span className="text-slate-500">Band: {serverPct}%</span>
+                <span className="text-emerald-600">Bo‘sh: {fmtStorage(totalServerQuota - totalServerUsed)}</span>
+              </div>
+              <div className="h-2.5 rounded-full bg-slate-200/80 dark:bg-slate-800 overflow-hidden">
+                <div className="h-full rounded-full bg-gradient-to-r from-indigo-500 to-purple-600" style={{ width: `${Math.max(2, serverPct)}%` }} />
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Per-clinic breakdown */}
+        {/* Per-clinic breakdown table */}
         <div className={`${CARD} overflow-hidden`}>
-          <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800">
+          <div className="px-6 py-4 border-b border-slate-100 dark:border-slate-800 flex items-center justify-between">
             <h3 className="font-bold text-slate-900 dark:text-white">{tr('superadmin.clinicsDistribution')}</h3>
+            <span className="text-xs text-slate-400">Cloud (Cloupard) & Asosiy Server bo‘yicha alohida hisob</span>
           </div>
           <div className="divide-y divide-slate-100 dark:divide-slate-800">
             {clinics.map(c => {
-              const q = Number(c.storage_quota_gb) || 50;
-              const u = Number(c.storage_used_gb) || 0;
-              const pct = Math.min(100, Math.round((u / q) * 100));
+              const cloudQ = Number(c.cloud_storage_quota_gb || c.storage_quota_gb) || 1000;
+              const cloudU = Number(c.cloud_storage_used_gb || c.storage_used_gb) || 0;
+              const cloudPctVal = Math.min(100, Math.round((cloudU / cloudQ) * 100));
+
+              const serverQ = Number(c.server_storage_quota_gb) || 10;
+              const serverU = Number(c.server_storage_used_gb) || 0;
+              const serverPctVal = Math.min(100, Math.round((serverU / serverQ) * 100));
+
               return (
-                <div key={c.id} className="px-6 py-4 flex items-center gap-4">
-                  <ClinicLogo logo={c.logo} name={c.name} />
-                  <div className="flex-1 min-w-0">
-                    <p className="font-semibold text-slate-900 dark:text-white truncate">{c.name}</p>
-                    <div className="mt-1.5 h-1.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden max-w-md">
-                      <div className={`h-full rounded-full ${pct > 85 ? 'bg-red-500' : 'bg-gradient-to-r from-blue-600 to-sky-500'}`} style={{ width: `${Math.max(3, pct)}%` }} />
+                <div key={c.id} className="px-6 py-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                  <div className="flex items-center gap-3.5 min-w-[200px]">
+                    <ClinicLogo logo={c.logo} name={c.name} />
+                    <div className="min-w-0">
+                      <p className="font-semibold text-slate-900 dark:text-white truncate">{c.name}</p>
+                      <p className="text-xs text-slate-400">{c.branch}</p>
                     </div>
                   </div>
-                  <div className="text-right w-28">
-                    <p className="text-sm font-semibold text-slate-700 dark:text-slate-200 tabular-nums">{fmtStorage(u)} / {q} GB</p>
-                    <p className={`text-xs font-semibold ${pct > 85 ? 'text-red-500' : 'text-slate-400'}`}>{pct}% band</p>
+
+                  {/* Cloud metric */}
+                  <div className="flex-1 max-w-xs space-y-1">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-500 flex items-center gap-1"><Cloud className="w-3 h-3 text-sky-500" /> Cloud (Cloupard)</span>
+                      <span className="font-semibold tabular-nums text-slate-700 dark:text-slate-200">{fmtStorage(cloudU)} / {cloudQ} GB</span>
+                    </div>
+                    <div className="h-1.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+                      <div className={`h-full rounded-full ${c.cloud_warning ? 'bg-amber-500' : 'bg-sky-500'}`} style={{ width: `${Math.max(2, cloudPctVal)}%` }} />
+                    </div>
+                    {c.cloud_warning && <span className="text-[10px] text-amber-500 font-bold flex items-center gap-1"><AlertTriangle className="w-2.5 h-2.5" /> 10 GB dan kam qoldi!</span>}
                   </div>
+
+                  {/* Server metric */}
+                  <div className="flex-1 max-w-xs space-y-1">
+                    <div className="flex items-center justify-between text-xs">
+                      <span className="text-slate-500 flex items-center gap-1"><Server className="w-3 h-3 text-indigo-500" /> Asosiy Server</span>
+                      <span className="font-semibold tabular-nums text-slate-700 dark:text-slate-200">{fmtStorage(serverU)} / {serverQ} GB</span>
+                    </div>
+                    <div className="h-1.5 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
+                      <div className={`h-full rounded-full ${c.server_warning ? 'bg-amber-500' : 'bg-indigo-500'}`} style={{ width: `${Math.max(2, serverPctVal)}%` }} />
+                    </div>
+                    {c.server_warning && <span className="text-[10px] text-amber-500 font-bold flex items-center gap-1"><AlertTriangle className="w-2.5 h-2.5" /> 1 GB dan kam qoldi!</span>}
+                  </div>
+
+                  <button
+                    onClick={() => handleEnterClinic(c.id)}
+                    className="px-3 py-1.5 rounded-xl border border-slate-200 dark:border-slate-700 text-xs font-semibold text-slate-700 dark:text-slate-300 hover:border-blue-500 transition self-start md:self-center"
+                  >
+                    Pasport
+                  </button>
                 </div>
               );
             })}
@@ -1252,7 +1422,7 @@ function SuperAdminPageContent() {
     const TABS = [
       { id: 'asosiy', label: 'Pasport', icon: Building2 },
       { id: 'xodimlar', label: `Xodimlar · ${d.employees.length}`, icon: Stethoscope },
-      { id: 'bemorlar', label: `Bemorlar · ${d.patients.length}`, icon: Users },
+      { id: 'bemorlar', label: `Bemorlar · ${d.patients_count ?? d.patients.length}`, icon: Users },
       { id: 'storage', label: 'Xotira', icon: HardDrive },
       { id: 'modullar', label: 'Modullar', icon: SlidersHorizontal },
       { id: 'texniklar', label: `Texniklar · ${d.linked_technicians.length}`, icon: Wrench }
@@ -1427,8 +1597,12 @@ function SuperAdminPageContent() {
               {/* Harakatlar paneli */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                 <div>
-                  <h3 className="text-base font-bold text-slate-900 dark:text-white">Bemorlar ({d.patients.length})</h3>
-                  <p className="text-xs text-slate-400 mt-0.5">Excel (.xlsx) faylidan bemorlarni bazaga yuklang yoki mavjud bazani yuklab oling</p>
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white">
+                    Bemorlar ({d.patients_count ?? d.patients.length})
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Jami: {d.patients_count ?? d.patients.length} nafar · {d.dentos_patients_count ?? d.patients.filter(p => p.source !== 'excel').length} Dentos (Yaratilgan) · {d.excel_patients_count ?? d.patients.filter(p => p.source === 'excel').length} Excel (Yuklangan)
+                  </p>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
@@ -1444,6 +1618,16 @@ function SuperAdminPageContent() {
                   >
                     {xlsxExporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />} Excelga chiqarish
                   </button>
+                  {d.patients.length > 0 && (
+                    <button
+                      onClick={handleDeleteAllClinicPatients}
+                      disabled={xlsxDeleting}
+                      className="inline-flex items-center gap-2 px-4 py-2.5 rounded-xl border border-rose-200 dark:border-rose-900/50 text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 text-sm font-semibold transition disabled:opacity-50"
+                      title="Barcha bemorlar ma'lumotlarini tozalash"
+                    >
+                      {xlsxDeleting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />} Barcha bemorlarni o‘chirish
+                    </button>
+                  )}
                 </div>
               </div>
               <input
@@ -1570,6 +1754,54 @@ function SuperAdminPageContent() {
                 </div>
               )}
 
+              {/* Toifa filtrlari: Dentos vs Excel */}
+              <div className="flex items-center gap-2 flex-wrap text-xs">
+                <span className="font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider text-[11px] mr-1">
+                  Toifa:
+                </span>
+                <button
+                  onClick={() => setDossierPatientSourceFilter('all')}
+                  className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 ${
+                    dossierPatientSourceFilter === 'all'
+                      ? 'bg-slate-800 text-white dark:bg-slate-100 dark:text-slate-900 shadow-sm'
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-700'
+                  }`}
+                >
+                  <span>Barchasi</span>
+                  <span className={`px-1.5 py-0.2 rounded-md text-[10px] ${dossierPatientSourceFilter === 'all' ? 'bg-black/20 text-white' : 'bg-slate-200 dark:bg-slate-700'}`}>
+                    {d.patients_count ?? d.patients.length}
+                  </span>
+                </button>
+                <button
+                  onClick={() => setDossierPatientSourceFilter('dentos')}
+                  className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 ${
+                    dossierPatientSourceFilter === 'dentos'
+                      ? 'bg-blue-600 text-white shadow-sm shadow-blue-500/25'
+                      : 'bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-900/50'
+                  }`}
+                >
+                  <span className="w-2 h-2 rounded-full bg-blue-500" />
+                  <span>Dentos (Yaratilgan)</span>
+                  <span className={`px-1.5 py-0.2 rounded-md text-[10px] ${dossierPatientSourceFilter === 'dentos' ? 'bg-black/20 text-white' : 'bg-blue-200 dark:bg-blue-900 text-blue-800 dark:text-blue-200'}`}>
+                    {d.dentos_patients_count ?? d.patients.filter(p => p.source !== 'excel').length}
+                  </span>
+                </button>
+                <button
+                  onClick={() => setDossierPatientSourceFilter('excel')}
+                  className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center gap-1.5 ${
+                    dossierPatientSourceFilter === 'excel'
+                      ? 'bg-emerald-600 text-white shadow-sm shadow-emerald-500/25'
+                      : 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-900/50'
+                  }`}
+                >
+                  <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                  <span>Excel (Yuklangan)</span>
+                  <span className={`px-1.5 py-0.2 rounded-md text-[10px] ${dossierPatientSourceFilter === 'excel' ? 'bg-black/20 text-white' : 'bg-emerald-200 dark:bg-emerald-900 text-emerald-800 dark:text-emerald-200'}`}>
+                    {d.excel_patients_count ?? d.patients.filter(p => p.source === 'excel').length}
+                  </span>
+                </button>
+              </div>
+
               {/* Mavjud bemorlar jadvali */}
               <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
                 <table className="w-full text-sm">
@@ -1586,11 +1818,26 @@ function SuperAdminPageContent() {
                     {d.patients.length === 0 && (
                       <tr><td colSpan={5} className="px-4 py-8 text-center text-slate-400 text-sm">Hali bemor yo‘q — yuqoridan Excel yuklang</td></tr>
                     )}
-                    {d.patients.map(p => {
+                    {d.patients
+                      .filter(p => {
+                        if (dossierPatientSourceFilter === 'dentos') return p.source !== 'excel';
+                        if (dossierPatientSourceFilter === 'excel') return p.source === 'excel';
+                        return true;
+                      })
+                      .map(p => {
                       const bal = Number(p.balance) || 0;
                       return (
                         <tr key={p.id} className="hover:bg-slate-50/70 dark:hover:bg-slate-800/30">
-                          <td className="px-4 py-3 font-semibold text-slate-900 dark:text-white">{p.full_name}</td>
+                          <td className="px-4 py-3 font-semibold text-slate-900 dark:text-white">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span>{p.full_name}</span>
+                              {p.source === 'excel' ? (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 shrink-0">Excel (Yuklangan)</span>
+                              ) : (
+                                <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 shrink-0">Dentos (Yaratilgan)</span>
+                              )}
+                            </div>
+                          </td>
                           <td className="px-4 py-3 text-slate-500 font-mono text-xs">{p.phone}</td>
                           <td className="px-4 py-3">
                             <span className="px-2 py-0.5 rounded-lg text-[10px] font-semibold bg-blue-50 text-blue-700 dark:bg-blue-950/50 dark:text-blue-300">{(p.service_lang || 'uz').toUpperCase()}</span>
@@ -1606,41 +1853,290 @@ function SuperAdminPageContent() {
             </div>
           )}
 
-          {dossierTab === 'storage' && (
-            <div className="space-y-6">
-              <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-                <div>
-                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">{tr('superadmin.usedStorage')}</p>
-                  <p className="text-3xl font-bold text-slate-900 dark:text-white mt-1 tabular-nums">{fmtStorage(d.storage.used_gb)} <span className="text-base font-medium text-slate-400">/ {d.storage.quota_gb} GB</span></p>
-                </div>
-                <p className="text-2xl font-bold text-emerald-600 tabular-nums">{fmtStorage(d.storage.free_gb)} <span className="text-xs font-medium text-slate-400">{tr('superadmin.free')}</span></p>
-              </div>
-              <div className="h-3 rounded-full bg-slate-100 dark:bg-slate-800 overflow-hidden">
-                <div className="h-full rounded-full bg-gradient-to-r from-blue-600 to-sky-500" style={{ width: `${Math.max(3, d.storage.usage_percent)}%` }} />
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-                {[
-                  ['3D KT / DICOM', d.storage.breakdown.dicom_kt_gb, 'Rentgen va tomografiya'],
-                  ['Klinik fotosuratlar', d.storage.breakdown.photos_gb, 'Davolashgacha / keyin'],
-                  ['Baza zaxirasi', d.storage.breakdown.backups_gb, 'Kunlik avto-backup']
-                ].map(([label, val, sub]) => (
-                  <div key={label as string} className="rounded-xl border border-slate-200 dark:border-slate-800 p-4">
-                    <p className="text-[11px] font-semibold text-slate-400 uppercase">{label}</p>
-                    <p className="text-xl font-bold text-blue-600 mt-1 tabular-nums">{fmtStorage(val as number)}</p>
-                    <p className="text-[11px] text-slate-400 mt-0.5">{sub}</p>
+          {dossierTab === 'storage' && (() => {
+            const cloud = d.storage.cloud || {
+              storage_name: 'Cloupard S3 (Cloud Object Storage)',
+              quota_gb: d.clinic.cloud_storage_quota_gb || d.storage.quota_gb || 1000,
+              used_bytes: 0,
+              used_mb: Number((d.storage.used_gb * 1024).toFixed(1)),
+              used_gb: d.storage.used_gb,
+              free_gb: d.storage.free_gb,
+              usage_percent: d.storage.usage_percent,
+              warning: d.storage.free_gb <= 10.0,
+              warning_threshold_gb: 10.0,
+              warning_message: d.storage.free_gb <= 10.0 ? `Diqqat: Cloud xotirada atigi ${d.storage.free_gb} GB joy qoldi!` : '',
+              limit_exceeded: d.storage.used_gb >= (d.clinic.cloud_storage_quota_gb || d.storage.quota_gb || 1000),
+              breakdown: {
+                foto: { label: 'Fotolar va Prezentatsiya videolari', bytes: 0, mb: Number(((d.storage.breakdown?.photos_gb || 0) * 1024).toFixed(1)), gb: d.storage.breakdown?.photos_gb || 0, count: 0 },
+                rentgen: { label: 'Rentgen va 3D KT / CBCT', bytes: 0, mb: Number(((d.storage.breakdown?.dicom_kt_gb || 0) * 1024).toFixed(1)), gb: d.storage.breakdown?.dicom_kt_gb || 0, count: 0 },
+                skan: { label: '3D Skan (STL / PLY / OBJ)', bytes: 0, mb: 0, gb: 0, count: 0 },
+              }
+            };
+
+            const server = d.storage.server || {
+              storage_name: 'Asosiy Server (Database & Local Text/Media)',
+              quota_gb: d.clinic.server_storage_quota_gb || 10.0,
+              used_bytes: 0,
+              used_mb: Number(((d.storage.breakdown?.backups_gb || 0.05) * 1024).toFixed(1)),
+              used_gb: d.storage.breakdown?.backups_gb || 0.05,
+              free_gb: Math.max(0, Number(((d.clinic.server_storage_quota_gb || 10.0) - (d.storage.breakdown?.backups_gb || 0.05)).toFixed(2))),
+              free_mb: Math.max(0, Number((((d.clinic.server_storage_quota_gb || 10.0) * 1024) - ((d.storage.breakdown?.backups_gb || 0.05) * 1024)).toFixed(1))),
+              usage_percent: 1,
+              warning: false,
+              warning_threshold_gb: 1.0,
+              warning_message: '',
+              limit_exceeded: false,
+              breakdown: {
+                doctor_avatars: { label: 'Shifokorlar va xodimlar suratlari (avatarlar) & Logo', bytes: 0, mb: 0, gb: 0, count: d.employees?.length || 0 },
+                patients_records: { label: 'Bemorlar va tibbiy yozuvlar (matn & anamnez)', bytes: 0, mb: 0, gb: 0, count: d.patients?.length || 0 },
+                finance_reports: { label: 'Moliya, to‘lovlar va hisobotlar', bytes: 0, mb: 0, gb: 0, count: 0 },
+                branches_staff: { label: 'Filiallar, xodimlar va foydalanuvchilar', bytes: 0, mb: 0, gb: 0, count: 0 },
+                other_system_text: { label: 'Telegram xabarlar, qabullar, ombor va laboratoriya', bytes: 0, mb: 0, gb: 0, count: 0 },
+              }
+            };
+
+            return (
+              <div className="space-y-8 animate-in fade-in duration-150">
+                {/* ─────────────────────────────────────────────────────────────
+                    1. CLOUD STORAGE (Cloupard S3): Foto, Rentgen, Skan
+                    ───────────────────────────────────────────────────────────── */}
+                <div className="p-6 rounded-2xl border border-sky-200 dark:border-sky-900/60 bg-sky-50/40 dark:bg-sky-950/20 space-y-5">
+                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-sky-600 text-white flex items-center justify-center shadow-sm">
+                        <Cloud className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-bold text-base text-slate-900 dark:text-white">Cloud Xotira (Cloupard S3)</h3>
+                          {cloud.warning ? (
+                            <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                              <AlertTriangle className="w-3 h-3 text-amber-600" /> 10 GB dan kam qoldi!
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+                              Faol
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-slate-500 mt-0.5">Bemor fotosuratlari, prezentatsiya videolari, rentgen/KT va 3D skan fayllari</p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-2xl font-bold text-slate-900 dark:text-white tabular-nums">
+                        {fmtStorage(cloud.used_gb)} <span className="text-sm font-medium text-slate-400">/ {cloud.quota_gb} GB</span>
+                      </p>
+                      <p className="text-xs font-semibold text-emerald-600 tabular-nums">Bo‘sh joy: {fmtStorage(cloud.free_gb)}</p>
+                    </div>
                   </div>
-                ))}
+
+                  {cloud.warning && (
+                    <div className="p-3.5 rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 text-xs font-medium flex items-center gap-2.5">
+                      <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                      <span>{cloud.warning_message || `Ogohlantirish: Cloud (Cloupard) xotirasida ${cloud.free_gb} GB joy qoldi (10 GB dan kam). Kvotani oshiring!`}</span>
+                    </div>
+                  )}
+
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-xs font-semibold text-slate-500">
+                      <span>Bandlik darajasi</span>
+                      <span>{cloud.usage_percent}% ({fmtStorage(cloud.used_gb)})</span>
+                    </div>
+                    <div className="h-3 rounded-full bg-slate-200/80 dark:bg-slate-800 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-300 ${
+                          cloud.warning ? 'bg-amber-500' : 'bg-gradient-to-r from-sky-500 to-blue-600'
+                        }`}
+                        style={{ width: `${Math.max(2, Math.min(100, cloud.usage_percent))}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Cloud Breakdown ("ipidan ignasigacha") */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
+                    <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3.5">
+                      <p className="text-[11px] font-semibold text-slate-400 uppercase">Klinik Fotosuratlar & Video</p>
+                      <p className="text-lg font-bold text-sky-600 mt-1 tabular-nums">{cloud.breakdown.foto.mb > 1024 ? `${cloud.breakdown.foto.gb} GB` : `${cloud.breakdown.foto.mb} MB`}</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">{cloud.breakdown.foto.count} ta fayl (slaydlar & videolar)</p>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3.5">
+                      <p className="text-[11px] font-semibold text-slate-400 uppercase">Rentgen & 3D KT / CBCT</p>
+                      <p className="text-lg font-bold text-sky-600 mt-1 tabular-nums">{cloud.breakdown.rentgen.mb > 1024 ? `${cloud.breakdown.rentgen.gb} GB` : `${cloud.breakdown.rentgen.mb} MB`}</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">{cloud.breakdown.rentgen.count} ta tomografiya to‘plami</p>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3.5">
+                      <p className="text-[11px] font-semibold text-slate-400 uppercase">3D Skan (STL / PLY / OBJ)</p>
+                      <p className="text-lg font-bold text-sky-600 mt-1 tabular-nums">{cloud.breakdown.skan.mb > 1024 ? `${cloud.breakdown.skan.gb} GB` : `${cloud.breakdown.skan.mb} MB`}</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">{cloud.breakdown.skan.count} ta 3D model fayli</p>
+                    </div>
+                  </div>
+
+                  {/* Superadmin Cloud Quota Controls */}
+                  <div className="pt-4 border-t border-sky-200/80 dark:border-sky-900/60 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div>
+                      <label className={LABEL}>Cloud (Cloupard S3) ajratilgan kvota: <strong className="text-sky-600 font-bold">{cloud.quota_gb} GB</strong></label>
+                      <p className="text-[11px] text-slate-500 mt-0.5">Misol: 500 GB, 1 TB (1000 GB), 2 TB (2000 GB)</p>
+                    </div>
+                    {d.clinic.id === 1 ? (
+                      <span className="text-xs text-slate-400">🔒 Demo klinika — 1 GB qulflangan</span>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        {[200, 500, 1000, 2000].map((gb) => (
+                          <button
+                            key={gb}
+                            type="button"
+                            onClick={() => handleUpdateClinicCloudStorage(gb)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
+                              cloud.quota_gb === gb
+                                ? 'bg-sky-600 text-white'
+                                : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:border-sky-400'
+                            }`}
+                          >
+                            {gb >= 1000 ? `${gb / 1000} TB` : `${gb} GB`}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {d.clinic.id !== 1 && (
+                    <input
+                      type="range"
+                      min={50}
+                      max={5000}
+                      step={50}
+                      value={cloud.quota_gb}
+                      onChange={(e) => handleUpdateClinicCloudStorage(Number(e.target.value))}
+                      className="w-full accent-sky-600 cursor-pointer"
+                    />
+                  )}
+                </div>
+
+                {/* ─────────────────────────────────────────────────────────────
+                    2. MAIN SERVER STORAGE: Baza, Hisobotlar, Shifokor suratlari
+                    ───────────────────────────────────────────────────────────── */}
+                <div className="p-6 rounded-2xl border border-indigo-200 dark:border-indigo-900/60 bg-indigo-50/40 dark:bg-indigo-950/20 space-y-5">
+                  <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center shadow-sm">
+                        <Server className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <h3 className="font-bold text-base text-slate-900 dark:text-white">Asosiy Server Xotirasi</h3>
+                          {server.warning ? (
+                            <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-amber-500/20 text-amber-700 dark:text-amber-300 border border-amber-500/30 flex items-center gap-1">
+                              <AlertTriangle className="w-3 h-3 text-amber-600" /> 1 GB dan kam qoldi!
+                            </span>
+                          ) : (
+                            <span className="px-2 py-0.5 rounded-full text-[11px] font-bold bg-emerald-500/20 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
+                              Normal
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-xs text-slate-500 mt-0.5">Baza ma'lumotlari, hisobotlar, xodimlar suratlari, filiallar va barcha tizim matnlari</p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <p className="text-2xl font-bold text-slate-900 dark:text-white tabular-nums">
+                        {server.used_mb} MB <span className="text-sm font-medium text-slate-400">/ {server.quota_gb} GB</span>
+                      </p>
+                      <p className="text-xs font-semibold text-emerald-600 tabular-nums">Bo‘sh joy: {server.free_gb} GB ({server.free_mb} MB)</p>
+                    </div>
+                  </div>
+
+                  {server.warning && (
+                    <div className="p-3.5 rounded-xl border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-950/40 text-amber-900 dark:text-amber-200 text-xs font-medium flex items-center gap-2.5">
+                      <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                      <span>{server.warning_message || `Ogohlantirish: Server xotirasida atigi ${server.free_mb} MB joy qoldi (1 GB dan kam). Yangi bemor/yozuv qo‘shish to‘xtamasligi uchun kvotani oshiring!`}</span>
+                    </div>
+                  )}
+
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between text-xs font-semibold text-slate-500">
+                      <span>Server bandlik darajasi</span>
+                      <span>{server.usage_percent}% ({server.used_mb} MB)</span>
+                    </div>
+                    <div className="h-3 rounded-full bg-slate-200/80 dark:bg-slate-800 overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all duration-300 ${
+                          server.warning ? 'bg-amber-500' : 'bg-gradient-to-r from-indigo-500 to-purple-600'
+                        }`}
+                        style={{ width: `${Math.max(2, Math.min(100, server.usage_percent))}%` }}
+                      />
+                    </div>
+                  </div>
+
+                  {/* Server Detailed Breakdown ("to'liq ipidan ignasigacha hisobla") */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3.5">
+                    <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3.5">
+                      <p className="text-[11px] font-semibold text-slate-400 uppercase">Shifokorlar rasmlari & Logo</p>
+                      <p className="text-base font-bold text-indigo-600 mt-1 tabular-nums">{server.breakdown.doctor_avatars.mb} MB</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">{server.breakdown.doctor_avatars.count} ta shifokor surati va klinika logotipi</p>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3.5">
+                      <p className="text-[11px] font-semibold text-slate-400 uppercase">Bemorlar va tibbiy yozuvlar</p>
+                      <p className="text-base font-bold text-indigo-600 mt-1 tabular-nums">{server.breakdown.patients_records.mb} MB</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">{server.breakdown.patients_records.count} ta bemor, anamnez va tashxis yozuvlari</p>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3.5">
+                      <p className="text-[11px] font-semibold text-slate-400 uppercase">Moliya va hisobotlar</p>
+                      <p className="text-base font-bold text-indigo-600 mt-1 tabular-nums">{server.breakdown.finance_reports.mb} MB</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">{server.breakdown.finance_reports.count} ta kassa va to‘lov operatsiyalari</p>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3.5">
+                      <p className="text-[11px] font-semibold text-slate-400 uppercase">Filiallar va xodimlar</p>
+                      <p className="text-base font-bold text-indigo-600 mt-1 tabular-nums">{server.breakdown.branches_staff.mb} MB</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">{server.breakdown.branches_staff.count} ta filial va xodim ma'lumotlari</p>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 p-3.5 sm:col-span-2 lg:col-span-2">
+                      <p className="text-[11px] font-semibold text-slate-400 uppercase">Telegram xabarlar, qabullar, ombor va lab</p>
+                      <p className="text-base font-bold text-indigo-600 mt-1 tabular-nums">{server.breakdown.other_system_text.mb} MB</p>
+                      <p className="text-[11px] text-slate-500 mt-0.5">{server.breakdown.other_system_text.count} ta qabul, vazifa, ombor va Telegram muloqotlari</p>
+                    </div>
+                  </div>
+
+                  {/* Superadmin Server Quota Controls */}
+                  <div className="pt-4 border-t border-indigo-200/80 dark:border-indigo-900/60 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div>
+                      <label className={LABEL}>Server ajratilgan kvotasi: <strong className="text-indigo-600 font-bold">{server.quota_gb} GB</strong></label>
+                      <p className="text-[11px] text-slate-500 mt-0.5">Misol: 5 GB, 10 GB, 20 GB, 50 GB</p>
+                    </div>
+                    {d.clinic.id === 1 ? (
+                      <span className="text-xs text-slate-400">🔒 Demo klinika — 1 GB qulflangan</span>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        {[5, 10, 20, 50].map((gb) => (
+                          <button
+                            key={gb}
+                            type="button"
+                            onClick={() => handleUpdateClinicServerStorage(gb)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
+                              server.quota_gb === gb
+                                ? 'bg-indigo-600 text-white'
+                                : 'bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:border-indigo-400'
+                            }`}
+                          >
+                            {gb} GB
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  {d.clinic.id !== 1 && (
+                    <input
+                      type="range"
+                      min={1}
+                      max={100}
+                      step={1}
+                      value={server.quota_gb}
+                      onChange={(e) => handleUpdateClinicServerStorage(Number(e.target.value))}
+                      className="w-full accent-indigo-600 cursor-pointer"
+                    />
+                  )}
+                </div>
               </div>
-              <div className="pt-5 border-t border-slate-100 dark:border-slate-800 space-y-3">
-                <label className={LABEL}>Ajratilgan kvota: <strong className="text-blue-600">{d.storage.quota_gb} GB</strong></label>
-                {d.clinic.id === 1 ? (
-                  <p className="text-xs text-slate-400">🔒 Demo klinika — kvota 1 GB da qulflangan, oshirib bo'lmaydi.</p>
-                ) : (
-                  <input type="range" min={1} max={300} step={1} value={d.storage.quota_gb} onChange={e => handleUpdateClinicStorage(Number(e.target.value))} className="w-full accent-blue-600 cursor-pointer" />
-                )}
-              </div>
-            </div>
-          )}
+            );
+          })()}
 
           {dossierTab === 'modullar' && (
             <div className="space-y-5">
@@ -2003,10 +2499,26 @@ function SuperAdminPageContent() {
               </select>
             </div>
             <div className="space-y-1">
-              <label className={LABEL}>{tr('superadmin.storage')}</label>
-              <select value={clinicForm.storage_quota_gb} onChange={e => setClinicForm({ ...clinicForm, storage_quota_gb: Number(e.target.value) })} className={INPUT}>
-                {[25, 50, 100, 200].map(n => <option key={n} value={n}>{n} GB</option>)}
+              <label className={LABEL}>Cloud xotira (Cloupard S3)</label>
+              <select
+                value={clinicForm.cloud_storage_quota_gb}
+                onChange={e => setClinicForm({ ...clinicForm, cloud_storage_quota_gb: Number(e.target.value), storage_quota_gb: Number(e.target.value) })}
+                className={INPUT}
+              >
+                {[200, 500, 1000, 2000, 5000].map(n => <option key={n} value={n}>{n >= 1000 ? `${n / 1000} TB (${n} GB)` : `${n} GB`}</option>)}
               </select>
+              <p className="text-[10px] text-slate-400">Fotolar, videolar, rentgen, 3D skan</p>
+            </div>
+            <div className="space-y-1">
+              <label className={LABEL}>Server xotira (Baza/Matn)</label>
+              <select
+                value={clinicForm.server_storage_quota_gb}
+                onChange={e => setClinicForm({ ...clinicForm, server_storage_quota_gb: Number(e.target.value) })}
+                className={INPUT}
+              >
+                {[5, 10, 20, 50, 100].map(n => <option key={n} value={n}>{n} GB</option>)}
+              </select>
+              <p className="text-[10px] text-slate-400">Baza matnlari, xodimlar suratlari, hisobotlar</p>
             </div>
           </div>
           {/* Tarif imkoniyatlari: Avto-eslatma & AI Konsultant */}
