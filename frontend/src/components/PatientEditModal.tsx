@@ -140,10 +140,23 @@ export default function PatientEditModal({
   const [womenFeeding, setWomenFeeding] = useState<'Да' | 'Нет'>('Нет');
   const [womenNotes, setWomenNotes] = useState('');
 
-  // TAB 4: Объединение
+  // TAB 4: Объединение (birlashtirish) — HAQIQIY: backenddan dublikatlarni oladi
   const [searchMerge, setSearchMerge] = useState('');
-  const [mergeCandidates, setMergeCandidates] = useState<{ id: number; name: string; phone: string; balance: number; initials: string; color: string }[]>([]);
-  const [selectedMergeId, setSelectedMergeId] = useState<number>(2);
+  const [mergeCandidates, setMergeCandidates] = useState<{ id: number; name: string; phone: string; balance: number; birth_date: string; source: string; ledger_count: number; match: 'phone' | 'name' }[]>([]);
+  // Belgilangan dublikatlar (checkbox — bir nechta tanlanadi, hammasi birlashtiriladi)
+  const [selectedMergeIds, setSelectedMergeIds] = useState<number[]>([]);
+  const [mergeLoading, setMergeLoading] = useState(false);
+  const [mergeBusy, setMergeBusy] = useState(false);
+
+  // Birlashtirish tabi ochilganda nomzodlarni yuklaymiz
+  useEffect(() => {
+    if (!isOpen || activeTab !== 'Объединение' || !patient?.id) return;
+    setMergeLoading(true);
+    clinicApi.getMergeCandidates(patient.id)
+      .then((res) => { setMergeCandidates(res?.candidates || []); })
+      .catch(() => { setMergeCandidates([]); })
+      .finally(() => setMergeLoading(false));
+  }, [isOpen, activeTab, patient?.id]);
 
   if (!isOpen) return null;
 
@@ -171,12 +184,31 @@ export default function PatientEditModal({
     onClose();
   };
 
-  const handleMergeAction = () => {
-    const target = mergeCandidates.find((c) => c.id === selectedMergeId);
-    if (!target) return;
-    if (confirm(`Вы действительно хотите объединить карточку "${target.name}" с текущим пациентом? Это действие необратимо.`)) {
-      alert(`Карточка "${target.name}" успешно объединена с текущим пациентом. Вся история перенесена.`);
-      setMergeCandidates(mergeCandidates.filter((c) => c.id !== selectedMergeId));
+  const toggleMergeId = (id: number) => {
+    setSelectedMergeIds((prev) => prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]);
+  };
+
+  const handleMergeAction = async () => {
+    if (selectedMergeIds.length === 0) return;
+    const names = mergeCandidates.filter((c) => selectedMergeIds.includes(c.id)).map((c) => c.name).join(', ');
+    const sumBalance = mergeCandidates.filter((c) => selectedMergeIds.includes(c.id)).reduce((s, c) => s + c.balance, 0) + Number(patient.balance || 0);
+    if (!confirm(
+      `${selectedMergeIds.length} ta yozuv "${patient.full_name}" bilan BIRLASHTIRILADI (qaytarib bo'lmaydi):\n\n${names}\n\n` +
+      `Barcha tarix (qabullar, to'lovlar, Excel-tarix) shu bemorга ko'chadi.\nYangi balans: ${sumBalance.toLocaleString()} so'm.\n\nDavom etamizmi?`
+    )) return;
+    setMergeBusy(true);
+    try {
+      const res = await clinicApi.mergePatients(patient.id, selectedMergeIds);
+      alert(`✅ ${res.merged_count} ta yozuv birlashtirildi. Yangi balans: ${res.new_balance.toLocaleString()} so'm.`);
+      // Birlashtirilgan yozuvlarni ro'yxatdan olib tashlaymiz
+      setMergeCandidates((prev) => prev.filter((c) => !selectedMergeIds.includes(c.id)));
+      setSelectedMergeIds([]);
+      // Yangilangan balansni ota komponentga yetkazamiz
+      onSave({ ...patient, balance: res.new_balance } as Patient);
+    } catch (e: any) {
+      alert(e?.message || 'Birlashtirishda xatolik.');
+    } finally {
+      setMergeBusy(false);
     }
   };
 
@@ -893,90 +925,117 @@ export default function PatientEditModal({
           )}
 
           {/* TAB 4: ОБЪЕДИНЕНИЕ (media_1788615685779.png) */}
-          {activeTab === 'Объединение' && (
+          {activeTab === 'Объединение' && (() => {
+            const filtered = mergeCandidates.filter((c) => !searchMerge || c.name.toLowerCase().includes(searchMerge.toLowerCase()) || c.phone.includes(searchMerge));
+            const initialsOf = (name: string) => name.trim().split(/\s+/).slice(0, 2).map((w) => w[0] || '').join('').toUpperCase();
+            const selectedCands = mergeCandidates.filter((c) => selectedMergeIds.includes(c.id));
+            const newBalance = selectedCands.reduce((s, c) => s + c.balance, 0) + Number(patient.balance || 0);
+            // Nechta yozuv = joriy (1) + hammasi topilgan
+            const totalAccounts = mergeCandidates.length + 1;
+            return (
             <div className="space-y-4">
-              <p className="text-xs text-slate-600 leading-relaxed">
-                Объединение страниц пациентов является необратимым действием. На данную страницу будет скопирована вся
-                информация с выбранной страницы. Выбранная страница будет перемещена во вкладку &quot;Архив&quot;.
+              <p className="text-xs text-slate-600 dark:text-slate-400 leading-relaxed">
+                Bir xil shaxsга tegishli alohida yozuvlarni (dublikat) <b>bittaga birlashtiring</b>. Barcha tarix —
+                qabullar, to'lovlar, Excel'dan yuklangan qarz tarixi — shu bemorга ko'chadi, balanslar qo'shiladi.
+                Bu amalni <b>qaytarib bo'lmaydi</b>.
               </p>
 
-              {/* Search row */}
-              <div className="flex items-center space-x-2">
-                <div className="relative flex-1">
-                  <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-3" />
-                  <input
-                    type="text"
-                    placeholder="Поиск пациента"
-                    value={searchMerge}
-                    onChange={(e) => setSearchMerge(e.target.value)}
-                    className="w-full pl-9 pr-3 py-2 bg-slate-50 border border-slate-200 rounded-xl outline-none"
-                  />
+              {/* Nechta yozuv ochilgani haqida ogohlantirish */}
+              {totalAccounts > 1 && (
+                <div className="flex items-start gap-2 p-3 rounded-xl bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-900/50 text-amber-800 dark:text-amber-300 text-xs">
+                  <span className="text-base leading-none">⚠️</span>
+                  <span>Bu shaxs uchun <b>{totalAccounts} ta alohida yozuv</b> topildi (1 ta shu sahifa + {mergeCandidates.length} ta boshqa). Ehtimol bir odam bir necha marta kiritilgan — birlashtiring.</span>
                 </div>
-                <button
-                  type="button"
-                  className="p-2.5 bg-sky-500 hover:bg-sky-600 text-white rounded-xl transition"
-                >
-                  <Plus className="w-4 h-4" />
-                </button>
+              )}
+
+              {/* Joriy (saqlanadigan) yozuv */}
+              <div className="p-3 rounded-xl border-2 border-emerald-300 dark:border-emerald-800 bg-emerald-50/50 dark:bg-emerald-950/20">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="w-8 h-8 rounded-full bg-emerald-500 text-white flex items-center justify-center font-bold text-xs">{initialsOf(patient.full_name)}</div>
+                    <div>
+                      <h4 className="font-bold text-xs text-slate-900 dark:text-white">{patient.full_name} <span className="text-emerald-600 dark:text-emerald-400">(saqlanadi)</span></h4>
+                      <p className="text-[10px] text-slate-400">{patient.phone || '—'}</p>
+                    </div>
+                  </div>
+                  <div className={`font-mono font-bold text-xs ${Number(patient.balance) < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-500 dark:text-slate-300'}`}>
+                    {Number(patient.balance || 0).toLocaleString()} so'm
+                  </div>
+                </div>
               </div>
 
-              {/* Candidates list matching screenshot */}
-              <div className="border border-slate-200 rounded-2xl overflow-hidden divide-y divide-slate-100">
-                {mergeCandidates
-                  .filter((c) => !searchMerge || c.name.toLowerCase().includes(searchMerge.toLowerCase()) || c.phone.includes(searchMerge))
-                  .map((cand) => {
-                    const isSelected = selectedMergeId === cand.id;
+              {/* Search row */}
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-3" />
+                <input
+                  type="text"
+                  placeholder="Dublikatlarни qidirish (ism yoki telefon)"
+                  value={searchMerge}
+                  onChange={(e) => setSearchMerge(e.target.value)}
+                  className="w-full pl-9 pr-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-xl outline-none text-slate-900 dark:text-white"
+                />
+              </div>
+
+              {/* Candidates list — multi-select (checkbox) */}
+              <div className="border border-slate-200 dark:border-slate-800 rounded-2xl overflow-hidden divide-y divide-slate-100 dark:divide-slate-800">
+                {mergeLoading ? (
+                  <div className="p-6 text-center text-slate-400 text-xs">Yuklanmoqda…</div>
+                ) : filtered.length === 0 ? (
+                  <div className="p-6 text-center text-slate-400 text-xs">Dublikat topilmadi — bu bemorga o'xshash boshqa yozuv yo'q.</div>
+                ) : filtered.map((cand) => {
+                    const isSelected = selectedMergeIds.includes(cand.id);
                     return (
                       <div
                         key={cand.id}
-                        onClick={() => setSelectedMergeId(cand.id)}
+                        onClick={() => toggleMergeId(cand.id)}
                         className={`p-3.5 flex items-center justify-between cursor-pointer transition ${
-                          isSelected ? 'bg-blue-600 text-white' : 'hover:bg-slate-50 text-slate-800'
+                          isSelected ? 'bg-blue-50 dark:bg-blue-950/40' : 'hover:bg-slate-50 dark:hover:bg-slate-800/50'
                         }`}
                       >
                         <div className="flex items-center space-x-3">
-                          <div
-                            className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs ${
-                              isSelected ? 'bg-white/20 text-white' : 'bg-slate-200 text-slate-700'
-                            }`}
-                          >
-                            {cand.initials}
+                          <div className={`w-5 h-5 rounded-md border-2 flex items-center justify-center shrink-0 ${isSelected ? 'bg-blue-600 border-blue-600' : 'border-slate-300 dark:border-slate-600'}`}>
+                            {isSelected && <Check className="w-3.5 h-3.5 text-white" strokeWidth={3} />}
                           </div>
+                          <div className="w-8 h-8 rounded-full bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 flex items-center justify-center font-bold text-xs">{initialsOf(cand.name)}</div>
                           <div>
-                            <h4 className="font-bold text-xs">{cand.name}</h4>
-                            <p className={`text-[10px] ${isSelected ? 'text-blue-100' : 'text-slate-400'}`}>
-                              {cand.phone}
-                            </p>
+                            <h4 className="font-bold text-xs text-slate-900 dark:text-white flex items-center gap-1.5">
+                              {cand.name}
+                              <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold ${cand.match === 'phone' ? 'bg-sky-100 dark:bg-sky-900/50 text-sky-700 dark:text-sky-300' : 'bg-violet-100 dark:bg-violet-900/50 text-violet-700 dark:text-violet-300'}`}>
+                                {cand.match === 'phone' ? 'Bir xil telefon' : 'O\'xshash ism'}
+                              </span>
+                            </h4>
+                            <p className="text-[10px] text-slate-400">{cand.phone || '—'}{cand.ledger_count > 0 ? ` · ${cand.ledger_count} ta tarix yozuvi` : ''}</p>
                           </div>
                         </div>
-
-                        <div
-                          className={`font-mono font-bold text-xs ${
-                            isSelected
-                              ? 'text-white'
-                              : cand.balance < 0
-                              ? 'text-rose-600'
-                              : 'text-emerald-600'
-                          }`}
-                        >
-                          {cand.balance.toLocaleString()} Сум
+                        <div className={`font-mono font-bold text-xs ${cand.balance < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                          {cand.balance.toLocaleString()} so'm
                         </div>
                       </div>
                     );
                   })}
               </div>
 
+              {/* Birlashtirish natijasi oldindan ko'rsatiladi */}
+              {selectedMergeIds.length > 0 && (
+                <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700 text-xs flex items-center justify-between">
+                  <span className="text-slate-600 dark:text-slate-300"><b>{selectedMergeIds.length} ta</b> yozuv birlashtiriladi</span>
+                  <span className="font-mono font-bold text-slate-900 dark:text-white">Yangi balans: <span className={newBalance < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-emerald-600 dark:text-emerald-400'}>{newBalance.toLocaleString()} so'm</span></span>
+                </div>
+              )}
+
               <div className="flex justify-end pt-2">
                 <button
                   type="button"
                   onClick={handleMergeAction}
-                  className="px-5 py-2 bg-blue-500 hover:bg-blue-600 text-white font-bold rounded-xl shadow-xs transition"
+                  disabled={selectedMergeIds.length === 0 || mergeBusy}
+                  className="px-5 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white font-bold rounded-xl shadow-xs transition"
                 >
-                  Объединить
+                  {mergeBusy ? 'Birlashtirilmoqda…' : `Birlashtirish${selectedMergeIds.length > 0 ? ` (${selectedMergeIds.length})` : ''}`}
                 </button>
               </div>
             </div>
-          )}
+            );
+          })()}
         </div>
 
         {/* Modal Footer matching screenshots */}

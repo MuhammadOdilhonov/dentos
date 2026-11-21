@@ -13,6 +13,7 @@ import DentalToothSvg from '../../../components/DentalToothSvg';
 import TreatmentPlanBuilderModal from '../../../components/TreatmentPlanBuilderModal';
 import TreatmentPlanPrintModal from '../../../components/TreatmentPlanPrintModal';
 import PatientEditModal from '../../../components/PatientEditModal';
+import SettlementPrintModal, { SettlementLine } from '../../../components/SettlementPrintModal';
 import NaryadModal, { NaryadCartItem } from '../../../components/NaryadModal';
 import LabOrderFullModal from '../../../components/LabOrderFullModal';
 import NewAppointmentModal from '../../../components/NewAppointmentModal';
@@ -457,6 +458,19 @@ export default function PatientDetailPage() {
 
   // Payment receipts (balance top-ups / checkout payments) — per patient, start empty.
   const [invoices, setInvoices] = useState<PaymentInvoice[]>([]);
+  // Excel'dan ko'chirilgan moliyaviy tarix (hisob/to'lov) — To'lovlar tabida alohida bo'lim
+  type ImportedLedgerRow = { id: number; date: string; account: string; kind: 'charge' | 'payment' | 'avans'; detail: string; amount: number; paid: number; running_balance: number; status: string };
+  type ImportedAccount = { name: string; count: number; charged: number; paid: number };
+  const [importedLedger, setImportedLedger] = useState<ImportedLedgerRow[]>([]);
+  const [importedAccounts, setImportedAccounts] = useState<ImportedAccount[]>([]);
+  const [importedLedgerLoaded, setImportedLedgerLoaded] = useState(false);
+  // Dentos'dagi rasmiy balans (manfiy = qarz) — sarlavhadagi "Qarz" shundan olinadi
+  // (bemor header balansi bilan bir xil bo'lishi uchun; avans noaniqligidan qochadi).
+  const [importedOfficialBalance, setImportedOfficialBalance] = useState<number>(0);
+  // Qatorга bosilganda ochiladigan to'liq ma'lumot modali
+  const [selectedLedgerRow, setSelectedLedgerRow] = useState<ImportedLedgerRow | null>(null);
+  // Hisob-faktura chop etish / PDF modali
+  const [isPrintOpen, setIsPrintOpen] = useState(false);
   const [isAddPaymentModalOpen, setIsAddPaymentModalOpen] = useState(false);
   // Selected appointment modal when clicking on any appointment in the list
   const [selectedAptModal, setSelectedAptModal] = useState<Appointment | null>(null);
@@ -1024,6 +1038,23 @@ export default function PatientDetailPage() {
     return () => clearInterval(iv);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeTab, commsFilter, patient?.id, patient?.phone]);
+
+  // Excel'dan ko'chirilgan moliyaviy tarixni yuklaymiz (To'lovlar tabi ochilganda,
+  // faqat Excel'dan import qilingan bemorlar uchun).
+  useEffect(() => {
+    if (activeTab !== 'Оплаты' || !patient || importedLedgerLoaded) return;
+    if ((patient as any).source !== 'excel') { setImportedLedgerLoaded(true); return; }
+    let cancelled = false;
+    clinicApi.getImportedLedger(patient.id).then((res) => {
+      if (cancelled) return;
+      setImportedLedger(res?.entries || []);
+      setImportedAccounts(res?.accounts || []);
+      setImportedOfficialBalance(res?.official_balance ?? 0);
+      setImportedLedgerLoaded(true);
+    }).catch(() => { if (!cancelled) setImportedLedgerLoaded(true); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, patient?.id]);
 
   // Yangi xabar kelganda chatni pastga suradi (real-time his)
   const tgScrollRef = useRef<HTMLDivElement | null>(null);
@@ -5362,6 +5393,16 @@ export default function PatientDetailPage() {
                 </div>
               )}
 
+              {/* Chop etish / PDF — hisob-fakturani yuklab olish */}
+              <button
+                onClick={() => setIsPrintOpen(true)}
+                className="flex items-center gap-1.5 px-3.5 py-1.5 bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl text-xs font-bold transition"
+                title="Hisob-fakturani chop etish yoki PDF saqlash"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                <span>Chop etish / PDF</span>
+              </button>
+
               {/* Blue Button: Добавить оплату */}
               {!isAdmin && (
                 <button
@@ -5455,6 +5496,219 @@ export default function PatientDetailPage() {
               </tbody>
             </table>
           </div>
+
+          {/* ─── ALOHIDA: Excel'dan yuklangan moliyaviy tarix (hisob/to'lov) ─── */}
+          {importedLedger.length > 0 && (() => {
+            // Joriy qarz = Dentos rasmiy balansi (bemor header bilan bir xil).
+            // 1 so'mdan kam = yaxlitlash qoldig'i, qarz emas.
+            const currentDebt = importedOfficialBalance < -1 ? -importedOfficialBalance : 0;
+            const totalCharged = importedLedger.filter(r => r.kind === 'charge' && r.status !== 'cancelled').reduce((s, r) => s + r.amount, 0);
+            const totalPaid = importedLedger.filter(r => r.kind === 'payment').reduce((s, r) => s + r.amount, 0);
+            const statusMeta: Record<string, { label: string; cls: string }> = {
+              paid_earlier: { label: "Oldin to'langan (naqd)", cls: 'bg-emerald-500' },
+              partial: { label: 'Qisman to\'langan', cls: 'bg-amber-500' },
+              debt: { label: 'Qarz', cls: 'bg-rose-500' },
+              cancelled: { label: 'Bekor qilingan', cls: 'bg-slate-400' },
+              payment: { label: "To'lov", cls: 'bg-emerald-600' },
+              debt_repay: { label: 'Qarzni uzish', cls: 'bg-emerald-600' },
+              avans: { label: 'Avans (balans)', cls: 'bg-sky-500' },
+            };
+            return (
+              <div className="mt-6 pt-5 border-t-2 border-dashed border-emerald-300 dark:border-emerald-800">
+                <div className="flex flex-wrap items-center justify-between gap-3 mb-3">
+                  <div>
+                    <h3 className="text-sm font-black text-emerald-700 dark:text-emerald-300 flex items-center gap-2">
+                      <span className="px-2 py-0.5 rounded-md bg-emerald-100 dark:bg-emerald-900/50 text-[11px]">📥 Excel'dan yuklangan</span>
+                      Qarz / to'lov tarixi
+                    </h3>
+                    <p className="text-[11px] text-slate-500 dark:text-slate-400 mt-1">
+                      Boshqa tizimdan ko'chirilgan — qaysi kun qancha ish qilingan, qancha to'langan va qarz bo'lib qolgani.
+                      <span className="text-slate-400 dark:text-slate-500"> № ustuni — Excel'da yuklanish tartibi. To'lov usuli Excel'da saqlanmagan, standart "Naqd" ko'rsatilgan.</span>
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2 text-[11px] font-bold">
+                    <span className="px-2.5 py-1 rounded-lg bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300">Hisoblangan: {totalCharged.toLocaleString()}</span>
+                    <span className="px-2.5 py-1 rounded-lg bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300">To'langan: {totalPaid.toLocaleString()}</span>
+                    <span className={`px-2.5 py-1 rounded-lg ${currentDebt > 0 ? 'bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300' : 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300'}`}>
+                      {currentDebt > 0 ? `Qarz: ${currentDebt.toLocaleString()}` : 'Qarz yo\'q'}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Bir necha akkaunt birlashtirilgan bo'lsa — har akkauntda qancha edi */}
+                {importedAccounts.length > 1 && (
+                  <div className="mb-3 p-3 rounded-xl bg-sky-50/60 dark:bg-sky-950/20 border border-sky-200 dark:border-sky-900/50">
+                    <p className="text-[11px] font-bold text-sky-700 dark:text-sky-300 mb-2 flex items-center gap-1.5">
+                      🔗 Bu bemor {importedAccounts.length} ta akkauntdan birlashtirilgan — har birida quyidagicha edi:
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                      {importedAccounts.map((a, i) => (
+                        <div key={i} className="p-2.5 rounded-lg bg-white dark:bg-slate-900 border border-sky-100 dark:border-sky-900/40">
+                          <p className="text-[11px] font-bold text-slate-800 dark:text-slate-100 truncate" title={a.name}>{i + 1}-akkaunt: {a.name}</p>
+                          <div className="flex items-center justify-between mt-1 text-[10px]">
+                            <span className="text-slate-500 dark:text-slate-400">Hisoblangan: <b className="text-slate-700 dark:text-slate-200">{a.charged.toLocaleString()}</b></span>
+                            <span className="text-emerald-600 dark:text-emerald-400">To'langan: <b>{a.paid.toLocaleString()}</b></span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                <div className="overflow-x-auto rounded-xl border border-slate-200 dark:border-slate-800">
+                  <table className="w-full text-xs">
+                    <thead>
+                      <tr className="bg-slate-50 dark:bg-slate-800/60 text-slate-500 dark:text-slate-400 text-left">
+                        <th className="py-2.5 px-3 font-bold whitespace-nowrap">№</th>
+                        <th className="py-2.5 px-3 font-bold whitespace-nowrap">Sana / vaqt</th>
+                        {importedAccounts.length > 1 && <th className="py-2.5 px-3 font-bold whitespace-nowrap">Akkaunt</th>}
+                        <th className="py-2.5 px-3 font-bold">Xizmat / amal</th>
+                        <th className="py-2.5 px-3 font-bold text-right whitespace-nowrap">Hisoblangan</th>
+                        <th className="py-2.5 px-3 font-bold text-right whitespace-nowrap">To'langan</th>
+                        <th className="py-2.5 px-3 font-bold whitespace-nowrap">To'lov usuli</th>
+                        <th className="py-2.5 px-3 font-bold text-right whitespace-nowrap">Qoldiq qarz</th>
+                        <th className="py-2.5 px-3 font-bold text-center">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {importedLedger.map((r, idx) => {
+                        const meta = statusMeta[r.status] || { label: r.status, cls: 'bg-slate-400' };
+                        const run = r.running_balance;
+                        // To'lov usuli: Excelда saqlanmagan — tranzaksiya turidan kelib chiqib ko'rsatamiz.
+                        const method = r.kind === 'payment' ? 'Naqd' : r.kind === 'avans' ? 'Balans' : '—';
+                        return (
+                          <tr key={r.id} onClick={() => setSelectedLedgerRow(r)} title="To'liq ma'lumot uchun bosing" className="border-t border-slate-100 dark:border-slate-800 hover:bg-emerald-50/60 dark:hover:bg-emerald-950/20 cursor-pointer transition">
+                            <td className="py-2.5 px-3 font-mono text-slate-400 dark:text-slate-500 whitespace-nowrap">{idx + 1}</td>
+                            <td className="py-2.5 px-3 font-mono text-slate-600 dark:text-slate-300 whitespace-nowrap">{r.date || '—'}</td>
+                            {importedAccounts.length > 1 && <td className="py-2.5 px-3 text-slate-500 dark:text-slate-400 whitespace-nowrap text-[11px]">{r.account || '—'}</td>}
+                            <td className="py-2.5 px-3 text-slate-700 dark:text-slate-200 max-w-md"><span className="line-clamp-2">{r.detail || '—'}</span></td>
+                            <td className="py-2.5 px-3 text-right font-mono whitespace-nowrap">
+                              {r.kind === 'charge' && r.status !== 'cancelled' ? <span className="text-rose-600 dark:text-rose-400 font-bold">{r.amount.toLocaleString()}</span> : <span className="text-slate-300 dark:text-slate-600">—</span>}
+                            </td>
+                            <td className="py-2.5 px-3 text-right font-mono whitespace-nowrap">
+                              {r.kind === 'payment' ? <span className="text-emerald-600 dark:text-emerald-400 font-bold">+{r.amount.toLocaleString()}</span>
+                                : r.kind === 'avans' ? <span className="text-sky-600 dark:text-sky-400 font-bold">{r.amount.toLocaleString()}</span>
+                                : (r.paid > 0 ? <span className="text-emerald-600 dark:text-emerald-400">{r.paid.toLocaleString()}</span> : <span className="text-slate-300 dark:text-slate-600">—</span>)}
+                            </td>
+                            <td className="py-2.5 px-3 whitespace-nowrap">
+                              {method === '—' ? <span className="text-slate-300 dark:text-slate-600">—</span>
+                                : <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold ${r.kind === 'avans' ? 'bg-sky-50 dark:bg-sky-950/50 text-sky-700 dark:text-sky-300' : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300'}`}>{method}</span>}
+                            </td>
+                            <td className={`py-2.5 px-3 text-right font-mono font-bold whitespace-nowrap ${run < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-500 dark:text-slate-400'}`}>
+                              {run < 0 ? `-${(-run).toLocaleString()}` : run.toLocaleString()}
+                            </td>
+                            <td className="py-2.5 px-3 text-center whitespace-nowrap">
+                              <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold text-white ${meta.cls}`}>{meta.label}</span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })()}
+
+          {/* Qatorга bosilganda — to'liq ma'lumot modali */}
+          {selectedLedgerRow && (() => {
+            const r = selectedLedgerRow;
+            const statusMeta: Record<string, { label: string; cls: string }> = {
+              paid_earlier: { label: "Oldin to'langan (naqd)", cls: 'bg-emerald-500' },
+              partial: { label: 'Qisman to\'langan', cls: 'bg-amber-500' },
+              debt: { label: 'Qarz', cls: 'bg-rose-500' },
+              cancelled: { label: 'Bekor qilingan', cls: 'bg-slate-400' },
+              payment: { label: "To'lov", cls: 'bg-emerald-600' },
+              debt_repay: { label: 'Qarzni uzish', cls: 'bg-emerald-600' },
+              avans: { label: 'Avans (balans)', cls: 'bg-sky-500' },
+            };
+            const meta = statusMeta[r.status] || { label: r.status, cls: 'bg-slate-400' };
+            const kindLabel = r.kind === 'charge' ? 'Hisob chiqarildi (qarz)' : r.kind === 'avans' ? 'Balans to\'ldirish (avans)' : "To'lov";
+            const services = (r.detail || '').split(';').map((s) => s.trim()).filter(Boolean);
+            const run = r.running_balance;
+            return (
+              <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40 backdrop-blur-sm" onClick={() => setSelectedLedgerRow(null)}>
+                <div className="w-full max-w-lg bg-white dark:bg-slate-900 rounded-2xl shadow-2xl border border-slate-200 dark:border-slate-700 overflow-hidden" onClick={(e) => e.stopPropagation()}>
+                  {/* Header */}
+                  <div className="flex items-start justify-between gap-3 px-5 py-4 border-b border-slate-100 dark:border-slate-800 bg-emerald-50 dark:bg-emerald-950/30">
+                    <div>
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className="px-2 py-0.5 rounded-md bg-emerald-100 dark:bg-emerald-900/50 text-emerald-700 dark:text-emerald-300 text-[11px] font-bold">📥 Excel'dan yuklangan</span>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold text-white ${meta.cls}`}>{meta.label}</span>
+                      </div>
+                      <h3 className="text-base font-black text-slate-900 dark:text-white mt-1.5">{kindLabel}</h3>
+                      <p className="text-xs font-mono text-slate-500 dark:text-slate-400 mt-0.5">{r.date || '—'}</p>
+                    </div>
+                    <button onClick={() => setSelectedLedgerRow(null)} className="p-1.5 rounded-lg hover:bg-white/60 dark:hover:bg-slate-800 text-slate-500 dark:text-slate-400 shrink-0">
+                      <X className="w-5 h-5" />
+                    </button>
+                  </div>
+                  {/* Body */}
+                  <div className="p-5 space-y-4">
+                    <div className="flex items-center gap-2 flex-wrap text-xs">
+                      {(() => {
+                        const pos = importedLedger.findIndex((x) => x.id === r.id);
+                        return pos >= 0 ? <span className="px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold">№ {pos + 1}</span> : null;
+                      })()}
+                      {(r.kind === 'payment' || r.kind === 'avans') && (
+                        <>
+                          <span className="text-slate-400 dark:text-slate-500">To'lov usuli:</span>
+                          <span className="px-2 py-0.5 rounded-md bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 font-bold">{r.kind === 'avans' ? 'Balans' : 'Naqd'}</span>
+                        </>
+                      )}
+                      {importedAccounts.length > 1 && r.account && (
+                        <>
+                          <span className="text-slate-400 dark:text-slate-500">Akkaunt:</span>
+                          <span className="px-2 py-0.5 rounded-md bg-sky-100 dark:bg-sky-900/40 text-sky-700 dark:text-sky-300 font-bold">{r.account}</span>
+                        </>
+                      )}
+                    </div>
+                    {/* Summalar */}
+                    <div className="grid grid-cols-3 gap-3">
+                      <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800">
+                        <p className="text-[10px] font-bold text-slate-400 uppercase">Hisoblangan</p>
+                        <p className={`text-sm font-black mt-1 ${r.kind === 'charge' && r.status !== 'cancelled' ? 'text-rose-600 dark:text-rose-400' : 'text-slate-400 dark:text-slate-600'}`}>
+                          {r.kind === 'charge' && r.status !== 'cancelled' ? r.amount.toLocaleString() : '—'}
+                        </p>
+                      </div>
+                      <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800">
+                        <p className="text-[10px] font-bold text-slate-400 uppercase">To'langan</p>
+                        <p className={`text-sm font-black mt-1 ${(r.kind === 'payment' || r.paid > 0 || r.kind === 'avans') ? 'text-emerald-600 dark:text-emerald-400' : 'text-slate-400 dark:text-slate-600'}`}>
+                          {r.kind === 'payment' || r.kind === 'avans' ? r.amount.toLocaleString() : (r.paid > 0 ? r.paid.toLocaleString() : '—')}
+                        </p>
+                      </div>
+                      <div className="p-3 rounded-xl bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-800">
+                        <p className="text-[10px] font-bold text-slate-400 uppercase">Qoldiq qarz</p>
+                        <p className={`text-sm font-black mt-1 ${run < 0 ? 'text-rose-600 dark:text-rose-400' : 'text-slate-600 dark:text-slate-300'}`}>
+                          {run < 0 ? `-${(-run).toLocaleString()}` : run.toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+                    {/* Xizmatlar / amal tafsiloti */}
+                    <div>
+                      <p className="text-[11px] font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wide mb-2">
+                        {r.kind === 'charge' ? 'Qilingan ishlar / xizmatlar' : 'Amal turi'}
+                      </p>
+                      {services.length > 0 ? (
+                        <ul className="space-y-1.5">
+                          {services.map((s, i) => (
+                            <li key={i} className="flex items-start gap-2 text-sm text-slate-700 dark:text-slate-200">
+                              <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-emerald-500 shrink-0" />
+                              <span>{s}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : (
+                        <p className="text-sm text-slate-400 dark:text-slate-500">Tafsilot ko'rsatilmagan</p>
+                      )}
+                    </div>
+                    <div className="pt-2 border-t border-slate-100 dark:border-slate-800 text-[11px] text-slate-400 dark:text-slate-500">
+                      Ushbu yozuv boshqa tizimdan Excel orqali ko'chirilgan (faqat o'qish uchun).
+                    </div>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -7850,6 +8104,53 @@ export default function PatientDetailPage() {
       )}
 
       {/* MODAL 9: Comprehensive 4-Tab Patient Edit Modal (matching screenshots) */}
+      {/* Hisob-faktura chop etish / PDF modali (To'lovlar tabidan) */}
+      {isPrintOpen && (() => {
+        // Ma'lumot manbai: Excel'dan yuklangan bemorда ledger, aks holda oddiy hisoblar.
+        let lines: SettlementLine[];
+        let totalCharged: number;
+        let totalPaid: number;
+        let debt: number;
+        if (importedLedger.length > 0) {
+          lines = importedLedger.map((r) => ({
+            date: r.date,
+            title: r.kind === 'charge' ? (r.detail || 'Xizmat') : r.kind === 'avans' ? 'Balans to‘ldirish (avans)' : 'To‘lov',
+            amount: r.amount,
+            paid: r.kind === 'charge' ? r.paid : 0,
+            kind: r.kind,
+          }));
+          totalCharged = importedLedger.filter((r) => r.kind === 'charge' && r.status !== 'cancelled').reduce((s, r) => s + r.amount, 0);
+          totalPaid = importedLedger.filter((r) => r.kind === 'payment').reduce((s, r) => s + r.amount, 0);
+          debt = importedOfficialBalance < -1 ? -importedOfficialBalance : 0;
+        } else {
+          lines = allPayRows.map((inv) => ({
+            date: inv.date,
+            title: inv.description || (inv.kind === 'bill' ? 'Xizmat' : 'To‘lov'),
+            amount: inv.total,
+            paid: inv.paid,
+            kind: (inv.kind === 'bill' ? 'charge' : 'payment') as SettlementLine['kind'],
+          }));
+          totalCharged = payKpi.cost;
+          totalPaid = payKpi.income;
+          const bal = Number(patient.balance) || 0;
+          debt = bal < -1 ? -bal : 0;
+        }
+        return (
+          <SettlementPrintModal
+            isOpen={isPrintOpen}
+            onClose={() => setIsPrintOpen(false)}
+            clinicName={user?.clinicName || 'Dentos Clinic'}
+            clinicPhone={(user as any)?.clinicPhone}
+            patientName={patient.full_name}
+            patientPhone={patient.phone}
+            lines={lines}
+            totalCharged={totalCharged}
+            totalPaid={totalPaid}
+            debt={debt}
+          />
+        );
+      })()}
+
       <PatientEditModal
         isOpen={isEditing}
         onClose={() => setIsEditing(false)}

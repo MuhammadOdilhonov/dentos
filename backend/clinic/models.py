@@ -147,6 +147,48 @@ class FinancialTransaction(models.Model):
     def __str__(self):
         return f"{self.type.upper()}: {self.amount} ({self.payment_method})"
 
+
+class ImportedLedgerEntry(models.Model):
+    """Excel importida (boshqa tizimdan — masalan 32desk) ko'chirilgan moliyaviy
+    tarix: hisoblar (qarz) va to'lovlar. Bemorning "To'lovlar" tabida ALOHIDA
+    "Excel'dan yuklangan" bo'limida ko'rsatiladi. Faqat o'qish uchun — Dentos'ning
+    o'z naryad/to'lovlariga aralashmaydi."""
+    KIND_CHOICES = (
+        ('charge', 'Hisob (qarz)'),
+        ('payment', "To'lov"),
+        ('avans', 'Avans / balans to\'ldirish'),
+    )
+    STATUS_CHOICES = (
+        ('paid_earlier', 'Oldin to\'langan'),
+        ('partial', 'Qisman to\'langan'),
+        ('debt', 'Qarz'),
+        ('cancelled', 'Bekor qilingan'),
+        ('payment', 'To\'lov'),
+        ('debt_repay', 'Qarzni uzish'),
+        ('avans', 'Avans'),
+    )
+    clinic = models.ForeignKey('ClinicTenant', on_delete=models.CASCADE, null=True, blank=True, related_name='imported_ledger')
+    patient = models.ForeignKey(Patient, on_delete=models.CASCADE, null=True, blank=True, related_name='imported_ledger')
+    patient_name = models.CharField(max_length=255, blank=True)  # asl Excel'dagi FIO (bog'lanmasa ham)
+    event_date = models.DateTimeField(null=True, blank=True)     # tartiblash uchun
+    date_text = models.CharField(max_length=40, blank=True)      # asl ko'rinish: "03.11.2025 14:23"
+    kind = models.CharField(max_length=16, choices=KIND_CHOICES)
+    detail = models.TextField(blank=True)                        # xizmatlar (ish) yoki to'lov turi
+    amount = models.DecimalField(max_digits=14, decimal_places=2, default=0)   # hisoblangan (charge) yoki to'langan (payment)
+    paid = models.DecimalField(max_digits=14, decimal_places=2, default=0)     # charge uchun to'langan qism
+    running_balance = models.DecimalField(max_digits=14, decimal_places=2, default=0)  # o'sha paytdagi qoldiq (manfiy = qarz)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, blank=True)
+    sort_index = models.PositiveIntegerField(default=0)          # bemor ichida xronologik tartib
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['sort_index', 'id']
+        indexes = [models.Index(fields=['clinic', 'patient'])]
+
+    def __str__(self):
+        return f"{self.kind} {self.amount} ({self.patient_name})"
+
+
 class ClinicTask(models.Model):
     PRIORITY_CHOICES = (
         ('low', 'Низкий'),

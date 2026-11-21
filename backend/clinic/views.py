@@ -2039,6 +2039,306 @@ def _parse_balance(raw: str):
         return Decimal('0')
 
 
+# ── Ko'p-varaqli XLSX o'qish (Счета/Оплаты tarixini import qilish uchun) ──────
+_XL_NS = 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'
+_XL_RNS = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'
+
+
+def _xlsx_shared_strings(z):
+    shared = []
+    if 'xl/sharedStrings.xml' in z.namelist():
+        ss = ET.fromstring(z.read('xl/sharedStrings.xml'))
+        ns = {'x': _XL_NS}
+        for si in ss.findall('.//x:si', ns):
+            texts = [t.text or '' for t in si.findall('.//x:t', ns)]
+            shared.append(''.join(texts))
+    return shared
+
+
+def _xlsx_sheet_paths(z):
+    """{varaq nomi -> 'xl/worksheets/sheetN.xml'} — nomi bo'yicha topish uchun."""
+    ns = {'x': _XL_NS}
+    try:
+        wb = ET.fromstring(z.read('xl/workbook.xml'))
+        rels = ET.fromstring(z.read('xl/_rels/workbook.xml.rels'))
+    except KeyError:
+        return {}
+    rid_to_target = {}
+    for rel in rels:
+        rid_to_target[rel.get('Id')] = rel.get('Target')
+    result = {}
+    for sh in wb.findall('.//x:sheets/x:sheet', ns):
+        name = sh.get('name') or ''
+        rid = sh.get('{%s}id' % _XL_RNS)
+        target = (rid_to_target.get(rid) or '').lstrip('/')
+        if target and not target.startswith('xl/'):
+            target = 'xl/' + target
+        if target:
+            result[name] = target
+    return result
+
+
+def _xlsx_rows(z, shared, path):
+    """Varaqdagi barcha qatorlarni list[list[str]] ko'rinishida qaytaradi."""
+    ns = {'x': _XL_NS}
+    ws = ET.fromstring(z.read(path))
+
+    def cell_value(c):
+        t = c.get('t', '')
+        v_el = c.find('x:v', ns)
+        if t == 'inlineStr':
+            is_el = c.find('.//x:t', ns)
+            return is_el.text if is_el is not None else ''
+        if v_el is None:
+            return ''
+        if t == 's':
+            try:
+                idx = int(v_el.text)
+            except (TypeError, ValueError):
+                return ''
+            return shared[idx] if idx < len(shared) else ''
+        return v_el.text or ''
+
+    def col_index(ref):
+        letters = ''.join(ch for ch in ref if ch.isalpha())
+        idx = 0
+        for ch in letters:
+            idx = idx * 26 + (ord(ch.upper()) - ord('A') + 1)
+        return idx - 1 if idx else 0
+
+    rows = []
+    for row in ws.findall('.//x:row', ns):
+        cells = row.findall('x:c', ns)
+        if not cells:
+            rows.append([])
+            continue
+        vals = {}
+        max_idx = 0
+        for pos, c in enumerate(cells):
+            ref = c.get('r', '')
+            ci = col_index(ref) if ref else pos
+            vals[ci] = cell_value(c)
+            if ci > max_idx:
+                max_idx = ci
+        rows.append([vals.get(i, '') for i in range(max_idx + 1)])
+    return rows
+
+
+def _norm_name(name: str) -> str:
+    """Ism tokenlarini saralab kalit yasaydi — 'Familiya Ism' va 'Ism Familiya'
+    bir xil kalit beradi (varaqlar orasida bog'lash uchun)."""
+    if not name:
+        return ''
+    return ' '.join(sorted(str(name).strip().lower().split()))
+
+
+def _parse_dt_text(s: str):
+    """'03.11.2025 14:23' → datetime yoki None."""
+    s = (s or '').strip()
+    for fmt in ('%d.%m.%Y %H:%M', '%d.%m.%Y %H:%M:%S', '%d.%m.%Y', '%Y-%m-%d %H:%M', '%Y-%m-%d'):
+        try:
+            return datetime.datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _find_header_col(headers, patterns):
+    for i, h in enumerate(headers):
+        hl = (h or '').strip().lower()
+        for p in patterns:
+            if p in hl:
+                return i
+    return -1
+
+
+def _parse_finance_sheets(fileobj):
+    """XLSX'dan Счета (hisoblar) va Оплаты (to'lovlar) varaqlarini o'qiydi.
+    Qaytaradi: (charges, payments) — har biri dict ro'yxati.
+    Varaq yo'q bo'lsa bo'sh ro'yxat."""
+    charges, payments = [], []
+    with zipfile.ZipFile(fileobj) as z:
+        shared = _xlsx_shared_strings(z)
+        paths = _xlsx_sheet_paths(z)
+
+        def match_sheet(patterns):
+            for name, path in paths.items():
+                nl = name.strip().lower()
+                if any(p in nl for p in patterns):
+                    return path
+            return None
+
+        # Счета — hisoblar (qarz manbai)
+        sch_path = match_sheet(['счет', 'счёт', 'invoice', 'hisob'])
+        if sch_path:
+            rows = _xlsx_rows(z, shared, sch_path)
+            if rows:
+                hdr = rows[0]
+                c_name = _find_header_col(hdr, ['фио', 'клиент', 'имя', 'name'])
+                c_date = _find_header_col(hdr, ['дата'])
+                c_serv = _find_header_col(hdr, ['услуг', 'servis', 'xizmat'])
+                c_stat = _find_header_col(hdr, ['статус', 'status', 'holat'])
+                c_sum = _find_header_col(hdr, ['сумма', 'summa', 'итог'])
+                c_paid = _find_header_col(hdr, ['оплачено', 'to\'langan', 'paid'])
+
+                def g(row, i):
+                    return row[i].strip() if 0 <= i < len(row) else ''
+
+                for row in rows[1:]:
+                    nm = g(row, c_name)
+                    if not nm:
+                        continue
+                    charges.append({
+                        'name': nm,
+                        'date': g(row, c_date),
+                        'services': g(row, c_serv),
+                        'status': g(row, c_stat),
+                        'total': _parse_balance(g(row, c_sum)),
+                        'paid': _parse_balance(g(row, c_paid)),
+                    })
+
+        # Оплаты — to'lovlar
+        opl_path = match_sheet(['оплат', 'payment', 'to\'lov', 'tolov'])
+        if opl_path:
+            rows = _xlsx_rows(z, shared, opl_path)
+            if rows:
+                hdr = rows[0]
+                c_name = _find_header_col(hdr, ['клиент', 'фио', 'имя', 'name'])
+                c_date = _find_header_col(hdr, ['дата', 'date'])
+                c_type = _find_header_col(hdr, ['тип', 'type', 'turi'])
+                c_sum = _find_header_col(hdr, ['сумма', 'summa', 'amount'])
+
+                def g2(row, i):
+                    return row[i].strip() if 0 <= i < len(row) else ''
+
+                for row in rows[1:]:
+                    nm = g2(row, c_name)
+                    if not nm:
+                        continue
+                    payments.append({
+                        'name': nm,
+                        'date': g2(row, c_date),
+                        'ptype': g2(row, c_type),
+                        'amount': _parse_balance(g2(row, c_sum)),
+                    })
+    return charges, payments
+
+
+def _build_imported_ledger(clinic, charges, payments, name_to_patient):
+    """charges + payments → ImportedLedgerEntry obyektlari ro'yxati (bazaga yozilmagan).
+    Har bemor bo'yicha xronologik tartib va qoldiq qarz (running balance) hisoblanadi.
+
+    Model (tekshirilgan): Dentos balansi = (Оплата + Погашение) − hisoblar.
+    'Пополнение баланса' (avans) ALOHIDA hamyon — qarz qoldig'iga ta'sir qilmaydi."""
+    from .models import ImportedLedgerEntry
+    import itertools
+
+    AVANS = 'Пополение баланса'          # eksportdagi imlo (sic)
+    DEBT_REPAY = 'Погашение задолженности'
+
+    # ── Nom bo'yicha bemorga bog'lash (patronim/otasining ismiga chidamli) ──
+    # Bemorlar varag'ida FIO ko'pincha 3 so'z (Familiya Ism Otasining-ismi), lekin
+    # Счета/Оплаты'da faqat 2 so'z (Ism Familiya). Shu sabab to'liq nom mos kelmaydi.
+    # Yechim: har bemorning 2-so'zli juftliklari (familiya+ism) bo'yicha ham indeks.
+    exact_map = dict(name_to_patient)   # norm(to'liq FIO) -> Patient
+    pair_index = {}                      # "ism familiya" (2 so'z, saralangan) -> Patient
+    ambiguous = set()
+    for key, pat in name_to_patient.items():
+        toks = key.split()
+        if len(toks) >= 2:
+            for combo in itertools.combinations(toks, 2):   # toks allaqachon saralangan
+                pk = ' '.join(combo)
+                if pk in pair_index and pair_index[pk] is not pat:
+                    ambiguous.add(pk)   # bir juftlik 2 xil bemorda — ishonchsiz
+                else:
+                    pair_index[pk] = pat
+    for pk in ambiguous:
+        pair_index.pop(pk, None)        # noaniqlarni bog'lamaymiz (xato bog'lamaslik uchun)
+
+    def match_patient(name_norm):
+        p = exact_map.get(name_norm)
+        if p is not None:
+            return p
+        toks = name_norm.split()         # _norm_name natijasi — saralangan
+        if len(toks) == 2:
+            return pair_index.get(' '.join(toks))
+        if len(toks) >= 3:
+            for combo in itertools.combinations(toks, 2):
+                p = pair_index.get(' '.join(combo))
+                if p is not None:
+                    return p
+        return None
+
+    # name_norm -> hodisalar
+    by_name = {}
+    for ch in charges:
+        k = _norm_name(ch['name'])
+        by_name.setdefault(k, []).append(('charge', ch))
+    for p in payments:
+        k = _norm_name(p['name'])
+        by_name.setdefault(k, []).append(('payment', p))
+
+    EPOCH = datetime.datetime(1900, 1, 1)
+    entries = []
+    for k, evs in by_name.items():
+        # xronologik tartib
+        def ev_dt(e):
+            raw = e[1]['date']
+            return _parse_dt_text(raw) or EPOCH
+        evs.sort(key=ev_dt)
+
+        patient = match_patient(k)
+        display_name = evs[0][1]['name'] if evs else ''
+        running = Decimal('0')
+        for si, (kind, data) in enumerate(evs):
+            dt = _parse_dt_text(data['date'])
+            if kind == 'charge':
+                status_raw = (data['status'] or '').strip()
+                cancelled = (status_raw == 'Отменен')
+                total = data['total'] or Decimal('0')
+                if cancelled:
+                    status = 'cancelled'
+                    paid = Decimal('0')
+                elif status_raw == 'Оплачен':
+                    status = 'paid_earlier'   # oldin to'langan (ko'pincha naqd)
+                    paid = total
+                    running -= total
+                elif status_raw.startswith('Оплачен не'):
+                    status = 'partial'
+                    paid = data['paid'] or Decimal('0')
+                    running -= total
+                else:
+                    status = 'debt'
+                    paid = data['paid'] or Decimal('0')
+                    running -= total
+                entries.append(ImportedLedgerEntry(
+                    clinic=clinic, patient=patient, patient_name=display_name,
+                    event_date=dt, date_text=(data['date'] or ''), kind='charge',
+                    detail=(data['services'] or '').replace('\n\n', '; ').replace('\n', ' ').strip(),
+                    amount=total, paid=paid, running_balance=running,
+                    status=status, sort_index=si,
+                ))
+            else:
+                ptype = (data['ptype'] or '').strip()
+                amt = data['amount'] or Decimal('0')
+                if ptype == AVANS:
+                    kind2, status = 'avans', 'avans'
+                    # avans qarz qoldig'iga ta'sir qilmaydi
+                elif ptype == DEBT_REPAY:
+                    kind2, status = 'payment', 'debt_repay'
+                    running += amt
+                else:
+                    kind2, status = 'payment', 'payment'
+                    running += amt
+                entries.append(ImportedLedgerEntry(
+                    clinic=clinic, patient=patient, patient_name=display_name,
+                    event_date=dt, date_text=(data['date'] or ''), kind=kind2,
+                    detail=ptype, amount=amt, paid=Decimal('0'),
+                    running_balance=running, status=status, sort_index=si,
+                ))
+    return entries
+
+
 @api_view(['POST'])
 def excel_import_patients(request):
     """Superadmin: XLSX faylini yuklaydi va klinika bemorlarini importa qiladi.
@@ -2069,7 +2369,8 @@ def excel_import_patients(request):
         return Response({'detail': 'Fayl 20 MB dan katta bo\'lmasin.'}, status=400)
 
     try:
-        rows = _parse_xlsx_rows(io.BytesIO(xlsx_file.read()))
+        raw_bytes = xlsx_file.read()
+        rows = _parse_xlsx_rows(io.BytesIO(raw_bytes))
     except Exception as exc:
         return Response({'detail': f'Fayl o\'qilmadi: {exc}'}, status=400)
 
@@ -2078,6 +2379,7 @@ def excel_import_patients(request):
     skipped_count = 0
     imported_ids = []   # yaratilgan + yangilangan bemor ID'lari (o'chirish tugmasi uchun)
     errors = []
+    name_to_patient = {}   # _norm_name(FIO) -> Patient — moliyaviy tarixni bog'lash uchun
 
     for idx, row in enumerate(rows, start=2):  # 2-qatordan (1 sarlavha)
         full_name = row['full_name']
@@ -2092,16 +2394,17 @@ def excel_import_patients(request):
         notes_val = f'[Excel import teglari: {tags}]' if tags else ''
 
         try:
-            obj = None
-            if phone:
-                # Telefon bo'yicha mavjud bemorni topamiz (dublikat bo'lsa birinchisi —
-                # get_or_create MultipleObjectsReturned bermasin).
-                obj = Patient.objects.filter(clinic=clinic, phone=phone).first()
+            # MUHIM: FAQAT telefon bo'yicha moslamaymiz — oila a'zolari ko'pincha bitta
+            # telefonni baham ko'radi (Excel'da 1 telefonga 2-3 xil bemor). Telefon bo'yicha
+            # birlashtirsak, turli odamlar bitta yozuvga qo'shilib, qarz balansi BOSHQA
+            # odamga o'tib ketadi (soxta qarzdor). Shu sabab ISM + telefon bo'yicha moslaymiz.
+            obj = Patient.objects.filter(clinic=clinic, full_name=full_name, phone=phone).first()
 
             if obj:
                 obj.full_name = full_name
-                if balance != Decimal('0'):
-                    obj.balance = balance
+                # Excel'dagi balans HAR DOIM o'rnatiladi (0 bo'lsa ham — qarz uzilgan bo'lishi
+                # mumkin; avval "0 bo'lsa tegma" edi va eski qarz qolib ketardi).
+                obj.balance = balance
                 if birth_date:
                     obj.birth_date = birth_date
                 if notes_val and not obj.notes:
@@ -2121,8 +2424,25 @@ def excel_import_patients(request):
                 )
                 created_count += 1
             imported_ids.append(obj.id)
+            name_to_patient[_norm_name(full_name)] = obj
         except Exception as exc:
             errors.append({'row': idx, 'name': full_name, 'reason': str(exc)})
+
+    # ── Moliyaviy tarix (Счета + Оплаты) ni import qilamiz ──────────────────
+    # Bemorning "To'lovlar" tabida ALOHIDA "Excel'dan yuklangan" bo'limda chiqadi.
+    ledger_created = 0
+    try:
+        charges, payments = _parse_finance_sheets(io.BytesIO(raw_bytes))
+        if charges or payments:
+            from .models import ImportedLedgerEntry
+            # Qayta import: shu klinikaning eski ko'chirilgan tarixini tozalaymiz (idempotent)
+            ImportedLedgerEntry.objects.filter(clinic=clinic).delete()
+            ledger_objs = _build_imported_ledger(clinic, charges, payments, name_to_patient)
+            if ledger_objs:
+                ImportedLedgerEntry.objects.bulk_create(ledger_objs, batch_size=1000)
+                ledger_created = len(ledger_objs)
+    except Exception as exc:
+        errors.append({'row': 0, 'name': 'Moliyaviy tarix (Счета/Оплаты)', 'reason': str(exc)})
 
     return Response({
         'ok': True,
@@ -2130,15 +2450,176 @@ def excel_import_patients(request):
         'created': created_count,
         'updated': updated_count,
         'skipped': skipped_count,
+        'ledgerCreated': ledger_created,   # ko'chirilgan hisob/to'lov satrlari soni
         'importedIds': imported_ids,
         'errors': errors[:50],  # ko'pi bilan 50 ta xato
+    })
+
+
+@api_view(['GET'])
+def patient_imported_ledger(request, pk):
+    """Bemorning Excel'dan ko'chirilgan moliyaviy tarixi (hisoblar + to'lovlar).
+    GET /api/patients/<pk>/imported-ledger/
+
+    "To'lovlar" tabidagi ALOHIDA "Excel'dan yuklangan" bo'lim uchun."""
+    from .models import Patient, ImportedLedgerEntry
+    try:
+        patient = Patient.objects.get(pk=pk)
+    except Patient.DoesNotExist:
+        return Response({'detail': 'Bemor topilmadi.'}, status=404)
+
+    # Klinika scoping: superadmin bo'lmasa, so'ragan klinika bemor klinikasi bilan mos kelsin
+    clinic_id = get_clinic_id(request)
+    if not getattr(request.user, 'is_superuser', False):
+        if clinic_id and patient.clinic_id and str(clinic_id) != str(patient.clinic_id):
+            return Response({'detail': 'Ruxsat yo‘q.'}, status=403)
+
+    # Bir necha akkaunt birlashtirilgan bo'lsa, har yozuvning ASL akkaunti (patient_name)
+    # saqlanadi — "qaysi akkauntda buncha edi" ko'rinishi uchun. event_date bo'yicha
+    # saralaymiz (turli akkauntlar bir xil shaxs — xronologik umumiy oqim).
+    qs = ImportedLedgerEntry.objects.filter(patient=patient).order_by('event_date', 'sort_index', 'id')
+    data = [{
+        'id': e.id,
+        'date': e.date_text,
+        'account': e.patient_name,     # asl Excel ismi (birlashtirilganda qaysi akkaunt)
+        'kind': e.kind,
+        'detail': e.detail,
+        'amount': float(e.amount),
+        'paid': float(e.paid),
+        'running_balance': float(e.running_balance),
+        'status': e.status,
+    } for e in qs]
+
+    # Akkauntlar bo'yicha xulosa (nechta yozuv qaysi akkauntdan, qancha hisob/to'lov)
+    from collections import OrderedDict
+    acc_map = OrderedDict()
+    for e in qs:
+        key = e.patient_name or '—'
+        a = acc_map.setdefault(key, {'name': key, 'count': 0, 'charged': 0.0, 'paid': 0.0})
+        a['count'] += 1
+        if e.kind == 'charge' and e.status != 'cancelled':
+            a['charged'] += float(e.amount)
+        elif e.kind == 'payment':
+            a['paid'] += float(e.amount)
+    accounts = list(acc_map.values())
+
+    current = data[-1]['running_balance'] if data else 0
+    return Response({
+        'ok': True,
+        'count': len(data),
+        'current_balance': current,
+        'official_balance': float(patient.balance),
+        'account_count': len(accounts),   # nechta alohida akkaunt birlashgan
+        'accounts': accounts,
+        'entries': data,
+    })
+
+
+@api_view(['GET'])
+def patient_merge_candidates(request, pk):
+    """Bemorning mumkin bo'lgan dublikatlari (bir xil shaxs, alohida yozuvlar).
+    Bir xil telefon YOKI bir xil (patronimga chidamli) ism bo'yicha topadi.
+    GET /api/patients/<pk>/merge-candidates/"""
+    from .models import Patient, ImportedLedgerEntry
+    try:
+        base = Patient.objects.get(pk=pk)
+    except Patient.DoesNotExist:
+        return Response({'detail': 'Bemor topilmadi.'}, status=404)
+
+    base_norm = _norm_name(base.full_name)
+    base_tokens = set(base_norm.split())
+    base_phone = (base.phone or '').strip()
+
+    cands = []
+    qs = Patient.objects.filter(clinic=base.clinic).exclude(pk=base.pk)
+    for p in qs:
+        same_phone = bool(base_phone) and (p.phone or '').strip() == base_phone
+        pn = _norm_name(p.full_name)
+        ptoks = set(pn.split())
+        # Ism mosligi: to'liq teng YOKI biri ikkinchisining ichki to'plami (patronim farqi)
+        same_name = (pn == base_norm) or (base_tokens and ptoks and (base_tokens <= ptoks or ptoks <= base_tokens))
+        if same_phone or same_name:
+            n_led = ImportedLedgerEntry.objects.filter(patient=p).count()
+            cands.append({
+                'id': p.id,
+                'name': p.full_name,
+                'phone': p.phone,
+                'balance': float(p.balance),
+                'birth_date': p.birth_date.isoformat() if p.birth_date else '',
+                'source': p.source,
+                'ledger_count': n_led,
+                'match': 'phone' if same_phone else 'name',
+            })
+    cands.sort(key=lambda c: (c['match'] != 'phone', c['name']))
+    return Response({'ok': True, 'count': len(cands), 'candidates': cands})
+
+
+@api_view(['POST'])
+def patient_merge(request, pk):
+    """Bir necha bemor yozuvini (bir xil shaxs) BITTAGA birlashtiradi.
+    POST /api/patients/<pk>/merge/  body: {"source_ids": [id1, id2, ...]}
+
+    <pk> — SAQLANADIGAN (asosiy) yozuv. source_ids undagi ustiga ko'chiriladi va
+    o'chiriladi. Barcha tarix (qabullar, to'lovlar, Excel-tarix, media...) ko'chadi,
+    balanslar qo'shiladi."""
+    from django.db import transaction
+    from .models import (Patient, Appointment, FinancialTransaction, ImportedLedgerEntry,
+                         ClinicTask, DentalLabOrder, PatientMedia, PhotoProtocol, PatientRecord)
+    from .reception_models import ReceptionContact
+
+    try:
+        survivor = Patient.objects.get(pk=pk)
+    except Patient.DoesNotExist:
+        return Response({'detail': 'Asosiy bemor topilmadi.'}, status=404)
+
+    source_ids = request.data.get('source_ids') or []
+    if not isinstance(source_ids, list) or not source_ids:
+        return Response({'detail': 'source_ids ro\'yxati kerak.'}, status=400)
+    source_ids = [int(s) for s in source_ids if str(s).isdigit() and int(s) != survivor.id]
+    sources = list(Patient.objects.filter(clinic=survivor.clinic, id__in=source_ids))
+    if not sources:
+        return Response({'detail': 'Birlashtiriladigan yozuv topilmadi.'}, status=400)
+
+    from decimal import Decimal
+    merged_balance = Decimal(str(survivor.balance))
+    with transaction.atomic():
+        for src in sources:
+            # Excel-tarix: manba hisobini (source_account) nomida saqlaymiz — "To'lovlar"da
+            # qaysi akkauntdan kelgani ko'rinishi uchun (patient_name o'zgarmaydi).
+            ImportedLedgerEntry.objects.filter(patient=src).update(patient=survivor)
+            Appointment.objects.filter(patient=src).update(patient=survivor)
+            FinancialTransaction.objects.filter(patient=src).update(patient=survivor)
+            ClinicTask.objects.filter(patient=src).update(patient=survivor)
+            DentalLabOrder.objects.filter(patient=src).update(patient=survivor)
+            PatientMedia.objects.filter(patient=src).update(patient=survivor)
+            PhotoProtocol.objects.filter(patient=src).update(patient=survivor)
+            PatientRecord.objects.filter(patient=src).update(patient=survivor)
+            ReceptionContact.objects.filter(patient=src).update(patient=survivor)
+            merged_balance += Decimal(str(src.balance))
+            # Agar asosiy yozuvda tug'ilgan sana/telefon bo'sh bo'lsa — manbadan to'ldiramiz
+            if not survivor.birth_date and src.birth_date:
+                survivor.birth_date = src.birth_date
+            if not (survivor.phone or '').strip() and (src.phone or '').strip():
+                survivor.phone = src.phone
+
+        survivor.balance = merged_balance
+        survivor.save()
+        deleted_ids = [s.id for s in sources]
+        Patient.objects.filter(id__in=deleted_ids).delete()
+
+    return Response({
+        'ok': True,
+        'survivor_id': survivor.id,
+        'merged_count': len(sources),
+        'deleted_ids': deleted_ids,
+        'new_balance': float(survivor.balance),
     })
 
 
 def _delete_patients_and_media(clinic_id, ids=None, delete_all=False):
     """Klinika bemorlarini va ularning barcha media fayllarini (Cloupard/disk) to'liq tozalaydi."""
     from django.db import transaction
-    from .models import Patient, PatientMedia, FinancialTransaction
+    from .models import Patient, PatientMedia, FinancialTransaction, ImportedLedgerEntry
     from .reception_models import ReceptionContact
     import logging
     logger = logging.getLogger(__name__)
@@ -2146,6 +2627,8 @@ def _delete_patients_and_media(clinic_id, ids=None, delete_all=False):
     with transaction.atomic():
         if delete_all:
             pts_qs = Patient.objects.filter(clinic_id=clinic_id)
+            # Bog'lanmagan (patient=None) ko'chirilgan tarixni ham tozalaymiz
+            ImportedLedgerEntry.objects.filter(clinic_id=clinic_id).delete()
         else:
             pts_qs = Patient.objects.filter(clinic_id=clinic_id, id__in=ids or [])
 

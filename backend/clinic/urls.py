@@ -12,7 +12,8 @@ from .views import (
     PatientMediaViewSet, photo_protocol, patient_media_presence, ServiceCatalogItemViewSet,
     DoctorNaryadRateViewSet, ServiceCategoryViewSet,
     excel_import_patients, excel_delete_imported_patients, excel_export_patients,
-    clear_all_patients,
+    clear_all_patients, patient_imported_ledger,
+    patient_merge_candidates, patient_merge,
 )
 from . import telegram_auth
 from . import whatsapp_api
@@ -68,6 +69,11 @@ urlpatterns = [
     path('patients/excel-delete/', excel_delete_imported_patients, name='excel_delete_imported_patients'),
     path('patients/excel-export/', excel_export_patients, name='excel_export_patients'),
     path('patients/clear-all/', clear_all_patients, name='clear_all_patients'),
+    # Bemorning Excel'dan ko'chirilgan moliyaviy tarixi — ROUTER'DAN OLDIN
+    path('patients/<int:pk>/imported-ledger/', patient_imported_ledger, name='patient_imported_ledger'),
+    # Bemorlarni birlashtirish (dublikat yozuvlar) — ROUTER'DAN OLDIN
+    path('patients/<int:pk>/merge-candidates/', patient_merge_candidates, name='patient_merge_candidates'),
+    path('patients/<int:pk>/merge/', patient_merge, name='patient_merge'),
     path('', include(router.urls)),
     path('auth/login/', auth_login, name='auth_login'),
     path('auth/request-code/', request_login_code, name='request_login_code'),

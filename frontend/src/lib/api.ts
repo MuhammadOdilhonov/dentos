@@ -1499,6 +1499,56 @@ export const clinicApi = {
     return _mediaPresenceTotals;
   },
 
+  // ── Excel'dan ko'chirilgan moliyaviy tarix (hisob/to'lov) — bemorning To'lovlar tabida ──
+  async getImportedLedger(patientId: number, overrideClinicId?: number): Promise<{
+    ok: boolean; count: number; current_balance: number; official_balance: number;
+    account_count: number;
+    accounts: { name: string; count: number; charged: number; paid: number }[];
+    entries: { id: number; date: string; account: string; kind: 'charge' | 'payment' | 'avans'; detail: string; amount: number; paid: number; running_balance: number; status: string }[];
+  } | null> {
+    const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
+    try {
+      const url = `${API_BASE}/patients/${patientId}/imported-ledger/${cid ? `?clinic=${cid}` : ''}`;
+      const res = await apiFetch(url, { headers: cid ? { 'X-Clinic-ID': String(cid) } : {}, next: { revalidate: 0 } }, false);
+      if (!res.ok) return null;
+      return await res.json();
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; return null; }
+  },
+
+  // ── Bemorlarni birlashtirish (dublikat yozuvlar — bir xil shaxs) ──
+  /** Bemorning mumkin bo'lgan dublikatlari (bir xil telefon yoki ism). */
+  async getMergeCandidates(patientId: number, overrideClinicId?: number): Promise<{
+    ok: boolean; count: number;
+    candidates: { id: number; name: string; phone: string; balance: number; birth_date: string; source: string; ledger_count: number; match: 'phone' | 'name' }[];
+  } | null> {
+    const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
+    try {
+      const url = `${API_BASE}/patients/${patientId}/merge-candidates/${cid ? `?clinic=${cid}` : ''}`;
+      const res = await apiFetch(url, { headers: cid ? { 'X-Clinic-ID': String(cid) } : {}, next: { revalidate: 0 } }, false);
+      if (!res.ok) return null;
+      return await res.json();
+    } catch (error) { if (error instanceof ApiError && !isDemoClinic()) throw error; return null; }
+  },
+
+  /** Bir necha bemor yozuvini bittaga birlashtiradi (survivorId = saqlanadigan). */
+  async mergePatients(survivorId: number, sourceIds: number[], overrideClinicId?: number): Promise<{
+    ok: boolean; survivor_id: number; merged_count: number; deleted_ids: number[]; new_balance: number;
+  }> {
+    const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();
+    const url = `${API_BASE}/patients/${survivorId}/merge/${cid ? `?clinic=${cid}` : ''}`;
+    const res = await apiFetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...(cid ? { 'X-Clinic-ID': String(cid) } : {}) },
+      body: JSON.stringify({ source_ids: sourceIds }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error((err as any).detail || `Xato: ${res.status}`);
+    }
+    bustApiCache();
+    return res.json();
+  },
+
   // ── Foto-protokol hujjati (BAZADA) ──
   async fetchPatientPhotoDoc(patientId: number, overrideClinicId?: number, slot: number = 1): Promise<any[] | null> {
     const cid = overrideClinicId !== undefined ? overrideClinicId : getActiveClinicId();

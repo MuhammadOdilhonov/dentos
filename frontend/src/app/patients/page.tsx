@@ -17,6 +17,7 @@ const KeynoteDentalPhotoProtocol = dynamic(() => import('../../components/Keynot
   ),
 });
 import { useI18n } from '../../lib/i18n';
+import { useAuth } from '../../lib/auth';
 import { PhotoProtocolFirstPage } from '../../components/PhotoProtocolStudio';
 import {
   Check,
@@ -56,6 +57,11 @@ function PatientsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { t, language, tr, tk } = useI18n();
+  const { user } = useAuth();
+  // Faqat SUPERADMIN ko'radigan boshqaruvlar: "Dentos / Excel" manba ajratkichi
+  // va "Barcha bemorlarni o'chirish". Klinika ichidagi rollar (direktor, admin,
+  // kassa, shifokor...) bularni ko'rmaydi.
+  const isSuperAdmin = user?.role === 'superadmin';
 
   // Active Tab from query param
   const activeTab = (searchParams.get('tab') as TabType) || 'list';
@@ -171,8 +177,9 @@ function PatientsContent() {
         return isNotClosed && !isNaN(aptTime) && aptTime < oneDayAgo;
       });
 
-      // 2. Check for debt
-      const hasDebt = p.balance < 0;
+      // 2. Check for debt — 1 so'mdan kam (masalan -0.05) = yaxlitlash qoldig'i,
+      // qarzdor DEB sanalmaydi (32desk ham bularni 0 ko'rsatadi).
+      const hasDebt = p.balance < -1;
 
       // 3. Check for incomplete profile / data
       // "TO'LIQMAS" FAQAT eng muhim aloqa maydoni — TELEFON yo'q bo'lsa (bemorga bog'lanib
@@ -420,13 +427,15 @@ function PatientsContent() {
             <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-blue-50 dark:bg-blue-950/60 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-800">
               {filteredList.length} {tk('pt_cnt_patients')}
             </span>
-            <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500" />
-              <span>{sourceCounts.dentos} Dentos</span>
-              <span className="text-slate-300 dark:text-slate-600">·</span>
-              <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" />
-              <span>{sourceCounts.excel} Excel</span>
-            </span>
+            {isSuperAdmin && (
+              <span className="hidden sm:inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700">
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500" />
+                <span>{sourceCounts.dentos} Dentos</span>
+                <span className="text-slate-300 dark:text-slate-600">·</span>
+                <span className="inline-block w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                <span>{sourceCounts.excel} Excel</span>
+              </span>
+            )}
             {activeTab !== 'list' && (() => {
               const totals = clinicApi.getMediaTotals();
               const n = totals ? (activeTab === 'foto' ? totals.foto : activeTab === 'rentgen' ? totals.rentgen : totals.skan) : 0;
@@ -488,7 +497,7 @@ function PatientsContent() {
             <span>+ {t.addPatient}</span>
           </button>
 
-          {patients.length > 0 && (
+          {isSuperAdmin && patients.length > 0 && (
             <button
               onClick={() => setIsClearAllModalOpen(true)}
               className="flex items-center space-x-1.5 px-3 py-2.5 bg-rose-50 hover:bg-rose-100 text-rose-600 dark:bg-rose-950/40 dark:hover:bg-rose-900/60 dark:text-rose-300 border border-rose-200 dark:border-rose-900/50 rounded-xl text-xs font-bold transition active:scale-95 shrink-0"
@@ -555,7 +564,9 @@ function PatientsContent() {
           </div>
         )}
 
-        {/* Manba / Toifa filtrlari: Dentos (Yaratilgan) vs Excel (Yuklangan) */}
+        {/* Manba / Toifa filtrlari: Dentos (Yaratilgan) vs Excel (Yuklangan) —
+            FAQAT superadmin ko'radi (klinika ichidagi rollarga ko'rinmaydi). */}
+        {isSuperAdmin && (
         <div className="flex items-center gap-2 flex-wrap pt-2 border-t border-slate-100 dark:border-slate-800 text-xs">
           <span className="font-bold text-slate-500 dark:text-slate-400 uppercase tracking-wider mr-1">
             Toifa:
@@ -602,6 +613,7 @@ function PatientsContent() {
             </span>
           </button>
         </div>
+        )}
       </div>
 
       {/* ───────────────────────────────────────────────────────── */}
@@ -654,11 +666,11 @@ function PatientsContent() {
                               {p.full_name}
                             </h4>
                             <span className="text-[11px] font-mono text-slate-400 shrink-0">#{p.id}</span>
-                            {p.source === 'excel' ? (
+                            {isSuperAdmin && (p.source === 'excel' ? (
                               <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 shrink-0">Excel (Yuklangan)</span>
                             ) : (
                               <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 shrink-0">Dentos (Yaratilgan)</span>
-                            )}
+                            ))}
                           </div>
                         </div>
                       </div>
@@ -814,11 +826,11 @@ function PatientsContent() {
                         <span className="font-bold text-slate-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-sky-400 transition">
                           {p.full_name}
                         </span>
-                        {p.source === 'excel' ? (
+                        {isSuperAdmin && (p.source === 'excel' ? (
                           <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-emerald-50 dark:bg-emerald-950/60 text-emerald-700 dark:text-emerald-300 border border-emerald-200 dark:border-emerald-800 shrink-0">Excel (Yuklangan)</span>
                         ) : (
                           <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-blue-50 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 shrink-0">Dentos (Yaratilgan)</span>
-                        )}
+                        ))}
                       </div>
                       <span className="text-[11px] font-mono text-slate-400 block">#{p.id}</span>
                     </td>
